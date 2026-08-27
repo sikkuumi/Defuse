@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.scan-cache/
+corpus/
+corpus2/
+ui/engine/
+ui/vendor/
+ui/grammars/

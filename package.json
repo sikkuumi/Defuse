@@ -1,0 +1,35 @@
+{
+  "name": "ns1-securescan",
+  "version": "0.5.0",
+  "description": "Honesty-first SAST scanner. One engine, two shells: a CLI and a browser UI. Every finding is labelled signature-based or flow-verified, and a verified one prints the path that proves it.",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "secureScan": "./dist/src/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "scan": "npm run build --silent && node dist/src/cli.js scan",
+    "test": "npm run build --silent && node dist/tests/run-tests.js",
+    "ast": "npm run build --silent && node dist/src/cli.js ast",
+    "clean": "rm -rf dist",
+    "doctor": "npm run build --silent && node dist/src/cli.js doctor",
+    "rules": "npm run build --silent && node dist/src/cli.js rules",
+    "ui": "npm run build --silent && node scripts/build-ui.mjs && node scripts/serve-ui.mjs",
+    "build:ui": "npm run build --silent && node scripts/build-ui.mjs",
+    "metamorphic": "npm run build --silent && node dist/tests/metamorphic.js",
+    "benchmark": "npm run build --silent && node scripts/benchmark.mjs"
+  },
+  "dependencies": {
+    "tree-sitter-wasms": "0.1.13",
+    "web-tree-sitter": "0.25.10"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

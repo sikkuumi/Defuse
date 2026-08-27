@@ -1,0 +1,60 @@
+{
+  // ---------------------------------------------------------------------------
+  // TypeScript compiler settings for NS-1 SecureScan.
+  // Every option below is here for a reason; the comments say what that reason is.
+  // ---------------------------------------------------------------------------
+  "compilerOptions": {
+    // "What JavaScript features may the output use?"
+    // Node 20+ supports everything in ES2022, so we don't need TypeScript to
+    // rewrite modern syntax into older syntax. Less rewriting = output that
+    // looks like the code you wrote, which matters when you're learning.
+    "target": "ES2022",
+    "lib": ["ES2022"],
+
+    // "How do imports work?" NodeNext tells TypeScript to use Node's real,
+    // modern module rules (import/export, file extensions in paths). This is
+    // the setting that matches "type": "module" in package.json.
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    // Where the .ts files are and where the compiled .js files go.
+    // rootDir "." means both src/ and tests/ are compiled, preserving structure:
+    //   src/cli.ts        -> dist/src/cli.js
+    //   tests/run-tests.ts -> dist/tests/run-tests.js
+    "rootDir": ".",
+    "outDir": "dist",
+
+    // STRICT MODE. This is the single most valuable setting for a beginner.
+    // It makes TypeScript refuse to compile code where a value might be
+    // undefined/null and you forgot to handle it. It turns whole categories of
+    // "why is this crashing at 2am" into "why is this red squiggle here".
+    "strict": true,
+
+    // Extra strictness that strict:true does NOT include but we want:
+    // - noUncheckedIndexedAccess: reading arr[5] gives you "T | undefined",
+    //   forcing you to handle the case where index 5 doesn't exist. Essential
+    //   for a scanner that indexes into AST children constantly.
+    // - exactOptionalPropertyTypes: "optional" means absent, not "maybe undefined".
+    // - noImplicitOverride / noFallthroughCasesInSwitch: catch classic slips.
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    // Emit .d.ts type declarations and source maps. Source maps mean that when
+    // the compiled JS throws an error, the stack trace points at the .ts line
+    // you actually wrote instead of the generated one.
+    "declaration": true,
+    "sourceMap": true,
+
+    // Interop + hygiene.
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules", "dist", "tests/fixtures"]
+}

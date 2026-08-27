@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NS-1 SecureScan</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2.5 28 9v14L16 29.5 4 23V9z' fill='none' stroke='%238d4cf8' stroke-width='2'/%3E%3Cpath d='M11 21V11l10 10V11' fill='none' stroke='%238d4cf8' stroke-width='2.4'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+/* ---------------------------------------------------------------------------
+   NS-1 palette. One strict rule, inherited from the brand spec:
+   --brand appears ONLY on the logo mark and the brand name.
+   Never on a button, a border, a badge or an active state.
+   Risk is always crimson / amber / emerald, never purple.
+--------------------------------------------------------------------------- */
+:root {
+  --canvas: #262626;
+  --panel: #2c2c2c;
+  --deep: #212121;
+  --line: #3a3a38;
+  --line-soft: #333331;
+  --text: #e9e9e5;
+  --muted: #98988f;
+  /* was #6e6e67 - 2.72:1 on panel, under the 4.5 floor everywhere it was used.
+     Hue and saturation unchanged; only lightness lifted until it cleared. */
+  --faint: #93938c;
+
+  /* ------------------------------------------------------------------ *
+   * Two crimsons, and the split is deliberate.
+   *
+   * #e6274a measures 3.16:1 against the panel. That clears the 3.0 bar
+   * for a GRAPHICAL element - an arc, a rule, a gutter dot - and misses
+   * the 4.5 bar for TEXT. The word CRITICAL is the most consequential
+   * text this tool prints, so it cannot be the one thing you squint at.
+   *
+   * So the saturated red keeps every job where it is a shape, and text
+   * gets a lifted variant that clears 4.6:1. Same hue (349deg), same identity.
+   * ------------------------------------------------------------------ */
+  --crimson: #e6274a;      /* arcs, borders, gutter marks - graphics only */
+  --crimson-ink: #ee6981;  /* any crimson that is READ                    */
+
+  --amber: #f2b310;        /* 7.47:1 - clears as text unchanged           */
+  --emerald: #16c97c;      /* 6.44:1 - clears as text unchanged           */
+  /* was #792cf7 - 2.34:1, under even the 3.0 large-text bar. */
+  --brand: #8d4cf8;
+
+  /* Interaction states. These were raw hex scattered through the file,
+     which meant a hover colour could drift from one component to the next
+     with nothing to catch it. */
+  --hover: #333331;
+  --selected: #37373a;
+  --bg-red: #3a2a2c;
+  --bg-amber: #33301c;
+  --bg-green: #23301f;
+
+  --focus: #f2b310;
+
+  /* A severity ramp, once, so the composition strip and its key cannot drift
+     apart and no component invents its own orange. */
+  --sev-critical: #e6274a;
+  --sev-high:     #e8734f;
+  --sev-medium:   #f2b310;
+  --sev-low:      #b6c04a;
+  --sev-info:     #93938c;
+
+  --display: 'Space Grotesk', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --grid: 34px;
+}
+
+/* ---------------------------------------------------------------------------
+   Keyboard reachability.
+
+   The deck was mouse-only: the file tree, the finding rows and every flow hop
+   were <div>s with click handlers, no tabindex, no key handling, and no focus
+   style anywhere in the stylesheet. Tab did nothing. For a tool whose whole
+   value is letting someone WALK a data-flow path, that is not a rough edge.
+--------------------------------------------------------------------------- */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+/* Only the visible ring is removed for pointer users - never the focus state
+   itself, and never for keyboard users. */
+:focus:not(:focus-visible) { outline: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+* { box-sizing: border-box; }
+/* Read aloud, never drawn. Used where colour or position carries the meaning. */
+.sr {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+html, body { margin: 0; padding: 0; }
+
+body {
+  background-color: var(--canvas);
+  background-image:
+    linear-gradient(to right, var(--line-soft) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--line-soft) 1px, transparent 1px);
+  background-size: var(--grid) var(--grid);
+  color: var(--text);
+  font-family: var(--display);
+  font-size: 15px;
+  line-height: 1.55;
+  min-height: 100vh;
+}
+
+.shell { max-width: 1180px; margin: 0 auto; padding: 0 24px 96px; }
+
+/* ------------------------------- header --------------------------------- */
+header {
+  display: flex; align-items: center; gap: 14px;
+  padding: 26px 0 22px; border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.logo { width: 30px; height: 30px; flex: none; }
+.brand-name {
+  font-weight: 700; font-size: 19px; letter-spacing: -0.01em;
+  color: var(--brand);            /* the ONLY other permitted use of --brand */
+}
+.version { font-family: var(--mono); font-size: 12px; color: var(--faint); }
+.phase-chip {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--canvas); background: var(--amber);
+  padding: 3px 9px; border-radius: 3px; font-weight: 600;
+}
+.tagline { margin-left: auto; color: var(--muted); font-size: 13px; }
+
+/* ------------------------------- intake --------------------------------- */
+#intake { padding: 56px 0 24px; }
+.drop {
+  border: 1.5px dashed var(--line); border-radius: 8px; background: var(--deep);
+  padding: 52px 32px; text-align: center; transition: border-color .15s, background .15s;
+}
+.drop.hot { border-color: var(--emerald); background: #23271f; }
+.drop h1 { font-size: 26px; margin: 0 0 10px; letter-spacing: -0.02em; }
+.drop p { color: var(--muted); margin: 0 auto 26px; max-width: 58ch; }
+.actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+
+button {
+  font-family: var(--display); font-size: 14px; font-weight: 500;
+  padding: 10px 18px; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  transition: border-color .15s, background .15s;
+}
+button:hover { border-color: var(--muted); background: #343432; }
+/* The deck's controls are buttons for keyboard reasons, not chrome reasons.
+   They opt out of the chip styling above and keep their own appearance. */
+.tree .file:hover, .row-head:hover, .hop:hover { border-color: transparent; }
+.row-head:hover { background: none; }
+button.primary { background: var(--text); color: var(--canvas); border-color: var(--text); }
+button.primary:hover { background: #fff; }
+button[aria-pressed='true'] { border-color: var(--text); background: var(--selected); }
+input[type='file'] { display: none; }
+
+/* ------------------------------ progress -------------------------------- */
+#progress { padding: 40px 0; display: none; }
+.bar { height: 4px; background: var(--deep); border-radius: 2px; overflow: hidden; }
+.bar span { display: block; height: 100%; width: 0; background: var(--emerald); transition: width .12s linear; }
+.progress-label { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-top: 10px; }
+
+/* ------------------------------- results -------------------------------- */
+#results { display: none; padding-top: 30px; }
+
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 16px 18px; }
+.tile .n { font-family: var(--mono); font-size: 30px; font-weight: 600; line-height: 1.1; }
+.tile .k { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.tile .sub { font-size: 12px; color: var(--faint); margin-top: 8px; }
+/* Namespaced on purpose. These were `.tile.flow` and `.tile.sig`, and the bare
+   `.flow` also names the flow-path container further down - which sets
+   `padding-left: 0` and a top margin. So the flow-verified tile silently lost
+   its left padding and sat 6px lower than its three neighbours: the number
+   pressed against the edge and the row stopped lining up. A modifier that is a
+   single common word will eventually collide with a component of the same name. */
+.tile-verified .n { color: var(--emerald); }
+.tile-signature .n { color: var(--amber); }
+
+.section-title {
+  font-size: 12px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--faint); margin: 34px 0 12px; font-family: var(--mono);
+}
+
+.filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.filters .spacer { margin-left: auto; }
+.filters button { padding: 6px 12px; font-size: 13px; }
+
+/* ------------------------------ findings -------------------------------- */
+.finding {
+  background: var(--panel); border: 1px solid var(--line); border-left-width: 3px;
+  border-radius: 6px; margin-bottom: 10px; overflow: hidden;
+}
+.finding[data-sev='critical'], .finding[data-sev='high'] { border-left-color: var(--crimson); }
+.finding[data-sev='medium'] { border-left-color: var(--amber); }
+.finding[data-sev='low'], .finding[data-sev='info'] { border-left-color: var(--emerald); }
+
+.finding > summary {
+  list-style: none; cursor: pointer; padding: 13px 16px;
+  display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
+}
+.finding > summary::-webkit-details-marker { display: none; }
+.finding > summary:hover { background: #313131; }
+
+.sev {
+  font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; flex: none; min-width: 62px;
+}
+.sev.critical, .sev.high { color: var(--crimson-ink); }
+.sev.medium { color: var(--amber); }
+.sev.low, .sev.info { color: var(--emerald); }
+
+.where { font-family: var(--mono); font-size: 12px; color: var(--muted); flex: none; }
+.msg { flex: 1 1 320px; font-size: 14px; }
+
+.badge {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .04em;
+  padding: 2px 7px; border-radius: 3px; border: 1px solid var(--line); color: var(--muted);
+  flex: none; text-transform: uppercase;
+}
+.badge.flow { color: var(--emerald); border-color: #1d5c40; background: #1b2620; }
+.badge.sig { color: var(--amber); border-color: #6b5316; background: #272219; }
+/* Not an error, not a reassurance: a named weak link in an otherwise good path. */
+.badge.assumed { color: var(--amber); border-color: #6b5316; background: transparent; }
+
+.detail { padding: 4px 16px 18px 16px; border-top: 1px solid var(--line-soft); }
+.detail dl { display: grid; grid-template-columns: 76px 1fr; gap: 6px 14px; margin: 14px 0 0; }
+.detail dt {
+  font-family: var(--mono); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--faint); padding-top: 2px;
+}
+.detail dd { margin: 0; font-size: 13.5px; color: #d5d5cf; }
+.detail dd.gap { color: var(--muted); }
+code, .code {
+  font-family: var(--mono); font-size: 12.5px; background: var(--deep);
+  border: 1px solid var(--line-soft); border-radius: 4px; padding: 8px 10px;
+  display: block; overflow-x: auto; white-space: pre; color: #cfcfc8;
+}
+
+/* -------------------------------- flow ---------------------------------- */
+.flow { margin-top: 6px; border-left: 1px solid var(--line); padding-left: 0; }
+.hop { display: grid; grid-template-columns: 14px 150px 92px 1fr; gap: 10px; align-items: baseline; padding: 5px 0 5px 12px; }
+.hop .pip { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.hop .loc { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.hop .kind { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+.hop[data-kind='source'] .kind { color: var(--crimson-ink); }
+.hop[data-kind='sink'] .kind { color: var(--crimson-ink); }
+.hop[data-kind='sanitizer'] .kind { color: var(--emerald); }
+.hop[data-kind='propagation'] .kind { color: var(--faint); }
+.hop .what { font-size: 13px; color: #cdcdc6; }
+
+/* -------------------------------- gauges --------------------------------
+ * COMPONENT TOKENS. Three layers, per the design-system convention: the
+ * primitives are the palette at the top of this file, the semantic layer names
+ * what a colour MEANS here, and the component layer below names what it DOES.
+ * Nothing in the gauge rules reaches past this block for a raw value.
+ * --------------------------------------------------------------------- */
+.gauges {
+  /* semantic: the three things this panel measures */
+  --risk-proven: var(--crimson);
+  --risk-suspected: var(--amber);
+  --reach-measured: var(--emerald);
+
+  /* component */
+  --gauge-arc-w: 13px;
+  --gauge-track: var(--deep);
+  --gauge-face: var(--panel);
+  --gauge-edge: var(--line);
+  --gauge-pad: 16px;
+  --gauge-num: var(--text);
+  --gauge-scale-ink: var(--faint);
+  --gauge-seg-h: 5px;
+  --gauge-seg-gap: 2px;
+
+  margin-bottom: 14px;
+}
+.gauge-row {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;
+  align-items: stretch;   /* equal heights, whatever the prose length */
+}
+/* Single column. The old two-column card squeezed the description into a
+   ~180px gutter, which turned every sentence into six ragged lines. */
+.gauge {
+  margin: 0; display: flex; flex-direction: column; min-width: 0;
+  background: var(--gauge-face); border: 1px solid var(--gauge-edge);
+  border-radius: 8px; padding: var(--gauge-pad);
+}
+.gauge svg { width: 100%; max-width: 260px; margin: 0 auto; display: block; }
+
+.g-track { fill: none; stroke: var(--gauge-track); stroke-width: var(--gauge-arc-w); stroke-linecap: round; }
+.g-val { fill: none; stroke-width: var(--gauge-arc-w); stroke-linecap: round; }
+.g-num { font-family: var(--mono); font-size: 34px; font-weight: 600; fill: var(--gauge-num); }
+.g-max { font-family: var(--mono); font-size: 11px; fill: var(--gauge-scale-ink); }
+/* The two ends of the scale, printed. Without them a 4%-full arc looks like a
+   rendering fault; with them it reads as "near the bottom of 500", which is
+   what it is - and across the corpus that is where these readings live. */
+.g-end { font-family: var(--mono); font-size: 11px; fill: var(--gauge-scale-ink); }
+
+/* What the total is made of. This is the part a needle cannot show, and on
+   real code it is most of the information. */
+.g-seg-head {
+  margin: 14px 0 5px; font-family: var(--mono); font-size: 11px;
+  letter-spacing: .07em; text-transform: uppercase; color: var(--gauge-scale-ink);
+}
+.g-seg {
+  display: flex; gap: var(--gauge-seg-gap); margin: 0;
+  height: var(--gauge-seg-h); border-radius: 3px; overflow: hidden;
+}
+.g-seg i { display: block; height: 100%; border-radius: 2px; min-width: 3px; }
+.g-seg i[data-sev='critical'] { background: var(--sev-critical); }
+.g-seg i[data-sev='high']     { background: var(--sev-high); }
+.g-seg i[data-sev='medium']   { background: var(--sev-medium); }
+.g-seg i[data-sev='low']      { background: var(--sev-low); }
+.g-seg i[data-sev='info']     { background: var(--sev-info); }
+.g-legend {
+  display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 7px;
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+}
+.g-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.g-legend b { width: 7px; height: 7px; border-radius: 2px; flex: none; }
+.g-none {
+  margin-top: 12px; font-family: var(--mono); font-size: 11px;
+  color: var(--gauge-scale-ink); border-top: 1px solid var(--line-soft); padding-top: 9px;
+}
+
+/* Colour names the DIAL, never the reading. A crimson arc means "this is the
+   proven-exposure dial", not "this number is alarming" - so an empty crimson
+   dial reads as zero rather than as danger. */
+.gauge[data-id='verified-exposure']  .g-val { stroke: var(--risk-proven); }
+.gauge[data-id='unverified-surface'] .g-val { stroke: var(--risk-suspected); }
+.gauge[data-id='analysis-coverage']  .g-val { stroke: var(--reach-measured); }
+
+.gauge figcaption {
+  padding-top: 14px; min-width: 0; display: flex; flex-direction: column; flex: 1 1 auto;
+}
+/* Pushes the disclosure to the bottom edge of every card, so three cards of
+   different prose lengths still line up along their last row. */
+.gauge .g-work { margin-top: auto; padding-top: 12px; }
+.g-label {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--text); display: block;
+}
+.g-pin {
+  display: inline-block; margin-top: 4px; font-family: var(--mono); font-size: 11px;
+  color: var(--amber); border: 1px solid #6b5316; background: #272219;
+  border-radius: 3px; padding: 1px 6px;
+}
+.g-mean { margin: 13px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--muted); }
+.g-work summary {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .05em;
+  color: var(--faint); cursor: pointer; text-transform: uppercase;
+}
+.g-work summary:hover { color: var(--text); }
+.g-work ul { margin: 7px 0 0; padding-left: 16px; }
+.g-work li { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+
+.blindspots {
+  margin-top: 10px; padding: 10px 14px; background: var(--deep);
+  border: 1px solid var(--line); border-radius: 7px;
+  display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: baseline;
+}
+.bs-head {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--faint);
+}
+.bs { font-size: 12px; color: var(--muted); }
+.bs b { color: var(--amber); font-family: var(--mono); font-weight: 600; }
+
+@media (max-width: 1150px) {
+  .gauge-row { grid-template-columns: 1fr; }
+}
+
+/* Shown in place of the dials when nothing was analysed. */
+.noread {
+  background: var(--deep); border: 1px solid #6b5316; border-radius: 8px;
+  padding: 18px 20px;
+}
+.noread-head {
+  margin: 0 0 6px; font-family: var(--mono); font-size: 12px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--amber); font-weight: 600;
+}
+.noread p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; max-width: 78ch; }
+
+/* ----------------------------- analysis deck ---------------------------- */
+.deck {
+  display: grid; grid-template-columns: 232px minmax(0, 1fr) 400px; gap: 12px;
+  height: 640px; margin-bottom: 8px;
+}
+.pane {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
+  display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+}
+.pane > header {
+  padding: 9px 12px; border-bottom: 1px solid var(--line-soft); border-top: 0;
+  font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--faint); flex: none; gap: 8px;
+}
+.pane > .body { overflow: auto; flex: 1 1 auto; }
+
+/* file tree */
+.tree { padding: 6px 0 12px; }
+.tree .dir { font-size: 12.5px; color: var(--faint); padding: 3px 12px; font-family: var(--mono); }
+.tree .file {
+  display: flex; align-items: center; gap: 6px;
+  /* Was 3px of padding - a 22px target, half the 44px guidance. Kept dense
+     for a desktop dashboard, raised to the full target on touch input below. */
+  padding: 7px 12px 7px 0; min-height: 34px; width: 100%; text-align: left;
+  font-family: var(--mono); font-size: 12px; color: var(--muted); cursor: pointer;
+  border: 0; border-left: 2px solid transparent; border-radius: 0;
+  background: none; transition: background .12s, color .12s;
+}
+.tree .file:hover { background: var(--hover); color: var(--text); }
+.tree .file[aria-current='true'] { background: var(--selected); color: var(--text); border-left-color: var(--text); }
+@media (pointer: coarse) {
+  .tree .file { min-height: 44px; }
+}
+.tree .file .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+.tree .file .count {
+  font-size: 11px; padding: 1px 6px; border-radius: 8px; flex: none;
+  display: inline-flex; align-items: center; gap: 3px;
+  background: var(--bg-red); color: var(--crimson-ink);
+}
+.tree .file .count.ok { background: var(--bg-green); color: var(--emerald); }
+.tree .file .count.warn { background: var(--bg-amber); color: var(--amber); font-weight: 700; }
+/* The glyph repeats the gutter legend, so the badge never depends on hue alone. */
+.tree .file .count i { font-style: normal; font-size: 11px; line-height: 1; }
+
+.tree .file .count.via { background: var(--bg-amber); color: var(--amber); }
+.tree .file.broken .name { color: var(--amber); }
+.tree .file .count + .count { margin-left: -2px; }
+.unparsed {
+  margin: 10px 12px 4px; padding: 9px 11px; border-radius: 5px;
+  border: 1px solid #6b5316; background: #272219; color: #e5d2a2; font-size: 12.5px;
+}
+.unparsed b { color: var(--amber); }
+
+/* code pane */
+.codehead { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.codehead .path { color: var(--muted); text-transform: none; letter-spacing: 0; font-size: 12px; }
+.legend { margin-left: auto; display: flex; gap: 12px; text-transform: none; letter-spacing: 0; }
+.legend span { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--faint); }
+.legend .m { font-style: normal; font-size: 11px; }
+.legend .m.hit { color: var(--crimson); }
+.legend .m.via { color: var(--amber); }
+.legend .m.guard { color: var(--emerald); font-size: 11px; }
+.codelines { font-family: var(--mono); font-size: 12.5px; line-height: 1.62; padding: 8px 0 40px; }
+.cl { display: grid; grid-template-columns: 48px 18px minmax(0, 1fr); }
+.cl .ln { color: #55554f; text-align: right; padding-right: 9px; user-select: none; }
+.cl .mk { text-align: center; color: transparent; }
+/* pre-WRAP, not pre: a long line folds under itself instead of running off the
+   edge. In a triage pane the end of the line is often the whole point - it is
+   where the concatenation happens - so it must never be the part that is cut. */
+.cl .tx {
+  white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 14px; color: #cbcbc4;
+}
+.cl.hit { background: rgba(230, 39, 74, .10); }
+.cl.hit .mk { color: var(--crimson); }
+.cl.hit .ln { color: var(--crimson-ink); }
+.cl.guard .mk { color: var(--emerald); }
+.cl.guard { background: rgba(22, 201, 124, .07); }
+/* A hop on a flow whose finding is filed in another file. Deliberately not
+   green and deliberately not red: no finding is reported here, but attacker
+   data demonstrably moves through this line. */
+.cl.via { background: rgba(242, 179, 16, .07); }
+.cl.via .mk { color: var(--amber); font-size: 11px; }
+.cl.via .ln { color: #9a8340; }
+.cl.focus { background: rgba(242, 179, 16, .16); box-shadow: inset 2px 0 0 var(--amber); }
+.placeholder { color: var(--faint); padding: 28px 16px; font-size: 13px; }
+
+/* ledger */
+.ledger { padding: 6px; }
+.row {
+  border: 1px solid transparent; border-left: 2px solid var(--line); border-radius: 5px;
+  margin-bottom: 4px; transition: background .12s;
+}
+.row:hover { background: var(--hover); }
+.row:has(.row-head[aria-expanded='true']) { background: var(--selected); border-color: var(--line); }
+.row-head {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  background: none; border: 0; border-radius: 4px;
+  padding: 9px 10px; min-height: 44px; font-family: inherit; color: inherit;
+}
+.row[data-sev='critical'], .row[data-sev='high'] { border-left-color: var(--crimson); }
+.row[data-sev='medium'] { border-left-color: var(--amber); }
+.row[data-sev='low'], .row[data-sev='info'] { border-left-color: var(--emerald); }
+.row .top { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.row .rmsg { font-size: 13px; margin-top: 3px; color: #dbdbd4; }
+.row .rwhere { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.row .detail { padding: 0; border: 0; }
+.row .detail dl { grid-template-columns: 58px minmax(0, 1fr); }
+.hop {
+  cursor: pointer; border-radius: 4px; width: 100%; text-align: left;
+  background: none; border: 0; color: inherit; font-family: inherit;
+  transition: background .12s;
+}
+.hop:hover { background: var(--selected); }
+.hop .loc { color: var(--muted); text-decoration: underline dotted; text-underline-offset: 2px; }
+
+/* A hop inside the narrow ledger column restacks: location and kind share the
+   first line, the description gets the full width underneath. The wide
+   four-column form needs ~290px of fixed track and would otherwise push the
+   whole ledger sideways - which is exactly what it did. */
+.ledger .hop {
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  gap: 1px 8px; align-items: baseline; padding: 6px 8px 6px 12px;
+}
+.ledger .hop .pip { grid-column: 1; grid-row: 1 / span 2; }
+.ledger .hop .loc { grid-column: 2; grid-row: 1; white-space: nowrap; }
+.ledger .hop .kind { grid-column: 3; grid-row: 1; }
+.ledger .hop .what { grid-column: 2 / span 2; grid-row: 2; }
+/* Backticked identifiers are one long unbreakable token; let them break. */
+.ledger .hop .what, .row .rmsg, .row .detail dd { overflow-wrap: anywhere; }
+/* Vertical scrolling only - nothing in this column is meant to run off sideways. */
+.pane > .body.ledger { overflow-x: hidden; }
+
+@media (max-width: 1150px) {
+  .deck { grid-template-columns: 1fr; height: auto; }
+  .pane > .body { max-height: 380px; }
+}
+
+/* -------------------------------- gaps ---------------------------------- */
+.gaps { background: var(--deep); border: 1px solid var(--line); border-radius: 7px; padding: 20px 22px; }
+.gaps h3 { margin: 0 0 4px; font-size: 15px; }
+.gaps .why { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+.gaps ul { margin: 0 0 18px; padding-left: 18px; }
+.gaps li { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+.gaps li b { color: var(--text); font-weight: 500; }
+.uncovered { list-style: none; margin: 0 0 20px; padding: 0; }
+.uncovered li {
+  padding: 8px 0; border-bottom: 1px solid var(--line-soft); font-size: 13px; color: var(--text);
+}
+.uncovered b {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .05em;
+  margin-right: 8px; font-weight: 600; padding: 1px 6px; border-radius: 3px;
+}
+.uncovered li[data-state='none'] b { color: var(--crimson-ink); border: 1px solid #5d2b34; }
+.uncovered li[data-state='partial'] b { color: var(--amber); border: 1px solid #6b5316; }
+.uncovered strong { font-family: var(--mono); font-size: 12px; font-weight: 500; color: var(--text); }
+.uncovered .does { color: var(--emerald); }
+.uncovered span { display: block; color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+.uncovered em { display: block; color: var(--faint); font-size: 12.5px; font-style: normal; margin-top: 3px; }
+
+.depths { list-style: none; margin: 0 0 14px; padding: 0; }
+.depth {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 6px 0; border-bottom: 1px solid var(--line-soft); font-size: 13px;
+}
+.depth b { font-family: var(--mono); font-size: 12px; min-width: 92px; color: var(--text); font-weight: 500; }
+.depth.deep span { color: var(--emerald); }
+.depth.shallow span { color: var(--amber); }
+.depth em { margin-left: auto; font-style: normal; color: var(--faint); font-size: 12px; }
+
+.gaps .grouphead {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--faint); margin: 0 0 8px;
+}
+.empty { color: var(--muted); padding: 26px; text-align: center; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; }
+.err { color: var(--crimson-ink); font-family: var(--mono); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header>
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M16 2.5 28 9v14L16 29.5 4 23V9z" fill="none" stroke="#792cf7" stroke-width="2" stroke-linejoin="round"/>
+      <path d="M11 21V11l10 10V11" fill="none" stroke="#792cf7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span class="brand-name">NS-1 SecureScan</span>
+    <span class="version" id="version">loading engine…</span>
+    <span class="phase-chip" id="phase">·</span>
+    <span class="tagline">every finding says how sure it is</span>
+  </header>
+
+  <section id="intake">
+    <div class="drop" id="drop">
+      <h1>Scan a folder of source code</h1>
+      <p>
+        Nothing is uploaded. The whole engine — parser, rules and data-flow
+        tracer — runs inside this tab, on the same compiled code the CLI uses.
+      </p>
+      <div class="actions">
+        <button class="primary" id="pick">Choose a folder</button>
+        <button id="pickFiles">Choose files</button>
+        <button id="sample">Load a sample</button>
+      </div>
+      <p style="margin-top:22px;font-size:12.5px;color:var(--faint)">
+        JavaScript · TypeScript · Python · Java · Go
+      </p>
+    </div>
+    <input type="file" id="dirInput" webkitdirectory directory multiple />
+    <input type="file" id="fileInput" multiple />
+  </section>
+
+  <section id="progress">
+    <div class="bar"><span id="barFill"></span></div>
+    <div class="progress-label" id="progressLabel">starting…</div>
+  </section>
+
+  <section id="results">
+    <div class="gauges" id="gauges"></div>
+    <div class="summary" id="summary"></div>
+
+    <div class="section-title">Findings</div>
+    <div class="filters" id="filters">
+      <button data-filter="all" aria-pressed="true">All</button>
+      <button data-filter="flow-verified" aria-pressed="false">Flow-verified</button>
+      <button data-filter="signature-based" aria-pressed="false">Signature-based</button>
+      <span class="spacer"></span>
+      <button id="rescan">Scan something else</button>
+      <button id="download">Download JSON</button>
+    </div>
+
+    <div class="deck">
+      <section class="pane">
+        <header>Files</header>
+        <div class="body"><div class="tree" id="tree"></div></div>
+      </section>
+
+      <section class="pane">
+        <header class="codehead">
+          <span id="codePath" class="path">select a file, or click a finding</span>
+          <span class="legend">
+            <span><i class="m hit">&#9679;</i>finding</span>
+            <span><i class="m via">&#9670;</i>on a path</span>
+            <span><i class="m guard">&#10003;</i>proved clean</span>
+          </span>
+        </header>
+        <p class="sr" id="codeStatus" role="status" aria-live="polite"></p>
+        <div class="body" id="codeBody"><div class="placeholder">
+          Red gutter marks a finding. A green check means the tracer followed
+          attacker data to that line and proved a sanitiser covers it &mdash;
+          checked, not merely unflagged.
+        </div></div>
+      </section>
+
+      <section class="pane">
+        <header>Findings <span id="ledgerCount" style="color:var(--muted)"></span></header>
+        <div class="body ledger" id="ledger"></div>
+      </section>
+    </div>
+
+    <div class="section-title">What this scan did NOT check</div>
+    <div class="gaps" id="gaps"></div>
+  </section>
+
+</div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
