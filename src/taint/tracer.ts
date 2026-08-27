@@ -153,6 +153,22 @@ const UNWRAP_NODES = new Set([
   'non_null_expression',
   'type_assertion',
   'expression_statement',
+  /*
+   * `(String) map.get("keyB")` - a Java cast.
+   *
+   * TypeScript's three ways of saying the same thing were all here from the
+   * start; Java's was not, and the omission cost more than every cross-file
+   * idea tried this session put together. A cast changes what the compiler
+   * calls a value. It does not change the value, so it cannot change whether
+   * an attacker chose it.
+   *
+   * Found by a ten-line fixture that put a tainted value into a HashMap three
+   * different ways. Two came out traced; the one with a cast in front did not.
+   * Written before touching the engine, on purpose - the hypothesis it killed
+   * ("the container machinery is broken") was the third wrong guess in a row
+   * that a benchmark run alone would not have corrected.
+   */
+  'cast_expression', // Java, C-style casts
 ]);
 
 const MEMBER_NODES = new Set([
@@ -650,8 +666,22 @@ export function traceFile(
     const expression = text(node);
 
     if (UNWRAP_NODES.has(node.type)) {
-      const inner = node.namedChildren.find((c): c is Node => c !== null);
-      return evaluate(inner ?? null, scope, depth + 1);
+      /*
+       * Take the VALUE, not the first named child.
+       *
+       * Every wrapper here used to be unwrapped by grabbing child 0, which is
+       * right for `(x)` and `await x` and wrong for a Java cast: the first
+       * named child of `(String) map.get("k")` is the type name `String`, so
+       * the tracer solemnly evaluated the word "String" and reported the value
+       * clean. `value` is the field the Java grammar gives the expression; the
+       * last named child is the fallback for wrappers that name no field.
+       */
+      const inner =
+        node.childForFieldName('value') ??
+        (node.type === 'cast_expression'
+          ? node.namedChildren.filter((c): c is Node => c !== null).pop() ?? null
+          : node.namedChildren.find((c): c is Node => c !== null) ?? null);
+      return evaluate(inner, scope, depth + 1);
     }
 
     // Go writes `a, b := f(), g()`. A single-valued list is just the value.
