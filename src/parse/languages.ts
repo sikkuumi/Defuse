@@ -22,7 +22,7 @@
  *      language expansion is mostly unlocking files we already have on disk.
  */
 
-/** The languages NS-1 supports. */
+/** The languages Defuse supports. */
 export type LanguageId =
   | 'javascript'
   | 'typescript'

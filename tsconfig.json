@@ -1,6 +1,6 @@
 {
   // ---------------------------------------------------------------------------
-  // TypeScript compiler settings for NS-1 SecureScan.
+  // TypeScript compiler settings for Defuse.
   // Every option below is here for a reason; the comments say what that reason is.
   // ---------------------------------------------------------------------------
   "compilerOptions": {

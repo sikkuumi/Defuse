@@ -70,7 +70,7 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
   /* ---------------- header ---------------- */
   out.push('');
   out.push(
-    `${color.bold('NS-1 SecureScan')} ${color.dim(`v${result.coverage.engine.version}`)}  ` +
+    `${color.bold('Defuse')} ${color.dim(`v${result.coverage.engine.version}`)}  ` +
       color.bgYellow(color.bold(` ${result.coverage.engine.analysisLabel} `)),
   );
   out.push(color.dim(`  target: ${result.target}`));
@@ -401,7 +401,7 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
       color.dim(
         `  memory: project larger than the ${(result.treeMemory.budgetBytes / 1048576).toFixed(0)}MB ` +
           `tree budget, so ${result.treeMemory.reparses} file(s) were parsed more than once. ` +
-          `Same answers, slower scan - raise NS1_TREE_BUDGET_MB to trade memory back for speed.`,
+          `Same answers, slower scan - raise DEFUSE_TREE_BUDGET_MB to trade memory back for speed.`,
       ),
     );
   }
@@ -459,7 +459,7 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
   if (result.suppressions.length > 0) {
     out.push(
       color.dim(
-        `  ${result.suppressions.length} finding(s) suppressed by securescan:ignore comments` +
+        `  ${result.suppressions.length} finding(s) suppressed by defuse:ignore comments` +
           (options.showSuppressed ? ':' : ' (use --show-suppressed to list them)'),
       ),
     );

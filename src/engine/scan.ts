@@ -91,7 +91,7 @@ export async function scan(target: string, options: ScanOptions = {}): Promise<S
   }
 
   /**
-   * NS1_TREE_BUDGET_MB - how much WebAssembly heap the scan may hold in syntax
+   * DEFUSE_TREE_BUDGET_MB - how much WebAssembly heap the scan may hold in syntax
    * trees before it starts freeing the least recently used one.
    *
    * An environment variable rather than a flag, deliberately. It exists to be
@@ -104,7 +104,7 @@ export async function scan(target: string, options: ScanOptions = {}): Promise<S
    * Anyone who genuinely needs it in production can set it, and the value used
    * is printed in the report either way.
    */
-  const budgetMb = Number(process.env['NS1_TREE_BUDGET_MB']);
+  const budgetMb = Number(process.env['DEFUSE_TREE_BUDGET_MB']);
   const treeBudget =
     Number.isFinite(budgetMb) && budgetMb > 0 ? Math.round(budgetMb * 1024 * 1024) : undefined;
 

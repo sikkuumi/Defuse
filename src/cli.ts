@@ -7,10 +7,10 @@
  * both of them the parser.
  *
  * Commands:
- *   secureScan scan <path>     scan a file or directory
- *   secureScan ast <file>      print the syntax tree (learning / debugging)
- *   secureScan rules           list the rules and what they do NOT cover
- *   secureScan doctor          check every grammar loads and every query compiles
+ *   defuse scan <path>     scan a file or directory
+ *   defuse ast <file>      print the syntax tree (learning / debugging)
+ *   defuse rules           list the rules and what they do NOT cover
+ *   defuse doctor          check every grammar loads and every query compiles
  *
  * EXIT CODES matter for CI:
  *   0  nothing at or above the --fail-on threshold
@@ -124,7 +124,7 @@ function parseSeverity(value: string | undefined, fallback: Severity): Severity 
  * ability to enable, disable or reconfigure a RULE. A config that can turn
  * rules off invites a repo to quietly switch off the ones it fails, and the
  * finding disappears with no record. Suppression already has an honest form -
- * `securescan:ignore <rule> - <reason>` on the line, which the report counts
+ * `defuse:ignore <rule> - <reason>` on the line, which the report counts
  * and lists.
  *
  * The command line always wins, so a person can override the file without
@@ -137,7 +137,7 @@ interface FileConfig {
   readonly minSeverity?: string;
 }
 
-const CONFIG_NAME = '.securescan.json';
+const CONFIG_NAME = '.defuse.json';
 
 function loadConfig(startDir: string): { config: FileConfig; path: string | null } {
   for (const dir of [startDir, process.cwd()]) {
@@ -163,15 +163,15 @@ function loadConfig(startDir: string): { config: FileConfig; path: string | null
 function printHelp(): void {
   const b = color.bold;
   console.log(`
-${b('NS-1 SecureScan')} — honesty-first static application security testing
+${b('Defuse')} — honesty-first static application security testing
 ${color.dim(`Signature matching plus data-flow verification, in all ${LANGUAGES.length} languages.`)}
 ${color.dim('Flows are followed across functions and, where imports resolve, across files.')}
 
 ${b('USAGE')}
-  secureScan scan <path> [options]
-  secureScan ast <file> [options]
-  secureScan rules [--explain <rule-id>]
-  secureScan doctor
+  defuse scan <path> [options]
+  defuse ast <file> [options]
+  defuse rules [--explain <rule-id>]
+  defuse doctor
 
 ${b('SCAN OPTIONS')}
   --json                    machine-readable output (superset of the terminal report)
@@ -188,13 +188,13 @@ ${b('SCAN OPTIONS')}
   --exclude=<globs>         comma-separated paths to skip. A bare word matches any
                             directory of that name; * and ** work as usual.
                             e.g. --exclude=tests,vendor,**/*.min.js
-  --no-config               ignore .securescan.json
-  --show-suppressed         list findings silenced by securescan:ignore comments
+  --no-config               ignore .defuse.json
+  --show-suppressed         list findings silenced by defuse:ignore comments
   --coverage-matrix         print the full rule x language support table
   --no-cross-file           do not resolve imports; analyse each file alone.
                             Faster, at the cost of every finding that crosses a
                             module. It does NOT save memory - that was measured
-                            and was not true. Set NS1_TREE_BUDGET_MB to trade
+                            and was not true. Set DEFUSE_TREE_BUDGET_MB to trade
                             memory for speed instead.
   --ascii                   plain ASCII output - no box-drawing characters.
                             Chosen automatically when redirecting on Windows.
@@ -206,7 +206,7 @@ ${b('AST OPTIONS')}
   --max-lines=<n>           truncate output (default 400)
 
 ${b('ENVIRONMENT')}
-  NS1_TREE_BUDGET_MB        how much memory syntax trees may hold before the
+  DEFUSE_TREE_BUDGET_MB        how much memory syntax trees may hold before the
                             least recently used one is freed and the file parsed
                             again on demand. Default 1024. Lower it to finish on
                             a small machine; raise it to go faster. The findings
@@ -235,7 +235,7 @@ ${b('LICENCE')}
 async function commandScan(args: Args): Promise<number> {
   const target = args.positional[0];
   if (!target) {
-    console.error(color.red('error: scan needs a path.  usage: secureScan scan <path>'));
+    console.error(color.red('error: scan needs a path.  usage: defuse scan <path>'));
     return 2;
   }
   /* Extra paths used to be dropped in silence. `scan src ui docs` printed a
@@ -350,7 +350,7 @@ async function commandScan(args: Args): Promise<number> {
 async function commandAst(args: Args): Promise<number> {
   const target = args.positional[0];
   if (!target) {
-    console.error(color.red('error: ast needs a file.  usage: secureScan ast <file>'));
+    console.error(color.red('error: ast needs a file.  usage: defuse ast <file>'));
     return 2;
   }
 
@@ -442,7 +442,7 @@ function commandRules(args: Args): number {
  */
 async function commandDoctor(): Promise<number> {
   useNodeGrammars();
-  console.log(`\n${color.bold('NS-1 SecureScan self-check')}\n`);
+  console.log(`\n${color.bold('Defuse self-check')}\n`);
   let failures = 0;
 
   try {

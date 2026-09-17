@@ -101,7 +101,7 @@ try {
   if (packed === null) throw new Error('halt');
   const tarball = packed.trim().split('\n').pop();
 
-  workdir = mkdtempSync(join(tmpdir(), 'ns1-install-'));
+  workdir = mkdtempSync(join(tmpdir(), 'defuse-install-'));
   const sample = join(workdir, 'sample');
   mkdirSync(sample, { recursive: true });
 
@@ -118,8 +118,8 @@ try {
     throw new Error('halt');
   }
 
-  const installed = step('running the installed `securescan` binary', () =>
-    scan(['npx', 'securescan'], ['scan', './sample', '--json'], workdir));
+  const installed = step('running the installed `defuse` binary', () =>
+    scan(['npx', 'defuse'], ['scan', './sample', '--json'], workdir));
   if (installed === null) throw new Error('halt');
   const local = scan(
     ['node', join(root, 'dist/src/cli.js')],
@@ -162,7 +162,7 @@ try {
 } finally {
   if (workdir) rmSync(workdir, { recursive: true, force: true });
   for (const f of readdirSync(root)) {
-    if (/^ns1-securescan-.*\.tgz$/.test(f)) rmSync(join(root, f), { force: true });
+    if (/^defuse-.*\.tgz$/.test(f)) rmSync(join(root, f), { force: true });
   }
 }
 

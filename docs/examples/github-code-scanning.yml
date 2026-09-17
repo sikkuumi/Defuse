@@ -1,4 +1,4 @@
-# Run NS-1 SecureScan on every pull request and publish the results into
+# Run Defuse on every pull request and publish the results into
 # GitHub's Security tab.
 #
 # WHAT YOU WILL SEE, and why it looks different from other scanners:
@@ -27,7 +27,7 @@ permissions:
   security-events: write   # required to upload SARIF
 
 jobs:
-  securescan:
+  defuse:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,12 +42,12 @@ jobs:
       # `|| true` so a failing gate still uploads its results - a blocked merge
       # with no visible reason is a worse experience than a noisy one.
       - name: Scan
-        run: node dist/src/cli.js scan . --sarif --fail-on=critical > securescan.sarif || true
+        run: node dist/src/cli.js scan . --sarif --fail-on=critical > defuse.sarif || true
 
       - uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: securescan.sarif
-          category: ns1-securescan
+          sarif_file: defuse.sarif
+          category: defuse
 
       # Re-run for the exit code, now that the results are safely uploaded.
       - name: Enforce the gate

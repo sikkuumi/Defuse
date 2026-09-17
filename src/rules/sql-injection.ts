@@ -235,7 +235,7 @@ export const sqlInjectionRule: Rule = {
     if (assignment) {
       // The scope gate. Without it, assigning a large object literal to a
       // variable let every string inside it merge into one fake "query".
-      // This is the check that stopped NS-1 reporting its own rule files.
+      // This is the check that stopped Defuse reporting its own rule files.
       if (!isStringBuildingExpression(assignment.value, language)) return null;
       const built = analyzeStringExpression(assignment.value, language);
       if (!built.isDynamic) return null;

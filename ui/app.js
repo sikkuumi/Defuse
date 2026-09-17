@@ -783,7 +783,7 @@ $('download').addEventListener('click', () => {
   const blob = new Blob([JSON.stringify(lastResult, null, 2)], { type: 'application/json' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
-  link.download = 'ns1-findings.json';
+  link.download = 'defuse-findings.json';
   link.click();
   URL.revokeObjectURL(link.href);
 });

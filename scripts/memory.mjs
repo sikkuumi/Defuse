@@ -40,7 +40,11 @@ const sliceCount = Number(
   (process.argv.find((a) => a.startsWith('--slices=')) ?? '--slices=4').split('=')[1],
 );
 
-const EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.py', '.java', '.php', '.go']);
+// Derived rather than typed - this list was written before C and C++ existed
+// and silently measured nothing in them, which is how an instrument starts
+// lying about the thing it exists to measure.
+const { SCANNABLE_EXTENSIONS } = await import(new URL('../dist/src/parse/languages.js', import.meta.url));
+const EXTENSIONS = new Set(SCANNABLE_EXTENSIONS);
 
 /** Every scannable file under a directory, with its size. */
 function collect(dir, out = []) {
@@ -121,7 +125,7 @@ for (let slice = 1; slice <= sliceCount; slice++) {
   const bytes = subset.reduce((sum, f) => sum + f.bytes, 0);
 
   // Copy into a scratch tree so each slice is a self-contained scan target.
-  const work = mkdtempSync(join(tmpdir(), 'ns1-mem-'));
+  const work = mkdtempSync(join(tmpdir(), 'defuse-mem-'));
   for (const file of subset) {
     const destination = join(work, relative(target, file.path));
     mkdirSync(dirname(destination), { recursive: true });
@@ -178,9 +182,9 @@ const budget = 8 * 1024 * 1024 * 1024; // a typical 8GB laptop
 const headroom = budget - Math.max(baseline, 0);
 const ceiling = marginal > 0 ? headroom / marginal : Infinity;
 
-const treeBudgetMb = process.env.NS1_TREE_BUDGET_MB;
+const treeBudgetMb = process.env.DEFUSE_TREE_BUDGET_MB;
 console.log(
-  `\n  tree budget    : ${treeBudgetMb ? `${treeBudgetMb} MB (NS1_TREE_BUDGET_MB)` : 'default'}\n` +
+  `\n  tree budget    : ${treeBudgetMb ? `${treeBudgetMb} MB (DEFUSE_TREE_BUDGET_MB)` : 'default'}\n` +
     `  fixed cost     : about ${mb(Math.max(baseline, 0))} MB before any source is read\n` +
     `  marginal cost  : ${marginal.toFixed(1)}x each byte of source\n` +
     `  implied ceiling: about ${(ceiling / 1024 / 1024).toFixed(0)} MB of source on an 8 GB machine\n` +

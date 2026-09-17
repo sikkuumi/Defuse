@@ -1,5 +1,5 @@
 {
-  "name": "ns1-securescan",
+  "name": "defuse",
   "version": "0.5.0",
   "description": "A SAST scanner that labels every finding signature-based or flow-verified, and prints what it did not check.",
   "license": "AGPL-3.0-only",
@@ -7,8 +7,7 @@
   "author": "Farhaad",
   "type": "module",
   "bin": {
-    "securescan": "./dist/src/cli.js",
-    "secureScan": "./dist/src/cli.js"
+    "defuse": "./dist/src/cli.js"
   },
   "engines": {
     "node": ">=18"

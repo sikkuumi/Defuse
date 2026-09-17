@@ -1,4 +1,4 @@
-# NS-1 SecureScan
+# Defuse
 
 A static application security testing (SAST) tool that refuses to sound more
 certain than it is.
@@ -30,13 +30,13 @@ the product. The rules are table stakes; the labelling is the difference.
 **Run it without installing anything:**
 
 ```bash
-npx github:<your-github-user>/ns1-securescan scan ./src
+npx github:Sikkuumi/Defuse scan ./src
 ```
 
-> Not on the npm registry yet, so the install is straight from the repository —
-> substitute the account it lives under. This is stated rather than a
-> `npx ns1-securescan` line that does not resolve: a README whose very first
-> command fails is a worse first impression than one extra clause.
+> Installed straight from the repository rather than the npm registry, where the
+> name `defuse` is already taken by an unrelated package. Stated plainly rather
+> than printing an `npx defuse` line that would not resolve: a README whose very
+> first command fails is a worse first impression than one extra clause.
 
 That is the whole setup. The WASM grammars ship inside the package and are
 resolved from `node_modules`, so there is no toolchain to install, no compiler,
@@ -95,16 +95,14 @@ ever from a tree whose other instruments you have just run and believed.
 > node dist/src/cli.js ast .\tests\fixtures\vulnerable\sqli.js
 > ```
 
-Installed globally (`npm i -g github:<your-github-user>/ns1-securescan`), the command is `securescan`
-(`secureScan` also works — both names are declared, because a camelCase binary
-resolves on macOS and not on the Linux box your CI runs on):
+Installed globally (`npm i -g github:Sikkuumi/Defuse`), the command is `defuse`:
 
 ```bash
-securescan scan ./src
-securescan scan ./src --json > findings.json
-securescan scan ./src --sarif > results.sarif   # for GitHub code scanning
-securescan ast ./src/app.js                    # see the syntax tree
-securescan rules --explain sql-injection       # read the write-up for a rule
+defuse scan ./src
+defuse scan ./src --json > findings.json
+defuse scan ./src --sarif > results.sarif   # for GitHub code scanning
+defuse ast ./src/app.js                    # see the syntax tree
+defuse rules --explain sql-injection       # read the write-up for a rule
 ```
 
 ---
@@ -377,7 +375,7 @@ Text search cannot tell them apart. A parser already has: one is a
 `call_expression`, one is a `comment`, one is a `string`. Using the syntax tree
 means we inherit that accuracy for free.
 
-Run `secureScan ast <file>` on anything to see the tree for yourself.
+Run `defuse ast <file>` on anything to see the tree for yourself.
 
 ### Why a shape layer
 
@@ -433,7 +431,7 @@ Four words carry the whole design — **source**, **propagation**, **sanitiser**
 The part most tools get wrong is that **soap is job-specific**. `escapeHtml(x)`
 makes a value safe for a web page and does nothing whatsoever for a SQL query.
 A scanner that keeps one boolean "is it clean?" silently accepts HTML escaping
-in front of a database call. NS-1 tracks *which kinds* of sink a value has been
+in front of a database call. Defuse tracks *which kinds* of sink a value has been
 washed for, so this is correctly reported as a real vulnerability:
 
 ```js
@@ -529,7 +527,7 @@ dirty? Two wrong answers were available:
 - **Treat them as sanitising.** Never — assuming an unknown function fixes the
   problem is how scanners miss real bugs.
 
-What NS-1 does instead: the value keeps its taint, and the hop is recorded as
+What Defuse does instead: the value keeps its taint, and the hop is recorded as
 **unmodelled**. The path shows exactly where our knowledge ran out, and the
 finding's `limitations` names the function:
 
@@ -564,7 +562,7 @@ That is the honest version of a guess: make it, then show your work.
 drifts - the counts in it are not maintained by hand.
 <!-- /derived -->
 
-`secureScan rules --explain <id>` prints the full write-up for any rule,
+`defuse rules --explain <id>` prints the full write-up for any rule,
 including exactly what each ◐ is missing. Those notes are also printed at the
 end of every scan — they are not buried in documentation.
 
@@ -592,10 +590,10 @@ Useful flags:
 --no-cross-file         analyse each file alone: faster, far less memory, and
                         no finding that crosses a module boundary
 --coverage-matrix       print the full rule × language table
---show-suppressed       list findings silenced by securescan:ignore comments
+--show-suppressed       list findings silenced by defuse:ignore comments
 --sarif                 SARIF 2.1.0, for GitHub code scanning and any SARIF viewer
 --compact               one line per finding
---no-config             ignore .securescan.json even if one is present
+--no-config             ignore .defuse.json even if one is present
 ```
 
 **`--sarif`**: real SARIF 2.1.0, typed against `@types/sarif`. The confidence
@@ -605,11 +603,11 @@ field, and a `codeFlows` entry that exists **only** for verified findings. A
 test fails if a `codeFlow` ever appears on an unverified one. See
 `docs/examples/github-code-scanning.yml` for the workflow.
 
-**`.securescan.json`**: project config for `exclude`, `only`, `failOn` and
+**`.defuse.json`**: project config for `exclude`, `only`, `failOn` and
 `minSeverity`. Command-line flags win over the file, broken JSON exits 2 rather
 than being ignored, and **a rule cannot be disabled by config** — by design, so
 a repository cannot quietly switch off the check it fails. See
-`docs/examples/securescan.json`.
+`docs/examples/defuse.json`.
 
 `--exclude` never hides quietly. The report prints how many files and whole
 directories it removed, because a blind spot you asked for is still a blind
@@ -620,7 +618,7 @@ spot:
 tests, vendor - not scanned, not counted
 ```
 
-Suppression is a comment: `// securescan:ignore sql-injection - table name is a
+Suppression is a comment: `// defuse:ignore sql-injection - table name is a
 constant`. Suppressed findings are **counted and listed**, never erased.
 
 ---
@@ -728,7 +726,7 @@ method, and the comments in `src/rules/lib/strings.ts` record it inline.
 `sql-injection` rule's assignment branch was handed whole object literals — every
 rule definition in `src/rules/` is one — and `analyzeStringExpression` merged
 prose from a dozen unrelated fields into a single blob until `looksLikeSql()`
-saw "select", "from" and "where" in it. NS-1 reported its own rule files as SQL
+saw "select", "from" and "where" in it. Defuse reported its own rule files as SQL
 injection, three times.
 
 The fix was a scope gate, `isStringBuildingExpression()`: before asking "does
@@ -847,7 +845,7 @@ current totals (for those, run the instruments):
 | govwa (Go) | 4 flows | **1 flow** | three were `stmt.QueryRow(param)` on a *prepared* statement — false positives, now gone |
 | NodeGoat | 0 followed | 25 followed | import graph resolved; still no verified flow |
 | 5 libraries | 56 findings | 56 findings | no regression, 7,446 calls followed, 4,248 declined as ambiguous |
-| NS-1 itself | 0 edges | 77 edges, 75 followed | still zero findings on its own source |
+| Defuse itself | 0 edges | 77 edges, 75 followed | still zero findings on its own source |
 
 The govwa row is the one that matters. Going from four findings to one is an
 *improvement*: the three that disappeared were the tool telling a developer that
@@ -905,7 +903,7 @@ Half the memory for 7% more time, and the findings are byte-identical. On an
 8 GB machine that moves the practical ceiling from about 312 MB of source to
 about **1.1 GB**, and changes the failure mode from *killed* to *slower*. A scan
 that spilled says so: `diagnostics.treeMemory.reparses` above zero means files
-were parsed more than once, and `NS1_TREE_BUDGET_MB` trades memory back for
+were parsed more than once, and `DEFUSE_TREE_BUDGET_MB` trades memory back for
 speed.
 
 Two separate things were wrong, and both are worth naming because the second is
@@ -941,7 +939,7 @@ and `npm test` fails if a phase number reappears anywhere a user can read it.
 |---|---|
 | Tree-sitter parsing, shape layer — see the coverage matrix above for rules × languages | 99 fixtures, zero parse errors |
 | SARIF 2.1.0 export (`--sarif`) carrying the confidence label three ways | a test fails if a `codeFlow` appears on an unverified finding |
-| `.securescan.json` config, `--exclude` / `--only` / `--fail-on` / `--min-severity` | a rule cannot be disabled by config, by design |
+| `.defuse.json` config, `--exclude` / `--only` / `--fail-on` / `--min-severity` | a rule cannot be disabled by config, by design |
 | Honesty labelling enforced by the type system | `flowVerifiedFinding()` throws on an incomplete path |
 | Taint tracing within a function, kind-scoped sanitisers | verified flows asserted per-line by `EXPECT-FLOW` annotations |
 | Call graph within a file, unmodelled hops named on the finding | measured against OWASP Benchmark |

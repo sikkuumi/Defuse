@@ -55,7 +55,7 @@ export const LICENCE_LINE =
  * link in a LICENSE file the user never sees is not an offer.
  */
 export const NETWORK_SOURCE_NOTICE =
-  `NS-1 SecureScan is ${LICENCE_SPDX}. This page runs the same analysis engine as the ` +
+  `Defuse is ${LICENCE_SPDX}. This page runs the same analysis engine as the ` +
   'command line, entirely in your browser - nothing you load here is uploaded ' +
   'anywhere. If you are running a MODIFIED copy of this tool as a service for ' +
   'other people, the licence requires you to offer them its source.';

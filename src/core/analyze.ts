@@ -168,11 +168,11 @@ export interface AnalysisResult {
 }
 
 /**
- * A line ending in `securescan:ignore <rule-id> - <reason>` suppresses that rule
+ * A line ending in `defuse:ignore <rule-id> - <reason>` suppresses that rule
  * on that line. Suppressions are COUNTED AND LISTED in the report: silencing a
  * finding is a decision someone made, and the report should show it, not erase it.
  */
-const SUPPRESSION = /securescan:ignore\s+([a-z0-9-]+)(?:\s*[-:]\s*(.*))?/i;
+const SUPPRESSION = /defuse:ignore\s+([a-z0-9-]+)(?:\s*[-:]\s*(.*))?/i;
 
 function suppressionOnLine(
   sourceLines: readonly string[],

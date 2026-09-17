@@ -1,5 +1,5 @@
 {
-  "//": "Copy to .securescan.json in your repository root. Every key here also",
+  "//": "Copy to .defuse.json in your repository root. Every key here also",
   "//exclude": "exists as a command-line flag, and the flag always wins.",
 
   "exclude": ["node_modules", "dist", "vendor", "**/*.min.js"],
@@ -15,6 +15,6 @@
   "//only": "Restrict to these rule ids. Omit to run every rule.",
   "//note": "There is deliberately NO way to disable a rule here. A config that",
   "//note2": "can switch off the rules a repo fails makes findings vanish with",
-  "//note3": "no record. Use securescan:ignore <rule> - <reason> on the line",
+  "//note3": "no record. Use defuse:ignore <rule> - <reason> on the line",
   "//note4": "instead; those are counted and listed in every report."
 }

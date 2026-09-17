@@ -13,7 +13,7 @@ things that do not change meaning (spaces, most punctuation), "syntax" because
 it follows the language's grammar, "tree" because code nests inside code.
 `const total = price + tax;` becomes a `lexical_declaration` containing a
 `variable_declarator` containing a `binary_expression`. Run
-`secureScan ast <file>` to see a real one.
+`defuse ast <file>` to see a real one.
 
 **Parser**
 The program that turns text into an AST. We use **tree-sitter**, GitHub's parser
@@ -74,7 +74,7 @@ written to a page, a file path, a deserialiser.
 **Taint analysis / data-flow analysis**
 Following a value from a source, through assignments and function calls, to see
 whether it reaches a sink without being cleaned. This is what turns a guess into
-a proof. **NS-1 does this in all five languages**, across functions and across
+a proof. **Defuse does this in all five languages**, across functions and across
 files where imports resolve — and where it cannot follow a value, the finding
 stays `signature-based` rather than being upgraded on a hunch.
 
@@ -139,5 +139,5 @@ present in the tree that were never opened.
 
 **Suppression**
 A comment that silences a specific rule on a specific line:
-`// securescan:ignore sql-injection - table name is a constant`. Suppressed
+`// defuse:ignore sql-injection - table name is a constant`. Suppressed
 findings are counted and listed in the report, never erased.

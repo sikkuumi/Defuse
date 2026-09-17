@@ -32,7 +32,7 @@ export function renderJson(result: ScanResult, pretty = true): string {
 
   const document = {
     tool: {
-      name: 'NS-1 SecureScan',
+      name: 'Defuse',
       version: result.coverage.engine.version,
       analysis: result.coverage.engine.analysisLabel,
       // Taken from the capability block rather than retyped here. This list was
@@ -124,7 +124,7 @@ export function renderJson(result: ScanResult, pretty = true): string {
             ? 'Every file was parsed exactly once; the project fitted in the tree budget.'
             : `The project did not fit in the tree budget, so ${result.treeMemory.reparses} ` +
               'file(s) were parsed more than once. Answers are unchanged; the scan was slower. ' +
-              'Raise NS1_TREE_BUDGET_MB to trade memory back for speed.',
+              'Raise DEFUSE_TREE_BUDGET_MB to trade memory back for speed.',
       },
     },
   };

@@ -243,7 +243,7 @@ function resolveSpecifier(
      * TypeScript's ESM convention: source says `import './languages.js'` but the
      * file on disk is `languages.ts`. The compiler rewrites nothing, so a
      * resolver that only tries the literal specifier finds nothing - which is
-     * exactly what happened the first time NS-1 scanned its own source and
+     * exactly what happened the first time Defuse scanned its own source and
      * reported zero import edges.
      */
     const rewritten = base.replace(/\.(js|mjs|cjs)$/, '');

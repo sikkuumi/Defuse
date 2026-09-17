@@ -2,7 +2,7 @@
  * THE RULE CONTRACT
  * =================
  *
- * A "rule" is one thing NS-1 knows how to look for. This file defines the shape
+ * A "rule" is one thing Defuse knows how to look for. This file defines the shape
  * every rule must have. Nothing else in the codebase knows what SQL injection
  * is - the engine just runs whatever satisfies this interface.
  *
@@ -126,7 +126,7 @@ export interface Rule {
   readonly severity: Severity;
   /**
    * 2-4 sentences explaining the VULNERABILITY (not the detection code) to
-   * someone who has never heard of it. Printed by `secureScan rules --explain`.
+   * someone who has never heard of it. Printed by `defuse rules --explain`.
    */
   readonly explanation: string;
   /**

@@ -36,5 +36,5 @@ createServer(async (request, response) => {
     response.end('not found');
   }
 }).listen(port, () => {
-  console.log(`NS-1 SecureScan UI -> http://localhost:${port}`);
+  console.log(`Defuse UI -> http://localhost:${port}`);
 });

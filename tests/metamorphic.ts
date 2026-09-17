@@ -187,7 +187,7 @@ function build(): Case[] {
 async function main(): Promise<number> {
   useNodeGrammars();
   const cases = build();
-  console.log(`\n${color.bold('NS-1 SecureScan — property-based (metamorphic) suite')}`);
+  console.log(`\n${color.bold('Defuse — property-based (metamorphic) suite')}`);
   console.log(color.dim(`${cases.length} generated programs, each with a verdict known by construction\n`));
 
   const failures: { name: string; want: string; got: string }[] = [];

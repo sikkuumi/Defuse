@@ -93,7 +93,7 @@ const SKIP = new Set(['node_modules', 'dist', 'corpus', 'corpus2', '.git']);
 try {
   console.log('GIT INSTALL CHECK - commit the tree, install from git, compare the output\n');
 
-  workdir = mkdtempSync(join(tmpdir(), 'ns1-git-'));
+  workdir = mkdtempSync(join(tmpdir(), 'defuse-git-'));
   const repo = join(workdir, 'repo');
   const app = join(workdir, 'app');
   const sample = join(app, 'sample');
@@ -146,8 +146,8 @@ try {
     ) !== null;
   if (!installed) throw new Error('halt');
 
-  const output = step('running the git-installed `securescan` binary', () =>
-    scan(['npx', 'securescan'], ['scan', './sample', '--json'], app),
+  const output = step('running the git-installed `defuse` binary', () =>
+    scan(['npx', 'defuse'], ['scan', './sample', '--json'], app),
   );
   if (output === null) throw new Error('halt');
 

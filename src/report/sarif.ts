@@ -190,7 +190,7 @@ export function renderSarif(result: ScanResult, pretty = true): string {
       {
         tool: {
           driver: {
-            name: 'NS-1 SecureScan',
+            name: 'Defuse',
             version: result.coverage.engine.version,
             informationUri: 'https://github.com/',
             rules,

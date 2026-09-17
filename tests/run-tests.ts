@@ -164,7 +164,7 @@ function findingsNear(
 }
 
 async function main(): Promise<number> {
-  console.log(`\n${color.bold('NS-1 SecureScan — rule verification')}`);
+  console.log(`\n${color.bold('Defuse — rule verification')}`);
   console.log(color.dim(`fixtures: ${FIXTURES}\n`));
 
   const vulnerable = await readExpectations(path.join(FIXTURES, 'vulnerable'));
@@ -1466,7 +1466,7 @@ async function main(): Promise<number> {
    * '.' IS IN THIS LIST BECAUSE cli.ts WAS NOT.
    *
    * The help text printed "in all five languages" for weeks after PHP shipped -
-   * the first thing `secureScan --help` says, to every user. The five
+   * the first thing `defuse --help` says, to every user. The five
    * subdirectories below were scanned; src/cli.ts sits at the ROOT of src/ and
    * was walked by nothing.
    *
@@ -1924,11 +1924,11 @@ async function main(): Promise<number> {
    * ------------------------------------------------------------------ */
   console.log(`\n${color.bold('  Tree memory')}`);
   {
-    const previousBudget = process.env['NS1_TREE_BUDGET_MB'];
-    process.env['NS1_TREE_BUDGET_MB'] = '1';
+    const previousBudget = process.env['DEFUSE_TREE_BUDGET_MB'];
+    process.env['DEFUSE_TREE_BUDGET_MB'] = '1';
     const squeezed = await scan(FIXTURES, {});
-    if (previousBudget === undefined) delete process.env['NS1_TREE_BUDGET_MB'];
-    else process.env['NS1_TREE_BUDGET_MB'] = previousBudget;
+    if (previousBudget === undefined) delete process.env['DEFUSE_TREE_BUDGET_MB'];
+    else process.env['DEFUSE_TREE_BUDGET_MB'] = previousBudget;
 
     const memory = squeezed.treeMemory;
     if (memory.evictions > 0 && memory.reparses > 0) {
