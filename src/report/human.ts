@@ -129,6 +129,43 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
     ),
     );
   }
+  /*
+   * SOURCES RECOGNISED - printed whatever the number, and loudest at zero.
+   *
+   * A scan that found no sources cannot produce a traced finding no matter how
+   * good the tracer is, and "0 flow-verified" reads like a clean bill until you
+   * know that. Elasticsearch's 3,999 Java files produced exactly this shape.
+   */
+  out.push('');
+  if (score.sourcesFound === 0 && result.stats.filesParsed >= 25) {
+    out.push(
+      color.yellow(
+        `  No attacker-controlled sources were recognised in ${result.stats.filesParsed} files.`,
+      ),
+    );
+    out.push(
+      color.dim(
+        `    Every flow-verified finding starts at a source, so none could be produced here.`,
+      ),
+    );
+    out.push(
+      color.dim(
+        `    Either this code takes no external input, or it uses a framework we do not`,
+      ),
+    );
+    out.push(
+      color.dim(
+        `    model - sources are per-framework, and only the ones listed in the coverage`,
+      ),
+    );
+    out.push(color.dim(`    section are recognised. Read "0 proven" as "could not begin".`));
+  } else {
+    out.push(
+      color.dim(
+        `  ${score.sourcesFound} attacker-controlled source(s) recognised - every traced finding starts at one of these.`,
+      ),
+    );
+  }
   if (score.blindSpots.length > 0) {
     out.push('');
     out.push(color.dim(`  Where this scan stopped early:`));
@@ -207,7 +244,7 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
    * flow-verified Go finding would be an overclaim" - and both were reading a
    * scope note that had been true months earlier. Nothing in the output
    * contradicted them, because the report only ever listed languages where
-   * taint is MISSING. With all five implemented that list is empty, so the
+   * taint is MISSING. With every language implemented that list is empty, so the
    * report said nothing at all and left the reader's stale belief standing.
    *
    * A capability you only mention in the negative is one nobody can confirm. */
@@ -301,11 +338,72 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
       color.dim(
         `  cross-file: ${result.crossFile.importEdges} import edge(s) resolved ${g('middot')} ` +
           `${result.crossFile.resolved} call(s) followed into another file ${g('middot')} ` +
-          `${result.crossFile.ambiguous} declined as ambiguous`,
+          `${result.crossFile.ambiguous} declined as ambiguous` +
+          (result.crossFile.importsUnresolved > 0
+            ? ` ${g('middot')} ${result.crossFile.importsUnresolved} import(s) pointed outside the scan`
+            : ''),
       ),
     );
+    /*
+     * "NOTHING FOUND" AND "NOWHERE TO LOOK" ARE DIFFERENT ANSWERS.
+     *
+     * Someone scanned juice-shop's server.ts on its own - one file, 117 import
+     * statements, every one of them pointing at a route file that was not in
+     * the scan. The tool parsed it, examined 834 shapes, found 8 sources, and
+     * reported nothing, which is CORRECT: server.ts is wiring, and the bugs are
+     * in the files it imports. Scanning that repository's routes/ directory
+     * finds seven, two flow-verified.
+     *
+     * The evidence was already in the report - `importEdges 0` - and it said
+     * nothing about what that meant. A beginner read an empty findings list as
+     * a clean bill of health, then as a broken tool. Both readings were the
+     * report's fault, not theirs.
+     *
+     * This project prints what `--exclude` skipped for exactly this reason. An
+     * import that led nowhere is the same kind of hole: a place the analysis
+     * did not go, which the reader cannot see from the findings list.
+     */
+    if (result.crossFile.importEdges === 0 && result.crossFile.importsUnresolved >= 3) {
+      out.push('');
+      out.push(
+        color.yellow(
+          `  ${g('warn')} SCOPE WARNING: every one of the ${result.crossFile.importsUnresolved} ` +
+            `local import(s) in this scan pointed at a file that was not included.`,
+        ),
+      );
+      out.push(
+        color.yellow(
+          '     Nothing could be traced across a module boundary, so a quiet result here means',
+        ),
+      );
+      out.push(
+        color.yellow(
+          '     "not looked at", not "not vulnerable". Point the scan at the project directory',
+        ),
+      );
+      out.push(color.yellow('     rather than a single file if you meant to analyse the whole thing.'));
+    }
   } else {
     out.push(color.yellow(`  cross-file analysis OFF (${result.crossFile.reason})`));
+  }
+
+  /**
+   * Say when the scan traded time for memory.
+   *
+   * A scan that spills gives exactly the same answers, just more slowly - the
+   * findings are checked to be byte-identical under a budget small enough to
+   * evict almost everything. But "slow" with no explanation is the kind of
+   * thing a user blames the tool for and never mentions, so the report says
+   * which of the two things happened and what to change.
+   */
+  if (result.treeMemory.reparses > 0) {
+    out.push(
+      color.dim(
+        `  memory: project larger than the ${(result.treeMemory.budgetBytes / 1048576).toFixed(0)}MB ` +
+          `tree budget, so ${result.treeMemory.reparses} file(s) were parsed more than once. ` +
+          `Same answers, slower scan - raise NS1_TREE_BUDGET_MB to trade memory back for speed.`,
+      ),
+    );
   }
   if (result.stats.flowsVerified > 0 || result.stats.signaturesRetracted > 0) {
     out.push(

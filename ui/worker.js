@@ -30,6 +30,15 @@ self.addEventListener('message', async (event) => {
 
   try {
     const result = await analyze(files, {
+      /**
+       * A quarter of the terminal's tree budget, because a browser tab is not
+       * a terminal. Chrome gives a WebAssembly heap a hard limit and reaching
+       * it is not a slow scan, it is a dead tab with no report in it - so the
+       * shell that can afford the failure least gets the smallest budget. A
+       * project too big for it is parsed more than once and takes longer,
+       * which is the trade this whole design exists to make.
+       */
+      treeBudgetBytes: 256 * 1024 * 1024,
       ...(options ?? {}),
       onProgress: (done, total, file) => {
         self.postMessage({ type: 'progress', done, total, file });

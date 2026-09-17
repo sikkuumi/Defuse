@@ -41,6 +41,12 @@ const STRING_LITERAL_TYPES: Record<LanguageId, readonly string[]> = {
   python: ['string', 'concatenated_string'],
   java: ['string_literal', 'text_block'],
   go: ['interpreted_string_literal', 'raw_string_literal'],
+  // C has one string node type and no interpolation at all, which is why every
+  // dangerous C string is BUILT - by sprintf, strcat or std::string's operator+
+  // - rather than interpolated in place. `concatenated_string` is adjacent
+  // literals ("a" "b"), which C joins at compile time.
+  c: ['string_literal', 'concatenated_string', 'char_literal'],
+  cpp: ['string_literal', 'concatenated_string', 'char_literal', 'raw_string_literal'],
   // PHP's `string` is single-quoted (never interpolates). `encapsed_string` is
   // double-quoted and CAN interpolate, which is why it appears in both this
   // list and INTERPOLATION_TYPES - isStringLiteral checks for a spliced-in
@@ -138,6 +144,18 @@ const STRING_EXPRESSION_TYPES: Record<LanguageId, readonly string[]> = {
     'binary_expression', // PHP concatenates with `.`
     'function_call_expression',
     'member_call_expression',
+  ],
+  // In C a "string expression" is nearly always a CALL - sprintf or strcat -
+  // rather than an operator, because char arrays do not concatenate with `+`.
+  c: ['string_literal', 'concatenated_string', 'binary_expression', 'call_expression'],
+  // C++ gets the operator back via std::string, so binary_expression matters
+  // here in a way it does not in C.
+  cpp: [
+    'string_literal',
+    'concatenated_string',
+    'raw_string_literal',
+    'binary_expression',
+    'call_expression',
   ],
 };
 
@@ -237,7 +255,27 @@ export function analyzeStringExpression(
     if (
       current.type === 'call' ||
       current.type === 'call_expression' ||
-      current.type === 'method_invocation'
+      current.type === 'method_invocation' ||
+      /*
+       * PHP'S CALL NODES WERE MISSING, AND THAT COST 2,547 FINDINGS.
+       *
+       * Without these three types the walker fell through to "recurse into
+       * every child" and descended INSIDE the call, so
+       *
+       *     echo esc_html( $user->user_login );
+       *
+       * was described as "interpolation splicing in `$user`". The escaper was
+       * walked straight past and its argument reported as if it had been
+       * concatenated in raw - which is both a wrong description and the reason
+       * every WordPress escaping call looked like an unescaped one.
+       *
+       * A call is opaque: its RESULT is what gets spliced, and the arguments
+       * are not that result. Naming the node types makes PHP behave like the
+       * other five languages, which had them all along.
+       */
+      current.type === 'function_call_expression' ||
+      current.type === 'member_call_expression' ||
+      current.type === 'scoped_call_expression'
     ) {
       const nameNode =
         current.childForFieldName('name') ??
@@ -247,7 +285,28 @@ export function analyzeStringExpression(
       const lastSegment = nameText.split(/[.:]/).pop() ?? nameText;
       if (FORMAT_FUNCTIONS.has(lastSegment)) {
         sawFormatCall = true;
-        for (const child of current.namedChildren) if (child) visit(child, depth + 1);
+        /*
+         * SKIP THE FUNCTION'S OWN NAME.
+         *
+         * `fmt.Sprintf` is a selector_expression, so recursing into every child
+         * walked into the callee and recorded it as a spliced-in value. Every
+         * format-call finding therefore opened with "It splices in
+         * `fmt.Sprintf`, ..." - a sentence about the mechanism presented as a
+         * sentence about the data, and simply untrue.
+         *
+         * It also broke a real proof: a Go escape hatch whose arguments were
+         * ALL escaped still had `fmt.Sprintf` sitting in its parts list, so
+         * "is every part escaped?" answered no about the function's own name.
+         */
+        // Compared by POSITION, not identity: web-tree-sitter hands back a new
+        // wrapper object on every access, so `child !== nameNode` is always true.
+        for (const child of current.namedChildren) {
+          if (!child) continue;
+          if (nameNode && child.startIndex === nameNode.startIndex && child.endIndex === nameNode.endIndex) {
+            continue;
+          }
+          visit(child, depth + 1);
+        }
         return;
       }
       sawOpaqueRef = true;
@@ -348,7 +407,26 @@ const SQL_STATEMENT_SHAPES: readonly RegExp[] = [
   // Query FRAGMENTS: a lot of real injection is ` WHERE id = ` + x, appended
   // to a query built elsewhere. A clause keyword sitting at the very start of
   // the fragment is the tell, and prose does not open that way.
-  /^\s*(?:and|or|where|from|order\s+by|group\s+by|having|limit|offset|values)\b/i,
+  /^\s*(?:where|from|order\s+by|group\s+by|having|limit|offset)\b/i,
+  /*
+   * VALUES AND AND ARE ALSO ENGLISH, so these two need the rest of the clause.
+   *
+   * An f-string's literal parts ARE fragments in the sense above - the text
+   * between two interpolations is exactly a string appended to something else -
+   * which is why the fragment rule reads them. Scanning pandas turned up four
+   * assertion messages that way:
+   *
+   *     f"{obj} values are different ({pct} %)"     -> " values are different ("
+   *     f"{a} and {b} were approximately equal"     -> " and "
+   *
+   * Both open with a clause keyword and neither continues into anything a
+   * database could parse. SQL's VALUES is always followed by a parenthesis, and
+   * a WHERE clause continued by AND or OR always reaches a comparison. Asking
+   * for the second half of the clause keeps ` AND id = ` and ` VALUES (` - the
+   * shapes the rule was written for - and drops the English.
+   */
+  /^\s*values\s*\(/i,
+  /^\s*(?:and|or)\b[\s\S]{0,80}?(?:[=<>]|\b(?:like|ilike|in|is|between)\b)/i,
 ];
 
 /**
@@ -417,6 +495,29 @@ const PLACEHOLDER_PATTERNS: readonly RegExp[] = [
   // Added after scanning real repositories, where `'faketoken'`, `'Bearer ...'`
   // and `'s00pers3cret'`-style fixtures dominated the results.
   /(fake|dummy|sample|example|placeholder|redacted|changeme|notreal|xxxx|\.\.\.)/i,
+  /*
+   * THE VALUE NAMES THE KIND OF CREDENTIAL IT IS STANDING IN FOR.
+   *
+   *     accessToken:  'exact-token'      'wrong-token'   'notion-token'
+   *     clientSecret: 'notion-client-secret'
+   *     apiKey:       'new-api-key'      connectionToken: 'test-token'
+   *
+   * Ninety-six of the 191 hardcoded-secret findings on a VS Code scan were this
+   * shape, all from test files. A real credential does not contain the word
+   * "secret" - the whole point of one is that it carries no information about
+   * itself. A lowercase hyphenated phrase with `token`, `secret` or `key` as one
+   * of its words is a label a person wrote so a failing assertion would be
+   * readable.
+   *
+   * DELIBERATELY NARROW. An earlier attempt rejected short lowercase words
+   * outright and had to be reverted: it took `password = 'configpass'` and
+   * `SECRET_KEY = 'config'` with it, and those are weak credentials but they
+   * are credentials. Neither has a separator or names itself, so neither
+   * matches this. A passphrase like `correct-horse-battery-staple` does not
+   * match either - it has the separators but names nothing.
+   */
+  /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*[-_](token|secret|key|password|passwd|pwd|auth|credential|creds?|apikey|pat|jwt|salt|nonce|otp)$/i,
+  /^(token|secret|key|password|passwd|pwd|auth|credential|creds?|apikey|pat|jwt|salt|nonce|otp)[-_][a-z0-9]+(?:[-_][a-z0-9]+)*$/i,
 ];
 
 /*
@@ -458,6 +559,137 @@ const WEB_PLATFORM_ENUMS: ReadonlySet<string> = new Set([
   'error',
 ]);
 
+/**
+ * Is this value STRUCTURALLY incapable of being a credential, whatever the
+ * variable holding it is called?
+ *
+ * The name-based signal ("the variable is called `token`") never asked this,
+ * and VS Code's editor package showed why: 151 of its 163 high-severity secret
+ * findings were Monaco's syntax-highlighting tokens.
+ *
+ *     token: 'delimiter.curly'
+ *     token: 'variable.predefined'
+ *     token: 'comment'
+ *
+ * The variable really is called `token`. The value is a theme scope name. No
+ * amount of suspicion about the NAME should survive looking at the VALUE.
+ *
+ * Two shapes, both decidable:
+ *   - a dotted namespace (`delimiter.curly`, `com.example.thing`) - no key
+ *     format contains dots, except a JWT, which starts `eyJ`;
+ *   - a single lowercase dictionary-shaped word (`comment`, `invalid`) - real
+ *     credentials mix character classes, because they are generated.
+ */
+export function isStructuralIdentifier(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return false;
+  // The trailing dot is not a typo. A dotted name used as a STORAGE PREFIX is
+  // written with the separator still attached, because the caller appends to it:
+  //     SECRET_KEY_PREFIX = 'chat.lm.secret.'
+  //     STORAGE_PREFIX    = 'chat.modelFeedbackSurvey.'
+  // Both were reported as credentials on a VS Code scan, the first at HIGH
+  // because its name contains SECRET and KEY. It is a namespace, and the value
+  // in it is whatever gets appended - which is not in the file.
+  if (/^[\w$-]+(?:\.[\w$-]+)+\.?$/.test(trimmed) && !/^eyJ/.test(trimmed)) return true;
+  /*
+   * A value carrying a URI SCHEME is an address or a standard identifier, not
+   * a key. VS Code's OAuth constants are the clean example:
+   *
+   *     TOKEN_TYPE_ACCESS_TOKEN = 'urn:ietf:params:oauth:token-type:access_token'
+   *     token_endpoint = 'http://localhost:8080/token'
+   *
+   * Every one of those variable names screams credential, and every value is
+   * published in an RFC. The name cannot be trusted over the shape.
+   */
+  if (/^(urn|https?|ftp|file|ws{1,2}|mailto|data|vscode[\w-]*):/i.test(trimmed)) return true;
+  /*
+   * A COLON-NAMESPACED PERMISSION IS A SCOPE, NOT A CREDENTIAL.
+   *
+   *     AccessTokenScopeReadAdmin AccessTokenScope = "read:admin"
+   *     AccessTokenScopeWriteRepoHook              = "write:repo_hook"
+   *
+   * 106 of gitea's 359 findings were high-severity "hardcoded secret" and this
+   * block is most of them. The constant NAME contains "Token", which is exactly
+   * what the name signal is for - but the value is an OAuth scope printed in
+   * gitea's own public API documentation.
+   *
+   * LETTERS ONLY, deliberately. `admin:password123` keeps its digits and still
+   * reports, and so does anything with mixed case; generated credentials
+   * essentially always carry one or the other. What is left - a lowercase
+   * colon-namespaced phrase - is how every permission system in the world
+   * spells a scope. A bare `user:pass` is lost to this, which is a placeholder
+   * anyway, and a real one inside a URL is caught earlier by the
+   * connection-string format.
+   */
+  if (/^[a-z]+(?:[_-][a-z]+)*(?::[a-z]+(?:[_-][a-z]+)*)+$/.test(trimmed)) return true;
+  /*
+   * A Subresource Integrity hash is published in the HTML that loads the
+   * script. It is the opposite of a secret - its whole job is to be public so
+   * a browser can check the file was not tampered with.
+   *
+   *     webWorkerExtensionHostIframeScriptSHA = 'sha256-daEgfo2VIXpx2Np71Kq...'
+   */
+  if (/^sha(256|384|512)-/.test(trimmed)) return true;
+  /*
+   * A SCREAMING_SNAKE value is a constant or an environment VARIABLE NAME, not
+   * its value. VS Code names the variable after what it holds and gets caught
+   * by both halves:
+   *
+   *     agentHostBridgeConnectionTokenEnvironmentVariable =
+   *       'VSCODE_AGENT_HOST_BRIDGE_CONNECTION_TOKEN'
+   */
+  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(trimmed)) return true;
+  /*
+   * A single lowercase word is NOT on this list, and the first version of it
+   * was. `token: 'comment'` and `token: 'invalid'` in Monaco are exactly that
+   * shape - but so are
+   *
+   *     password: 'configpass'
+   *     password: 'exfil'
+   *     SECRET_KEY = 'config'
+   *
+   * and rejecting the shape took the library corpus from 48 findings to 32.
+   * Weak human-chosen passwords ARE lowercase words; that is what makes them
+   * weak. Trading sixteen real hardcoded credentials for a dozen theme scope
+   * names is the wrong direction, so the dotted check stands alone and the
+   * remaining Monaco tokens are accepted noise.
+   */
+  return false;
+}
+
+/**
+ * Does this spliced-in expression produce nothing but SQL PLACEHOLDERS?
+ *
+ * VS Code builds a bulk insert the correct way:
+ *
+ *     `INSERT INTO ItemTable VALUES ${new Array(n).fill('(?,?)').join(',')} ...`
+ *     stmt.run(keysValuesChunk)
+ *
+ * The interpolation expands to `(?,?),(?,?),(?,?)`. Not one byte of data is in
+ * that string - the values go to the driver separately, which is exactly what
+ * parameterisation means. And the rule reported it as SQL injection.
+ *
+ * That is the worst mistake an injection rule can make. Flagging the CORRECT
+ * form teaches people that doing it properly does not help, and this is the
+ * third time today the same failure has turned up in a different rule -
+ * unserialize with allowed_classes, yaml with a SafeLoader, and now this.
+ *
+ * The test is narrow on purpose. Every string literal inside the expression
+ * must be placeholder punctuation, AND at least one must contain an actual
+ * placeholder marker (`?`, `$1`, `%s`). That second half is what stops
+ * `rows.map(r => `'${r}'`).join(',')` - which builds real quoted DATA and is a
+ * genuine injection - from slipping through on its commas.
+ */
+export function expandsOnlyPlaceholders(expressionText: string): boolean {
+  const literals = [...expressionText.matchAll(/(['"`])((?:\\.|(?!\1)[^\\])*)\1/g)].map(
+    (m) => m[2] ?? '',
+  );
+  if (literals.length === 0) return false;
+  const hasMarker = literals.some((lit) => /\?|\$\d|%s/.test(lit));
+  if (!hasMarker) return false;
+  return literals.every((lit) => /^[\s?,()$%sd\d]*$/.test(lit));
+}
+
 export function isLikelyPlaceholder(text: string): boolean {
   const trimmed = text.trim();
   if (WEB_PLATFORM_ENUMS.has(trimmed.toLowerCase())) return true;
@@ -483,9 +715,81 @@ export function isLikelyPlaceholder(text: string): boolean {
  */
 export function looksLikeToken(value: string): boolean {
   if (/[\s/\\@]/.test(value)) return false; // URLs, paths, MIME types, sentences
+  /*
+   * STRUCTURAL PUNCTUATION IS NOT IN ANY CREDENTIAL ALPHABET.
+   *
+   * Every real key format draws from a narrow set of characters: base64 uses
+   * A-Za-z0-9+/=, hex uses 0-9a-f, and vendor keys (AKIA..., ghp_..., sk_live_)
+   * use A-Za-z0-9_-. None of them contains a brace, a bracket, a quote, a
+   * colon or a semicolon.
+   *
+   * Auditing this tool's findings across five real libraries found NINE
+   * entropy-only false positives and every one was killed by this single line:
+   *
+   *     json = "{field1:'abc',field2:'def'}"        a JSON test fixture
+   *     systemProperty = "gson.allowCapturing..."   a property name
+   *     dataURI = "data:;charset=UTF-8,hello"       a data URI
+   *
+   * Entropy alone cannot tell a key from a small structured document - both
+   * score above 4 bits per character. Shape can, and shape is not a guess.
+   */
+  if (/[{}[\]<>(),;:'"`|!?*&^%$#~]/.test(value)) return false;
   if (/^[a-z.\-_]+$/.test(value)) return false; // lowercase words / kebab / dotted names
   if (/^[A-Z.\-_]+$/.test(value)) return false; // SCREAMING_CONSTANT names
   if (/^\d+$/.test(value)) return false; // pure numbers, timestamps, ids
+  /*
+   * NAMESPACED IDENTIFIERS ARE NOT KEYS.
+   *
+   *     workbench.action.focusCommentsPanel
+   *     workbench.contrib.viewsExtensionHandler
+   *     editor.action.formatDocument
+   *
+   * Scanning VS Code produced 1,369 hardcoded-secret findings and 1,246 were
+   * entropy-only hits on strings exactly like these - command ids, context
+   * keys, extension ids. They score above 4 bits per character because they mix
+   * case and use many distinct letters, which is precisely what the entropy
+   * heuristic was built to notice, and precisely why entropy alone is not
+   * evidence of anything.
+   *
+   * A dotted name is the single most common long string in a large application,
+   * and no credential format is shaped like one. The exception is a JWT, which
+   * is also dot-separated - so a value that opens with the base64 of `{"` is
+   * kept. That is the standard JWT header prefix and nothing else starts that
+   * way by accident.
+   */
+  if (/^[\w$-]+(?:\.[\w$-]+)+$/.test(value) && !/^eyJ/.test(value)) return false;
+  // The alphabet itself, and any run of consecutive letters. `letterBytes =
+  // "abcdefghijklmnopqrstuvwxyzABCDEF..."` in gin scores 4.7 bits/char and is
+  // the least random string it is possible to write.
+  if (/abcdefghij/i.test(value)) return false;
+  /*
+   * A CAMELCASE RUN OF PURE LETTERS IS AN IDENTIFIER, NOT A KEY.
+   *
+   *     enablePreviewFromQuickOpen        a settings key
+   *     ChatToolsEligibleForAutoApproval  an experiment name
+   *     didNotEnableEditSessionsWhenPrompted   a telemetry outcome
+   *     historyItemChangeViewModel        a view-model type tag
+   *
+   * The dotted-name rule above catches `workbench.action.focus...`; these are
+   * the same thing with the dots removed, and they were the next 35 findings on
+   * a VS Code scan once the dotted ones were gone. They score above 4 bits per
+   * character for the same reason - many distinct letters, mixed case - which
+   * is again a fact about English identifiers rather than about randomness.
+   *
+   * The discriminator is what is ABSENT. Every generated credential draws on
+   * digits or punctuation somewhere: base64 has digits and +/=, hex is digits
+   * and a-f, vendor keys carry a prefix and an underscore. Twenty-nine letters
+   * and nothing else is a name a person typed.
+   *
+   * This gate is on the ENTROPY path only, which matters: `password =
+   * 'MySecretPassword'` has this exact shape and is a genuine bad credential,
+   * but it is caught by the variable NAME (Signal 2), which never consults this
+   * function. Weak alphabetic passwords therefore still report.
+   */
+  if (value.length >= 12 && /^[A-Za-z]+$/.test(value)) {
+    const humps = value.match(/[a-z][A-Z]/g)?.length ?? 0;
+    if (humps >= 2) return false;
+  }
 
   const classes =
     (/[a-z]/.test(value) ? 1 : 0) + (/[A-Z]/.test(value) ? 1 : 0) + (/[0-9]/.test(value) ? 1 : 0);
@@ -498,10 +802,142 @@ export function looksLikeToken(value: string): boolean {
  * not drop these findings - we lower their severity and say why.
  */
 export function isTestPath(filePath: string): boolean {
-  return /(^|[/\\])(tests?|spec|specs|__tests__|__mocks__|fixtures?|examples?|e2e|benchmarks?|mocks?)([/\\]|$)|\.(test|spec)\.[a-z]+$|_test\.[a-z]+$|Test\.java$/i.test(
-    filePath,
-  );
+  return TEST_DIRECTORY.test(filePath) || TEST_FILENAME.test(filePath);
 }
+
+/*
+ * TEST-PATH CONVENTIONS ARE PER-ECOSYSTEM, and this list was built from the
+ * repositories I had happened to be shown.
+ *
+ * Scanning cal.com - 3,941 TypeScript files - produced 196 findings, 138 of
+ * them hardcoded-secret. The ones still ranked HIGH were led by
+ *
+ *     apps/web/playwright/payment-apps.e2e.ts   access_token: "sk_test_randomString"
+ *     packages/testing/src/lib/bookingScenario/bookingScenario.ts
+ *
+ * Both are unambiguously test code, and this function said neither was. The
+ * reasons were boring and specific: `e2e` was recognised only as a whole
+ * DIRECTORY segment, never as the `.e2e.ts` filename suffix that Playwright
+ * actually uses; and `tests?` matches `test` and `tests` but not `testing`.
+ *
+ * That is the third time this exact class has cost real precision. Scanning
+ * elasticsearch proved SOURCES are per-framework rather than per-language;
+ * scanning Jenkins proved ESCAPERS are too. The lesson generalises past both:
+ * ANY list of conventions in this engine is a list of the conventions I have
+ * been shown, and it looks complete right up until a codebase with different
+ * habits arrives.
+ *
+ * WHY THIS IS TWO NARROW PATTERNS AND NOT ONE WIDE ONE. Downranking is a
+ * silencing mechanism, so the failure mode is a real credential in application
+ * source ranked as test noise. `latest.ts`, `contest/`, `testimonials.tsx`,
+ * `protester.js` and `attestation/` all contain the letters "test". Every one
+ * of them is asserted as NOT a test path in the suite, which is what stops a
+ * future widening from quietly eating them.
+ */
+
+/** A whole path SEGMENT that names a test area. Anchored both sides. */
+const TEST_DIRECTORY =
+  /(^|[/\\])(tests?|testing|spec|specs|__tests__|__mocks__|fixtures?|examples?|e2e|benchmarks?|mocks?|playwright|cypress|testdata)([/\\]|$)/i;
+
+/**
+ * A FILENAME that names itself a test. Kept separate from the directory rule
+ * because these are suffixes, not segments - `login.e2e.ts` has no `e2e`
+ * segment anywhere in it, which is exactly what cal.com exposed.
+ */
+const TEST_FILENAME =
+  /\.(test|spec|e2e|cy|e2e-spec|int-spec)\.[a-z]+$|[._-]test\.[a-z]+$|Tests?\.(java|cs|kt|scala)$/i;
+
+
+/**
+ * Is this value just a restatement of the NAME it is stored under?
+ *
+ *     PRIVATE_KEY_KEY   = "privateKey"          Keycloak, 4,000 Java files
+ *     KEYSTORE_PASSWORD_KEY = "keystorePassword"
+ *     MANAGE_OAUTH      = "manage_oauth"        Mattermost, TypeScript
+ *     TOKEN_CREATING    = "creating"
+ *     SECTION_TOKENS    = "tokens"
+ *
+ * These are the strings a program uses to LOOK UP a secret in a config map, and
+ * they are dense in exactly the codebases that handle credentials for a living
+ * - which is why an identity server produced 152 findings and most were this.
+ *
+ * The test is a subset check on words, which is what makes it safe: a real
+ * credential shares no vocabulary with its own variable name. `password =
+ * "Tr0ub4dor3xK"`, `SECRET_KEY = "config"` and `password = "configpass"` all
+ * survive it, and all three are asserted elsewhere in the suite.
+ *
+ * Requires at least one word on each side, so an empty or punctuation-only
+ * value cannot vacuously qualify.
+ */
+export function echoesItsOwnName(name: string, value: string): boolean {
+  const words = (text: string): string[] =>
+    text
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .split(/[^A-Za-z0-9]+/)
+      .map((w) => w.toLowerCase())
+      .filter((w) => w.length > 1);
+  const nameWords = new Set(words(name));
+  const valueWords = words(value);
+  if (nameWords.size === 0 || valueWords.length === 0) return false;
+  return valueWords.every((w) => nameWords.has(w));
+}
+
+/**
+ * Does this value read as an English SENTENCE rather than as a credential?
+ *
+ *     encryption_key_missing: "CALENDSO_ENCRYPTION_KEY is not set"
+ *
+ * From cal.com's OAuthService. The NAME matches the credential pattern - it
+ * contains `key` - and a name-based guess is allowed to be wrong. What it is
+ * not allowed to do is ignore a value that could not possibly be a credential.
+ *
+ * THE TRAP THIS IS SHAPED AROUND: passphrases contain spaces and are real
+ * secrets. `password = "correct horse battery staple"` must still report.
+ *
+ * THE FIRST VERSION OF THIS FUNCTION WAS NOT SAFE, and the corpus caught it -
+ * for the third time in this project's life, after the lowercase-word rejection
+ * that dropped the corpus 48 to 32 and the mathjs.eval regression that showed
+ * up only as dvna's flow count falling 3 to 2.
+ *
+ * Requiring "several words plus an English function word" looked airtight
+ * against a DICEWARE passphrase, whose wordlist is concrete nouns and verbs.
+ * It is not airtight against a HUMAN-CHOSEN one. Express ships
+ *
+ *     secret: 'manny is cool'        examples/cookie-sessions/index.js
+ *
+ * a genuine session secret, silenced by the word `is`. One good suppression
+ * (dvna's `'A2: Broken Authentication'` label) and one real miss.
+ *
+ * So the value's shape is no longer the whole test. The NAME has to say the
+ * slot holds a message - `encryption_key_missing`, `api_key_invalid` - which is
+ * what cal.com's error table actually looks like and what `secret` never does.
+ * Both halves are asserted: the express string is now a fixture that must fire.
+ */
+const PROSE_WORDS = new Set([
+  'is', 'are', 'was', 'were', 'be', 'been', 'not', 'no', 'the', 'a', 'an',
+  'this', 'that', 'these', 'those', 'your', 'you', 'must', 'should',
+  'cannot', 'could', 'would', 'please', 'try', 'again', 'invalid', 'missing',
+  'expired', 'required', 'failed', 'error', 'unable', 'least', 'provided',
+  'for', 'to', 'of', 'in', 'at', 'with', 'and', 'or', 'but', 'if', 'set',
+]);
+
+export function looksLikeProse(name: string, value: string): boolean {
+  // The NAME has to say this slot holds a message. Prose-ness alone is not
+  // enough - see the express regression in the note above.
+  if (!MESSAGE_NAME.test(name)) return false;
+  const words = value.trim().split(/\s+/);
+  if (words.length < 3) return false;
+  const lowered = words.map((w) => w.replace(/[^A-Za-z]/g, '').toLowerCase());
+  return lowered.some((w) => PROSE_WORDS.has(w));
+}
+
+/**
+ * Names that describe a STATE or a MESSAGE rather than a stored credential.
+ * `encryption_key_missing` is not a key; it is what you print when the key is
+ * absent. The word that matters is the suffix.
+ */
+const MESSAGE_NAME =
+  /(_|\b)(missing|invalid|expired|required|failed|error|errors|message|messages|msg|description|hint|warning|notice|reason|too_short|too_long|not_found|unauthorized|denied)$/i;
 
 /** Well-known credential formats. A hit here is far stronger than entropy alone. */
 export interface KnownSecretFormat {
@@ -516,8 +952,34 @@ export const KNOWN_SECRET_FORMATS: readonly KnownSecretFormat[] = [
   { label: 'Stripe secret key', pattern: /\b(sk|rk)_(live|test)_[A-Za-z0-9]{16,}\b/ },
   { label: 'Google API key', pattern: /\bAIza[0-9A-Za-z_-]{35}\b/ },
   { label: 'OpenAI API key', pattern: /\bsk-[A-Za-z0-9]{20,}\b/ },
+  /*
+   * OpenAI's CURRENT key format, which the line above cannot match.
+   *
+   * The legacy shape was `sk-` followed by one unbroken run of alphanumerics.
+   * Project and service-account keys put named segments in between -
+   * `sk-proj-...`, `sk-svcacct-...` - and the hyphen ends the `[A-Za-z0-9]{20,}`
+   * run, so a live project key scored only "high-entropy literal, possible
+   * secret" at medium severity instead of being identified outright.
+   *
+   * Found by checking that a placeholder this rule had just started ignoring
+   * (`apiKey: 'sk-secret-internal-key'`) had not taken a real format with it.
+   * It had not - it had exposed one that was already missing. The named segment
+   * is required precisely so that the placeholder stays ignored: "secret" is
+   * not "proj".
+   */
+  { label: 'OpenAI project key', pattern: /\bsk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}\b/ },
   { label: 'JSON Web Token', pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/ },
-  { label: 'private key block', pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
+  {
+    label: 'private key block',
+    /*
+     * The delimiter has to be followed by KEY MATERIAL. Keycloak defines
+     * `BEGIN_PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----"` as a constant so it
+     * can assemble and parse PEM files; the string IS the delimiter and there
+     * is no key in it. Requiring base64 after the header keeps every real
+     * embedded key and drops the label on its own.
+     */
+    pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?[A-Za-z0-9+/]{40}/,
+  },
   { label: 'Twilio account SID', pattern: /\bAC[0-9a-fA-F]{32}\b/ },
   { label: 'SendGrid API key', pattern: /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/ },
   { label: 'connection string with password', pattern: /:\/\/[^\s:@/]+:[^\s:@/]{3,}@/ },

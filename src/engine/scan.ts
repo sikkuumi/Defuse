@@ -65,6 +65,8 @@ export interface ScanResult {
   readonly coverage: CoverageReport;
   /** How cross-file resolution went. */
   readonly crossFile: AnalysisResult['crossFile'];
+  /** What the scan spent on syntax trees, and whether it had to spill. */
+  readonly treeMemory: AnalysisResult['treeMemory'];
 }
 
 export async function scan(target: string, options: ScanOptions = {}): Promise<ScanResult> {
@@ -88,10 +90,29 @@ export async function scan(target: string, options: ScanOptions = {}): Promise<S
     }
   }
 
+  /**
+   * NS1_TREE_BUDGET_MB - how much WebAssembly heap the scan may hold in syntax
+   * trees before it starts freeing the least recently used one.
+   *
+   * An environment variable rather than a flag, deliberately. It exists to be
+   * turned down hard in testing: the interesting question about the tree store
+   * is not "does it work when nothing is ever evicted" but "are the findings
+   * still identical when almost everything is". A budget of 1 MB forces a
+   * re-parse for nearly every cross-file hop, which is exactly the condition
+   * the identity check should be run under.
+   *
+   * Anyone who genuinely needs it in production can set it, and the value used
+   * is printed in the report either way.
+   */
+  const budgetMb = Number(process.env['NS1_TREE_BUDGET_MB']);
+  const treeBudget =
+    Number.isFinite(budgetMb) && budgetMb > 0 ? Math.round(budgetMb * 1024 * 1024) : undefined;
+
   const result = await analyze(inputs, {
     ...(options.only ? { only: options.only } : {}),
     ...(options.noCrossFile !== undefined ? { noCrossFile: options.noCrossFile } : {}),
     ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+    ...(treeBudget !== undefined ? { treeBudgetBytes: treeBudget } : {}),
     toDisplay: (absolutePath) => path.relative(process.cwd(), absolutePath) || absolutePath,
   });
 
@@ -117,6 +138,7 @@ export async function scan(target: string, options: ScanOptions = {}): Promise<S
     },
     suppressions: result.suppressions,
     crossFile: result.crossFile,
+    treeMemory: result.treeMemory,
     // Rebuilt here because only the walker knows which file types it passed
     // over - the analyzer never saw them.
     coverage: buildCoverageReport(

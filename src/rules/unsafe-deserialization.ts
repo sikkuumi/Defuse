@@ -66,6 +66,12 @@ const DESERIALIZERS: Record<LanguageId, readonly string[]> = {
   // choose the class to construct. That removes the gadget-chain shape this
   // rule is about, which is why the list is empty rather than guessed at.
   go: [],
+  // C has no object graph to revive, so the gadget-chain bug this rule is
+  // about cannot exist at all. Parsing untrusted binary in C IS dangerous, but
+  // for a completely different reason - it is where the memory-safety bugs
+  // live - and that is declared out of scope rather than half-covered here.
+  c: [],
+  cpp: [],
 };
 
 /**
@@ -82,7 +88,20 @@ const REQUIRED_RECEIVERS: Record<LanguageId, readonly string[]> = {
   java: ['ois', 'objectInputStream', 'in', 'input', 'stream', 'decoder'],
   php: [],
   go: [],
+  c: [],
+  cpp: [],
 };
+
+/**
+ * Deserialisers whose payload arrives through the RECEIVER, not an argument.
+ * `ois.readObject()` reads from a stream that was loaded a line earlier, so
+ * there is no argument to inspect and the receiver check is the whole test.
+ */
+const ZERO_ARGUMENT_READERS: ReadonlySet<string> = new Set([
+  'readObject',
+  'readUnshared',
+  'readResolve',
+]);
 
 /** Calls that are safe BECAUSE of an argument, and must not be reported. */
 const SAFE_FORMS: Record<LanguageId, RegExp | null> = {
@@ -93,6 +112,9 @@ const SAFE_FORMS: Record<LanguageId, RegExp | null> = {
   java: null,
   // unserialize($x, ['allowed_classes' => false]) cannot construct your classes.
   php: /allowed_classes/,
+  // Nothing to make safe, because nothing above is listed as dangerous.
+  c: null,
+  cpp: null,
   go: null,
 };
 
@@ -161,6 +183,16 @@ export const unsafeDeserializationRule: Rule = {
       status: 'not-implemented',
       note: 'NOT IMPLEMENTED: encoding/gob and encoding/json both decode into a type the program names, so an attacker cannot choose which class gets constructed. The gadget-chain shape this rule detects does not exist in Go, and a rule that fired here would be noise rather than coverage.',
     },
+    c: {
+      status: 'not-implemented',
+      note:
+        'C has no object graph to revive, so the gadget-chain weakness this rule detects cannot exist. Parsing untrusted binary in C IS dangerous, but for memory-safety reasons that are declared out of scope rather than half-covered here.',
+    },
+    cpp: {
+      status: 'not-implemented',
+      note:
+        'Not implemented. C++ serialisation libraries - Boost.Serialization, cereal, protobuf - do reconstruct typed object graphs, and none of them is modelled here, so a gadget chain through Boost.Serialization is missed.',
+    },
   },
   check(shape, ctx): RuleHit | null {
     const language = ctx.language;
@@ -177,8 +209,59 @@ export const unsafeDeserializationRule: Rule = {
     const safeForm = SAFE_FORMS[language];
     if (safeForm && safeForm.test(call.node.text ?? '')) return null;
 
+    /*
+     * SOME DESERIALISERS TAKE NO ARGUMENTS.
+     *
+     *     Map<String,String> grant = (Map<String,String>) ois.readObject();
+     *
+     * The bytes were handed to the STREAM, one line earlier; `readObject()`
+     * just pulls the next object out of it. This rule required `args[0]` and
+     * therefore stayed silent on the single most famous gadget-chain entry
+     * point in Java - the exact call every CVE writeup about deserialization
+     * is about.
+     *
+     * Found by a Gemini-written test file. The taint engine already had this
+     * idea (`pb.command(list); pb.start()` - a sink whose payload was loaded
+     * earlier); the signature rule did not.
+     */
     const argument = call.args[0];
-    if (!argument) return null;
+    if (!argument) {
+      if (!ZERO_ARGUMENT_READERS.has(call.calleeName)) return null;
+      return {
+        node: call.node,
+        message: `Untrusted bytes deserialised by ${call.calleeName}()`,
+        reasoning:
+          `\`${call.calleeName}()\` takes no arguments because the bytes were handed to ` +
+          `\`${call.receiverText || 'the stream'}\` earlier - it pulls the next object out of ` +
+          `that stream, and the bytes get to name the class it constructs. If the stream was ` +
+          `built from anything a caller controls, this is the classic Java gadget-chain entry ` +
+          `point. Validate and sign the payload before it reaches a stream, or use a data ` +
+          `format that cannot name a class.`,
+      };
+    }
+
+    /*
+     * A ROUND TRIP IS NOT AN INPUT.
+     *
+     *     pickle.loads(pickle.dumps(base))
+     *     json.loads(json.dumps(obj))
+     *
+     * Six of the sixteen deserialisation findings on a pandas scan were this,
+     * all in tests. Deserialising is dangerous because the BYTES come from
+     * somewhere else - a file, a socket, a cookie. Here they are produced two
+     * characters to the right, by this process, from a value this process
+     * already holds. There is no attacker position anywhere in the expression,
+     * and no amount of tracing will find one.
+     *
+     * The serialiser has to be visible as the DIRECT argument. `data = dumps(x)`
+     * on an earlier line then `loads(data)` still reports, because proving that
+     * one is the same round trip is a data-flow question, and this rule is not
+     * allowed to guess at data flow - that is what flow-verified means.
+     */
+    const argumentText = argument.text ?? '';
+    if (/^\s*(?:[\w.]+\.)?(?:dumps?|serialize|pack|marshal|encode)\s*\(/.test(argumentText)) {
+      return null;
+    }
 
     // A fixed literal is your own data, not an attacker's. `unserialize('a:0:{}')`
     // is a constant and cannot be chosen by anyone.

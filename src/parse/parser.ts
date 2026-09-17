@@ -197,6 +197,38 @@ export async function parseSource(source: string, grammar: string): Promise<Tree
 }
 
 /**
+ * Parse WITHOUT awaiting, for a grammar that has already been loaded.
+ *
+ * WHY THIS EXISTS. A syntax tree lives in WebAssembly memory, which the
+ * JavaScript garbage collector cannot see into and will never reclaim; the only
+ * way to free one is to call tree.delete() by hand. Holding every tree in a
+ * repository at once therefore costs about sixty times the source - measured,
+ * not guessed - and that is the ceiling a large scan dies against.
+ *
+ * The fix is to free trees and parse a file again if something needs it later.
+ * "Later" is inside the tracer, which is synchronous all the way down, so the
+ * re-parse has to be synchronous too.
+ *
+ * It is safe to demand that here because loading is what is actually async, and
+ * by the time anything re-parses, every grammar in the scan has already been
+ * loaded during the first pass. If that assumption ever breaks, this throws
+ * rather than silently returning nothing - a missing tree would look exactly
+ * like a file with no vulnerabilities in it.
+ */
+export function parseSourceSync(source: string, grammar: string): Tree {
+  const parser = parserCache.get(grammar);
+  if (!parser) {
+    throw new Error(
+      `Grammar ${grammar} is not loaded, so it cannot be parsed synchronously. ` +
+        'Every grammar must be loaded by the first (async) pass before anything re-parses.',
+    );
+  }
+  const tree = parser.parse(source);
+  if (!tree) throw new Error(`Parser returned no tree for grammar ${grammar}`);
+  return tree;
+}
+
+/**
  * Work out a file's language and parse it, from text already in memory.
  * No filesystem, no platform assumptions - this is what the browser calls too.
  */

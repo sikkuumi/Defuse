@@ -2,7 +2,9 @@
 package fixtures
 
 // EXPECT hardcoded-secret
-const dbPassword = "hunter2-not-a-real-password"
+// Value changed from "hunter2-not-a-real-password", which the placeholder rule
+// now correctly ignores - see the long note in secrets.js.
+const dbPassword = "Tr0ub4dor3xK"
 
 type Config struct {
 	ApiKey string

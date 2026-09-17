@@ -14,17 +14,25 @@
 import type { LanguageId } from '../parse/languages.js';
 import { LANGUAGES } from '../parse/languages.js';
 import type { Rule } from './contract.js';
+import { codeInjectionRule } from './code-injection.js';
 import { commandInjectionRule } from './command-injection.js';
 import { hardcodedSecretRule } from './hardcoded-secret.js';
 import { sqlInjectionRule } from './sql-injection.js';
+import { ssrfRule } from './ssrf.js';
 import { unsafeDeserializationRule } from './unsafe-deserialization.js';
 import { weakHashRule } from './weak-hash.js';
+import { formatStringRule } from './format-string.js';
+import { unboundedCopyRule } from './unbounded-copy.js';
 import { xssRule } from './xss.js';
 
 export const ALL_RULES: readonly Rule[] = [
   sqlInjectionRule,
   commandInjectionRule,
+  formatStringRule,
+  unboundedCopyRule,
+  codeInjectionRule,
   xssRule,
+  ssrfRule,
   unsafeDeserializationRule,
   hardcodedSecretRule,
   weakHashRule,

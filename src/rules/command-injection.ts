@@ -31,6 +31,7 @@ import type { Node } from 'web-tree-sitter';
 import type { LanguageId } from '../parse/languages.js';
 import { asCall, type Rule, type RuleHit } from './contract.js';
 import { analyzeStringExpression } from './lib/strings.js';
+import { partsAreGuarded } from './lib/guards.js';
 
 /** Calls that ALWAYS go through a shell. Dynamic argument = report it. */
 const SHELL_SINKS: Record<LanguageId, readonly string[]> = {
@@ -42,6 +43,26 @@ const SHELL_SINKS: Record<LanguageId, readonly string[]> = {
   // Every one of these hands the string to /bin/sh. `exec` is PHP's own
   // function, unrelated to the JS/Java `exec` above - it shares the name only.
   php: ['system', 'exec', 'shell_exec', 'passthru', 'popen', 'proc_open', 'pcntl_exec'],
+  /*
+   * C's shell calls, and the cleanest sink list in this table.
+   *
+   * There is no ambiguity to scope away here. `system()` runs /bin/sh, always,
+   * and has done since the 1970s; it has no safe overload, no options object,
+   * and no parameterised form to be confused with - which is exactly the thing
+   * that makes the SQL and deserialisation lists so fiddly elsewhere.
+   *
+   * The `execlp`/`execvp` variants search PATH, and `execl`/`execv` do not,
+   * but neither family uses a shell: they take an argument VECTOR, so a
+   * semicolon in an argument is a semicolon, not a command separator. They are
+   * the CORRECT fix for a system() call and are deliberately absent from this
+   * list - see safe/c-format-constant.c, which asserts execv stays quiet.
+   *
+   * The one exception is execl with an explicit shell: `execlp("sh", "sh",
+   * "-c", tainted, ...)`. That IS a shell, so `execlp` and `execvp` appear in
+   * CONDITIONAL_SINKS below, gated on a shell program being visible.
+   */
+  c: ['system', 'popen'],
+  cpp: ['system', 'popen'],
 };
 
 /**
@@ -57,6 +78,10 @@ const CONDITIONAL_SINKS: Record<LanguageId, readonly string[]> = {
   // PHP has no safe-by-default process API to make conditional, so this list is
   // empty and every shell call above is reported unconditionally.
   php: [],
+  // exec* takes an argument vector and is SAFE - unless the program it runs is
+  // itself a shell, which turns the next argument back into a command.
+  c: ['execl', 'execlp', 'execv', 'execvp', 'execle', 'execve'],
+  cpp: ['execl', 'execlp', 'execv', 'execvp', 'execle', 'execve'],
 };
 
 const SHELL_OPTION: Record<LanguageId, RegExp> = {
@@ -72,6 +97,11 @@ const SHELL_OPTION: Record<LanguageId, RegExp> = {
   // "-c", "1", host)` is genuinely safe, so matching on "-c" alone would be a
   // false positive on correct code.
   go: /["'`](sh|bash|zsh|cmd\.exe|powershell)["'`]/,
+  // Same reasoning as Go: only a shell PROGRAM makes an exec* call injectable.
+  // `execv("/bin/ping", args)` with a tainted arg is genuinely safe and must
+  // stay quiet, so the program name is what this matches - not the "-c".
+  c: /["'](\/bin\/)?(sh|bash|zsh|ksh|dash)["']/,
+  cpp: /["'](\/bin\/)?(sh|bash|zsh|ksh|dash)["']/,
 };
 
 function nodeText(node: Node): string {
@@ -121,14 +151,59 @@ export const commandInjectionRule: Rule = {
       status: 'implemented',
       note: 'Covers system, exec, shell_exec, passthru, popen, proc_open and pcntl_exec. Unlike Go and Java there is no conditional case to weigh: every one of these hands the string to a shell, so a dynamic argument is always reported.',
     },
+    c: {
+      status: 'implemented',
+      note:
+        'system() and popen() hand the string to /bin/sh with no safe overload to be confused with, which makes this the least ambiguous sink list in the tool. exec* takes an argument VECTOR and is reported ONLY when the program being run is itself a shell - execv("/bin/ping", args) with a tainted argument is genuinely safe and stays quiet. The build-then-run idiom (sprintf into a buffer, then system) is followed through the buffer.',
+    },
+    cpp: {
+      status: 'implemented',
+      note:
+        'Every C entry applies unchanged, since C++ inherits the whole libc surface and real code still uses it. Namespace-qualified calls (std::system) and method calls on objects are recognised in addition.',
+    },
   },
   check(shape, ctx): RuleHit | null {
     const call = asCall(shape);
     if (!call) return null;
     const language = ctx.language;
 
-    const always = SHELL_SINKS[language].includes(call.calleeName);
-    const conditional = CONDITIONAL_SINKS[language].includes(call.calleeName);
+    /*
+     * A SHELL FUNCTION THAT WAS RENAMED IS STILL A SHELL FUNCTION.
+     *
+     *     import { exec } from "child_process";
+     *     const execAsync = promisify(exec);
+     *     await execAsync(command);
+     *
+     * That is CVE-2025-53107 - twenty-three vulnerable files - and this rule
+     * found none of them, because the list holds `exec` and the call says
+     * `execAsync`. The near-identical CVE-2025-59046 WAS caught, purely because
+     * that author wrote `const exec = promisify(execCb)` and aliased back to a
+     * name we already knew. Two CVEs, and the only difference was luck.
+     *
+     * `promisify` is the standard Node idiom for exactly these APIs, so the
+     * aliased form is the normal one, not an exotic one. File-local only: an
+     * alias exported from another module is still missed.
+     */
+    const aliasOf = (called: string): string | null => {
+      const declaration = new RegExp(
+        `\\b${called.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=\\s*([^;\\n]+)`,
+      ).exec(ctx.file.source);
+      if (!declaration?.[1]) return null;
+      const initialiser = declaration[1];
+      if (!/\bpromisify\s*\(|require\s*\(|child_process/.test(initialiser)) return null;
+      for (const known of [...SHELL_SINKS[language], ...CONDITIONAL_SINKS[language]]) {
+        if (known !== called && new RegExp(`\\b${known}\\b`).test(initialiser)) return known;
+      }
+      return null;
+    };
+    const resolved =
+      SHELL_SINKS[language].includes(call.calleeName) ||
+      CONDITIONAL_SINKS[language].includes(call.calleeName)
+        ? call.calleeName
+        : (aliasOf(call.calleeName) ?? call.calleeName);
+
+    const always = SHELL_SINKS[language].includes(resolved);
+    const conditional = CONDITIONAL_SINKS[language].includes(resolved);
     if (!always && !conditional) return null;
 
     // For the conditional family, require visible evidence that a shell is used.
@@ -141,6 +216,14 @@ export const commandInjectionRule: Rule = {
       // A bare variable tells us nothing about a command; skip it rather than
       // report "you passed a variable to exec", which is not actionable.
       if (built.mechanism === 'opaque' && built.literalText.length === 0) continue;
+      /*
+       * A VALIDATION GUARD. Inside `if (is_numeric($octet[0]) && ...)` the value
+       * provably holds no shell metacharacter - it is digits. This is DVWA's own
+       * fix in exec/impossible.php, and reporting it was the seventh time this
+       * project punished a corrected file, and the last one still showing in the
+       * instrument panel. lib/guards.ts documents why the predicate list is tiny.
+       */
+      if (partsAreGuarded(arg, built.dynamicParts, language)) continue;
 
       return {
         node: arg,

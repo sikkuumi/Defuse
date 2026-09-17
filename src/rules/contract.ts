@@ -135,8 +135,27 @@ export interface Rule {
    * limitations is a rule pretending to be certain.
    */
   readonly limitations: string;
-  /** Per-language honesty declaration. Missing language = not-implemented. */
-  readonly support: Partial<Record<LanguageId, LanguageSupport>>;
+  /**
+   * Per-language honesty declaration. REQUIRED FOR EVERY LANGUAGE.
+   *
+   * This was `Partial<Record<...>>` with "missing language = not-implemented"
+   * as the default, and that default caused the worst kind of bug this project
+   * can have: the tool contradicting itself about its own coverage.
+   *
+   * Adding C and C++ silently marked all eight existing rules not-implemented
+   * for them. rulesForLanguage() then filtered those rules out, so their
+   * SIGNATURE matchers never ran on a C file at all - while the taint engine,
+   * which reaches rules by id and never consults this table, went on producing
+   * flow-verified `command-injection` findings in C. The report printed six of
+   * them directly underneath a line saying command-injection/c was NOT
+   * IMPLEMENTED.
+   *
+   * A silent default is what made that possible. Requiring every language
+   * turns the next language addition into a compile error per rule, which is
+   * exactly what the taint dictionaries already do - nineteen of them, each a
+   * real decision someone had to make on purpose.
+   */
+  readonly support: Record<LanguageId, LanguageSupport>;
   /** Which shapes this rule wants to see. Engine only calls matching ones. */
   readonly shapes: readonly Shape['kind'][];
   /** The decision. Return null for "not interesting". */

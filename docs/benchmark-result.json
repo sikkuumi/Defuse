@@ -1,0 +1,21 @@
+{
+  "scored": 1210,
+  "tp": 575,
+  "fp": 391,
+  "fn": 69,
+  "tn": 175,
+  "precision": "59.5%",
+  "recall": "89.3%",
+  "missedByCategory": {
+    "xss": 48,
+    "cmdi": 20,
+    "sqli": 1
+  },
+  "filesParsed": 2740,
+  "parseErrors": 0,
+  "durationMs": 20267,
+  "decoyFalsePositives": 144,
+  "decoyShare": "37%",
+  "engineVersion": "0.5.0",
+  "measuredAt": "2026-09-17"
+}

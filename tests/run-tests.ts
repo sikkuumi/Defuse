@@ -42,22 +42,48 @@ import { scan } from '../src/engine/scan.js';
 import { color, g } from '../src/report/colors.js';
 import { ALL_RULES } from '../src/rules/registry.js';
 import { LANGUAGES } from '../src/parse/languages.js';
-import { TAINT_COVERAGE_NOTES } from '../src/taint/dictionaries.js';
+import { TAINT_COVERAGE_NOTES, TAINT_DICTIONARIES } from '../src/taint/dictionaries.js';
+import { SINK_KIND_RULE } from '../src/taint/types.js';
 import { ENGINE_CAPABILITIES, type Finding } from '../src/core/finding.js';
+import { LICENCE_FILE_HEADING, LICENCE_SPDX } from '../src/core/licence.js';
 import { scoreAnalysis, SEVERITY_WEIGHT } from '../src/core/score.js';
 import { analyze } from '../src/core/analyze.js';
-import { looksLikeSql, matchKnownSecret } from '../src/rules/lib/strings.js';
+import { renderSarif } from '../src/report/sarif.js';
+import { renderHuman } from '../src/report/human.js';
+import {
+  renderRuleMatrix,
+  renderCounts,
+  renderBenchmark,
+  readBlock,
+  type BenchmarkResult,
+} from '../src/report/coverage-table.js';
+import { looksLikeSql, matchKnownSecret, isTestPath } from '../src/rules/lib/strings.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // dist/tests -> project root -> tests/fixtures (fixtures are never compiled)
 const FIXTURES = path.resolve(HERE, '../../tests/fixtures');
 
 /**
- * `// EXPECT rule-id`       a finding must appear (either confidence)
- * `// EXPECT-FLOW rule-id`  a finding must appear AND be flow-verified
- * `// EXPECT-NONE`          this whole file must produce nothing
+ * `// EXPECT rule-id`            a finding must appear (either confidence)
+ * `// EXPECT-FLOW rule-id`       a finding must appear AND be flow-verified
+ * `// EXPECT-SIGNATURE rule-id`  a finding must appear AND must NOT claim proof
+ * `// EXPECT-NONE`               this whole file must produce nothing
+ *
+ * EXPECT-SIGNATURE closes a hole in this vocabulary that existed for the whole
+ * project. The honesty contract has exactly one distinction at its centre -
+ * signature-based guess versus flow-verified proof - and until now the tests
+ * could only say "something fired" or "something fired WITH proof". There was
+ * no way to write down "this line is a fair guess, and claiming proof for it
+ * would be a lie", which is the assertion that actually protects the contract.
+ *
+ * It has a real subject. `out.println("<div>" + req.getContextPath() + "</div>")`
+ * concatenates a method result into HTML: a signature rule cannot know that
+ * value is a container constant and is right to flag it unverified. The tracer
+ * claiming it as PROVEN attacker-controlled - which is what Jenkins got - is a
+ * different kind of statement and a false one. Both facts are now assertable on
+ * the same line.
  */
-const EXPECT = /(?:\/\/|#|\/\*|\*)\s*EXPECT(-NONE|-FLOW)?\s*:?\s*([a-z0-9-]*)/i;
+const EXPECT = /(?:\/\/|#|\/\*|\*)\s*EXPECT(-NONE|-FLOW|-SIGNATURE)?\s*:?\s*([a-z0-9-]*)/i;
 
 interface Expectation {
   readonly file: string;
@@ -65,6 +91,8 @@ interface Expectation {
   readonly ruleId: string;
   /** EXPECT-FLOW: the finding must carry a verified source-to-sink path. */
   readonly requireFlow: boolean;
+  /** EXPECT-SIGNATURE: the finding must NOT carry one. Overclaim is a failure. */
+  readonly forbidFlow: boolean;
 }
 
 interface FileExpectations {
@@ -99,6 +127,7 @@ async function readExpectations(dir: string): Promise<FileExpectations[]> {
           line: index + 1,
           ruleId: match[2].toLowerCase(),
           requireFlow: modifier === '-FLOW',
+          forbidFlow: modifier === '-SIGNATURE',
         });
       }
     });
@@ -121,6 +150,7 @@ function findingsNear(
   line: number,
   ruleId: string,
   requireFlow: boolean,
+  forbidFlow = false,
 ): Finding[] {
   return findings.filter(
     (f) =>
@@ -128,7 +158,8 @@ function findingsNear(
       f.location.file.endsWith(relativeFile) &&
       f.location.startLine > line &&
       f.location.startLine <= line + WINDOW &&
-      (!requireFlow || f.confidence === 'flow-verified'),
+      (!requireFlow || f.confidence === 'flow-verified') &&
+      (!forbidFlow || f.confidence !== 'flow-verified'),
   );
 }
 
@@ -161,6 +192,7 @@ async function main(): Promise<number> {
         expectation.line,
         expectation.ruleId,
         expectation.requireFlow,
+        expectation.forbidFlow,
       );
       if (hits.length > 0) {
         passed++;
@@ -178,7 +210,12 @@ async function main(): Promise<number> {
         console.log(
           `    ${color.red(`${g('cross')} MISSED`)} ${short.padEnd(14)} line ${String(expectation.line + 1).padStart(3)}  ` +
             `${color.red(expectation.ruleId)} ` +
-            (expectation.requireFlow ? 'was not FLOW-VERIFIED here' : 'did not fire'),
+            (expectation.requireFlow
+              ? 'was not FLOW-VERIFIED here'
+              : expectation.forbidFlow
+                ? 'either did not fire, or OVERCLAIMED - this line must be reported ' +
+                  'as a signature guess, never as a proven flow'
+                : 'did not fire'),
         );
       }
     }
@@ -780,6 +817,143 @@ async function main(): Promise<number> {
    * under two rules and the tracer, so a change here moves numbers in places
    * a fixture would not connect to the cause.
    * ------------------------------------------------------------------- */
+  /*
+   * ---- test-path conventions, THIRD TIME THIS CLASS HAS BITTEN ----
+   *
+   * Scanning cal.com (3,941 TypeScript files) produced 196 findings, and 138 of
+   * them - 70% - were hardcoded-secret. The non-low ones were dominated by
+   *
+   *     apps/web/playwright/payment-apps.e2e.ts   access_token: "sk_test_randomString"
+   *     packages/testing/src/lib/bookingScenario/bookingScenario.ts
+   *
+   * Both are test code. `isTestPath` recognised neither, for boring reasons:
+   * `e2e` was matched only as a whole DIRECTORY segment, never as the `.e2e.ts`
+   * filename suffix that Playwright actually uses; and `tests?` matches `test`
+   * and `tests` but not `testing`.
+   *
+   * This is the same shape as the two lessons before it. elasticsearch proved
+   * SOURCES are per-framework, not per-language. Jenkins proved ESCAPERS are
+   * too. cal.com proves TEST-PATH CONVENTIONS are per-ecosystem - each list was
+   * built from the repositories I had happened to be shown, and each looked
+   * complete until a repository with different habits arrived.
+   *
+   * THE TRAP, which is why this is a table and not a wider regex: `latest.ts`
+   * contains "test", `contest/`, `testimonials.ts` and `protester.js` all
+   * contain it too, and treating any of them as test code would quietly
+   * downrank real findings in application source. Every one of them is in the
+   * MUST-NOT list below.
+   */
+  /*
+   * ---- "nothing found" must not read as "nothing here" ----
+   *
+   * Someone scanned juice-shop's server.ts on its own: one file, 117 imports,
+   * every one pointing at a route file outside the scan. The tool parsed it,
+   * examined 834 shapes, found 8 sources and reported nothing - all correct,
+   * because server.ts is wiring and the bugs live in what it imports. The same
+   * repository's routes/ directory yields seven findings, two flow-verified.
+   *
+   * The report already held the evidence (`importEdges 0`) and said nothing
+   * about what it meant, so an empty findings list read first as a clean bill
+   * of health and then as a broken tool. Both readings were the report's fault.
+   *
+   * The warning only fires when NOTHING resolved, so a normal project scan with
+   * a few unresolvable imports stays quiet - asserted in both directions here.
+   */
+  console.log(`\n${color.bold('  Scope warning')}`);
+  {
+    const base = {
+      ...result,
+      findings: [] as Finding[],
+    } as unknown as Parameters<typeof renderHuman>[0];
+    const withCrossFile = (importEdges: number, importsUnresolved: number) =>
+      renderHuman({
+        ...base,
+        crossFile: {
+          enabled: true,
+          filesIndexed: 1,
+          functionsIndexed: 9,
+          importEdges,
+          importsUnresolved,
+          resolved: 0,
+          ambiguous: 0,
+        },
+      } as unknown as Parameters<typeof renderHuman>[0]);
+
+    const narrow = withCrossFile(0, 94);   // the juice-shop server.ts case
+    const healthy = withCrossFile(12, 4);  // a normal project scan
+    const noImports = withCrossFile(0, 0); // a self-contained file
+
+    const problems: string[] = [];
+    if (!narrow.includes('SCOPE WARNING')) {
+      problems.push('a scan where NO import resolved did not warn');
+    }
+    if (healthy.includes('SCOPE WARNING')) {
+      problems.push('a scan whose imports DID resolve warned anyway');
+    }
+    if (noImports.includes('SCOPE WARNING')) {
+      problems.push('a scan with no local imports at all warned');
+    }
+    if (!narrow.includes('94')) {
+      problems.push('the warning does not name how many imports led nowhere');
+    }
+    if (problems.length === 0) {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} an empty result warns when nothing could be traced, ` +
+          `and stays quiet when it could`,
+      );
+    } else {
+      failed++;
+      for (const p of problems) console.log(`    ${color.red(g('cross'))} ${p}`);
+    }
+  }
+
+  console.log(`\n${color.bold('  Test-path conventions')}`);
+  {
+    const TEST_PATHS: readonly string[] = [
+      // the two cal.com missed
+      'apps/web/playwright/payment-apps.e2e.ts',
+      'packages/testing/src/lib/bookingScenario/bookingScenario.ts',
+      // conventions that already worked, kept so a rewrite cannot drop them
+      'src/__tests__/auth.ts',
+      'src/__mocks__/prisma.ts',
+      'lib/pkce.test.ts',
+      'lib/auth.spec.ts',
+      'internal/db_test.go',
+      'src/test/java/com/acme/FooTest.java',
+      'e2e/checkout.ts',
+      // other ecosystems' spellings
+      'cypress/integration/login.cy.ts',
+      'src/login.e2e-spec.ts',
+      'tests/conftest.py',
+      'src/FooTests.cs',
+    ];
+    const NOT_TEST_PATHS: readonly string[] = [
+      // every one of these CONTAINS a test word and is application source
+      'src/latest.ts',
+      'src/contest/entry.ts',
+      'components/testimonials.tsx',
+      'lib/protester.js',
+      'src/attestation/verify.ts',
+      'packages/features/oauth/services/OAuthService.ts',
+      'scripts/seed.ts',
+      'src/greatest-hits.ts',
+    ];
+    const wrong: string[] = [];
+    for (const p of TEST_PATHS) if (!isTestPath(p)) wrong.push(`missed test path: ${p}`);
+    for (const p of NOT_TEST_PATHS) if (isTestPath(p)) wrong.push(`app source called a test: ${p}`);
+    if (wrong.length === 0) {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} ${TEST_PATHS.length} test conventions recognised, ` +
+          `${NOT_TEST_PATHS.length} lookalikes in app source rejected`,
+      );
+    } else {
+      failed++;
+      for (const w of wrong) console.log(`    ${color.red(g('cross'))} ${w}`);
+    }
+  }
+
   console.log(`\n${color.bold('  Text-shape recognisers')}`);
 
   const SQL_MUST_MATCH: ReadonlyArray<readonly [string, string]> = [
@@ -893,6 +1067,328 @@ async function main(): Promise<number> {
     );
   }
 
+  console.log(`\n${color.bold('  Test-file ranking')}`);
+  /*
+   * NOTHING ELSE IN THIS SUITE CAN CATCH A REGRESSION HERE.
+   *
+   * Every fixture lives under tests/, so every fixture finding is a test-file
+   * finding - which means if the policy were deleted tomorrow, all 174 other
+   * checks would still pass and the only symptom would be a pandas scan going
+   * back to 65 criticals. So the policy gets a check of its own: the SAME source
+   * at two paths, asserting the finding survives and only its rank moves.
+   */
+  const rankSource = 'import pickle\ndef f(fh):\n    return pickle.load(fh)\n';
+  const inSrc = await analyze([{ path: 'src/app/loader.py', source: rankSource }]);
+  const inTest = await analyze([{ path: 'src/app/tests/test_loader.py', source: rankSource }]);
+  const srcHit = inSrc.findings.find((f) => f.ruleId === 'unsafe-deserialization');
+  const testHit = inTest.findings.find((f) => f.ruleId === 'unsafe-deserialization');
+  if (srcHit?.severity === 'critical' && testHit?.severity === 'medium') {
+    passed++;
+    console.log(
+      `    ${color.green(g('tick'))} the same finding ranks critical in src/ and medium ` +
+        `under tests/ - kept, not dropped`,
+    );
+  } else {
+    failed++;
+    console.log(
+      `    ${color.red(g('cross'))} expected critical in src/ and medium under tests/, got ` +
+        `${srcHit?.severity ?? 'nothing'} and ${testHit?.severity ?? 'nothing'}`,
+    );
+  }
+  // A traced path is deliberately NOT downgraded - isTestPath is a filename
+  // guess and pandas ships pandas/_testing/. Assert that exemption holds.
+  const flowSource =
+    'const express = require("express");\n' +
+    'const app = express();\n' +
+    'app.get("/x", (req, res) => {\n' +
+    '  const { exec } = require("child_process");\n' +
+    '  exec("ls " + req.query.dir);\n' +
+    '});\n';
+  const flowInTest = await analyze([{ path: 'tests/routes.test.js', source: flowSource }]);
+  const traced = flowInTest.findings.find((f) => f.verified);
+  if (traced && traced.severity === 'critical') {
+    passed++;
+    console.log(
+      `    ${color.green(g('tick'))} a flow-verified finding under tests/ keeps full severity`,
+    );
+  } else {
+    failed++;
+    console.log(
+      `    ${color.red(g('cross'))} flow-verified finding under tests/ was ` +
+        `${traced ? `downgraded to ${traced.severity}` : 'not produced at all'}`,
+    );
+  }
+
+  console.log(`\n${color.bold('  SARIF export')}`);
+  /*
+   * SARIF IS WHERE THE HONESTY LABEL IS EASIEST TO LOSE.
+   *
+   * The format has no field meaning "we did not verify this one". In CI nobody
+   * reads a terminal, and a red annotation looks equally certain whether we
+   * proved the flow or pattern-matched a line. So the two things that carry the
+   * distinction across get asserted rather than assumed: the label opens every
+   * message, and a codeFlow exists if and ONLY if the finding was traced.
+   *
+   * The document SHAPE is checked by the compiler (report/sarif.ts is typed as
+   * Sarif.Log), so these checks are about meaning, not structure.
+   */
+  const sarifText = renderSarif(result, false);
+  let sarifOk = true;
+  const sarifProblems: string[] = [];
+  try {
+    const log = JSON.parse(sarifText) as {
+      runs: Array<{
+        results: Array<{
+          ruleId: string;
+          message: { text: string };
+          codeFlows?: unknown[];
+          properties?: { confidence?: string };
+        }>;
+      }>;
+    };
+    const rows = log.runs[0]?.results ?? [];
+    if (rows.length !== result.findings.length) {
+      sarifProblems.push(`${rows.length} SARIF results for ${result.findings.length} findings`);
+    }
+    for (const [index, row] of rows.entries()) {
+      const finding = result.findings[index];
+      if (!finding) continue;
+      const hasFlow = Array.isArray(row.codeFlows) && row.codeFlows.length > 0;
+      if (finding.verified !== hasFlow) {
+        sarifProblems.push(
+          `${row.ruleId}: verified=${finding.verified} but codeFlow=${hasFlow}`,
+        );
+      }
+      const expected = finding.verified ? '[flow-verified]' : '[signature-based, UNVERIFIED]';
+      if (!row.message.text.startsWith(expected)) {
+        sarifProblems.push(`${row.ruleId}: message does not open with ${expected}`);
+      }
+      if (row.properties?.confidence !== finding.confidence) {
+        sarifProblems.push(`${row.ruleId}: properties.confidence disagrees with the finding`);
+      }
+    }
+  } catch (error) {
+    sarifOk = false;
+    sarifProblems.push(`SARIF output is not parseable JSON: ${(error as Error).message}`);
+  }
+  if (sarifOk && sarifProblems.length === 0) {
+    passed++;
+    console.log(
+      `    ${color.green(g('tick'))} every SARIF result carries its confidence label, and a ` +
+        `codeFlow exists exactly when the flow was traced (${result.findings.length} checked)`,
+    );
+  } else {
+    failed++;
+    for (const hit of sarifProblems.slice(0, 4)) console.log(`    ${color.red(g('cross'))} ${hit}`);
+  }
+
+  /*
+   * ---- keyed mutators declare a way back out ----
+   *
+   * A keyed mutator narrows taint: after `req.setAttribute(k, dirty)`, only the
+   * declared readers see the taint again and every other method on `req` comes
+   * back clean. That is a SILENCING mechanism, and the one thing it must never
+   * be is silently incomplete - a keyed mutator with no reader would file taint
+   * into a compartment nothing can ever open, quietly losing every real flow
+   * through it.
+   *
+   * So the pairing is checked rather than remembered:
+   *   - a keyed mutator must also be an ordinary mutator (it still dirties)
+   *   - declaring keyed mutators without readers is a taint black hole
+   *   - a method cannot be both, or taint would round-trip through itself
+   */
+  /*
+   * ---- every tracer finding passes the retraction gate ----
+   *
+   * THE FOURTH TIME THIS EXACT SPLIT HAS COST A FIX.
+   *
+   * `checkTaintAtSink` carries a comment saying it was factored out "so a
+   * second kind of sink cannot get half of this right". Two more emission
+   * sites then grew their own inline copies of the sanitised check anyway, so
+   * teaching the factored one about validation guards fixed the fixture and
+   * left DVWA's `exec/impossible.php` still reported - it reaches its sink
+   * through a path that had never heard of the new rule.
+   *
+   * Same shape as the Go `digest.Write` false positive, the command-injection
+   * aliasing miss, and the WordPress escaper fix that appeared not to work: a
+   * reason to stay quiet taught in one place and missed in another. A comment
+   * asking future edits to route through one function is a wish. This is the
+   * check.
+   */
+  console.log(`\n${color.bold('  Retraction gate')}`);
+  {
+    const tracerSource = await readFile(path.resolve(HERE, '../../src/taint/tracer.ts'), 'utf8');
+    const emissions = (tracerSource.match(/results\.push\(/g) ?? []).length;
+    const gates = (tracerSource.match(/retracted\(taint/g) ?? []).length;
+    if (emissions > 0 && gates >= emissions) {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} all ${emissions} tracer finding sites sit behind a retraction gate`,
+      );
+    } else {
+      failed++;
+      console.log(
+        `    ${color.red(g('cross'))} ${emissions} results.push site(s) but only ${gates} retracted() ` +
+          `gate(s) - a finding can be emitted without checking sanitisers or guards`,
+      );
+    }
+  }
+
+  console.log(`\n${color.bold('  Keyed mutators')}`);
+  {
+    const problems: string[] = [];
+    let checkedLanguages = 0;
+    for (const [language, dict] of Object.entries(TAINT_DICTIONARIES)) {
+      const keyed = dict.keyedMutators ?? [];
+      if (keyed.length === 0) continue;
+      checkedLanguages++;
+      const readers = dict.keyedReaders ?? [];
+      const mutators = dict.mutators ?? [];
+      if (readers.length === 0) {
+        problems.push(`${language}: keyedMutators declared with no keyedReaders - taint would be lost`);
+      }
+      for (const name of keyed) {
+        if (!mutators.includes(name)) {
+          problems.push(`${language}: \`${name}\` is a keyed mutator but not a mutator`);
+        }
+        if (readers.includes(name)) {
+          problems.push(`${language}: \`${name}\` is both a keyed writer and a keyed reader`);
+        }
+      }
+    }
+    if (problems.length === 0) {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} every keyed mutator dirties its object and declares a reader ` +
+          `(${checkedLanguages} language(s))`,
+      );
+    } else {
+      failed++;
+      for (const problem of problems) console.log(`    ${color.red(g('cross'))} ${problem}`);
+    }
+  }
+
+  console.log(`\n${color.bold('  Sink scoping')}`);
+  /*
+   * THE CLASS, NOT THE INSTANCE.
+   *
+   * Six separate false positives this month were one bug wearing six names:
+   *
+   *     document.write      matched process.stdout.write        (VS Code)
+   *     Map.get             matched as an outbound HTTP request (VS Code)
+   *     RegExp.exec         matched as a shell command          (gitea)
+   *     super.execute()     matched as a SQL query              (WebGoat)
+   *     esc_html() output   matched as unescaped HTML           (WordPress)
+   *     fmt.Sprintf callee  matched as a spliced-in value       (gitea)
+   *
+   * Every one was found by scanning a large repository, reading a finding that
+   * made no sense, and fixing THAT ENTRY. The class was audited once, printed
+   * in a table, and walked past - the `exec` bug was visible in that table
+   * before it produced a critical flow-verified claim about a regular
+   * expression in browser code.
+   *
+   * So the rule gets written down here instead of remembered: a sink method
+   * whose NAME is one that unrelated APIs also use must say something about the
+   * receiver. Not "should" - the suite fails. A new sink entry added next year
+   * with a generic name is red on the day it is written, which is the only
+   * moment the author knows what they meant.
+   *
+   * A content check (does the text look like SQL / like HTML?) is NOT accepted
+   * as a substitute. It narrows the value, not the object, and the six above
+   * were all wrong about the OBJECT.
+   */
+  const GENERIC_METHOD_NAMES = new Set([
+    // Names that belong to many unrelated APIs. Kept deliberately short and
+    // evidence-led: each of these is a method on at least three standard types
+    // in the languages this tool parses.
+    'get', 'set', 'put', 'post', 'add', 'append', 'prepend', 'insert',
+    'write', 'read', 'run', 'call', 'exec', 'execute', 'query', 'send',
+    'load', 'save', 'open', 'close', 'text', 'html', 'url', 'js',
+    'request', 'response', 'format', 'parse', 'process', 'handle',
+    'apply', 'invoke', 'render', 'update', 'create', 'delete', 'remove',
+    'find', 'filter', 'map', 'join', 'split', 'replace', 'emit', 'raw',
+  ]);
+  const unscopedGenerics: string[] = [];
+  for (const [lang, dictionary] of Object.entries(TAINT_DICTIONARIES)) {
+    if (lang === 'typescript') continue; // shares JavaScript's object
+    for (const sink of dictionary.callSinks ?? []) {
+      const scoped =
+        !!sink.requiredReceivers?.length ||
+        !!sink.bareOnly ||
+        !!sink.allowedReceivers?.length ||
+        !!sink.receiverPattern;
+      if (scoped) continue;
+      for (const method of sink.methods) {
+        if (GENERIC_METHOD_NAMES.has(method.toLowerCase())) {
+          unscopedGenerics.push(`${lang}/${sink.kind}: \`${method}\` has no receiver constraint`);
+        }
+      }
+    }
+  }
+  if (unscopedGenerics.length === 0) {
+    passed++;
+    console.log(
+      `    ${color.green(g('tick'))} no sink matches a generic method name without saying ` +
+        `something about the receiver`,
+    );
+  } else {
+    failed++;
+    console.log(
+      `    ${color.red(g('cross'))} ${unscopedGenerics.length} sink method(s) match a common ` +
+        `name with no receiver constraint:`,
+    );
+    for (const hit of unscopedGenerics.slice(0, 12)) {
+      console.log(`      ${color.red(g('middot'))} ${hit}`);
+    }
+  }
+
+  /*
+   * A CONSTRAINT CAN BE PRESENT AND STILL BE WRONG.
+   *
+   * The sink-scoping check above asks whether a generic method name says
+   * anything about its receiver. It cannot ask whether what it says is TRUE.
+   *
+   * Keycloak found the difference. Java's XSS sink was scoped - it had a
+   * receiver pattern - and the pattern contained `\bout\b`, so
+   * `System.out.println(...)` matched and four console writes were reported as
+   * "reaches an HTTP response body written without escaping", flow-verified, at
+   * high severity. Same shape as process.stdout.write read as document.write,
+   * and fmt.Fprintf(buf) read as page output. Three languages, one mistake.
+   *
+   * So every XSS destination pattern is tested against the places output goes
+   * that are NOT a page. A console is not a browser in any language, and a
+   * pattern that cannot tell them apart is not a constraint.
+   */
+  console.log(`\n${color.bold('  Destination patterns')}`);
+  const NOT_A_PAGE = [
+    'System.out', 'System.err', 'os.Stdout', 'os.Stderr',
+    'process.stdout', 'process.stderr', 'console', 'logger', 'buf',
+  ];
+  const leaks: string[] = [];
+  for (const [lang, dictionary] of Object.entries(TAINT_DICTIONARIES)) {
+    if (lang === 'typescript') continue;
+    for (const sink of dictionary.callSinks ?? []) {
+      if (sink.kind !== 'xss') continue;
+      const pattern = sink.receiverPattern ?? sink.writerArgPattern;
+      if (!pattern) continue;
+      for (const destination of NOT_A_PAGE) {
+        if (pattern.test(destination)) {
+          leaks.push(`${lang} ${JSON.stringify(sink.methods).slice(0, 40)} matches \`${destination}\``);
+        }
+      }
+    }
+  }
+  if (leaks.length === 0) {
+    passed++;
+    console.log(
+      `    ${color.green(g('tick'))} no XSS destination pattern matches a console, a log or a ` +
+        `buffer (${NOT_A_PAGE.length} checked per sink)`,
+    );
+  } else {
+    failed++;
+    for (const leak of leaks.slice(0, 6)) console.log(`    ${color.red(g('cross'))} ${leak}`);
+  }
+
   console.log(`\n${color.bold('  Documentation drift')}`);
   const phaseMention = /\bPhase\s*\d/i;
   const userFacingText: Array<{ where: string; text: string }> = [];
@@ -955,22 +1451,54 @@ async function main(): Promise<number> {
    * string literals. Comments are left alone on purpose: they record why the
    * code looks like it does, and build history is legitimate there. Only text
    * that can reach a user is held to the rule. */
-  const sourceDirs = ['rules', 'report', 'core', 'taint', 'parse'];
+  /*
+   * `tests` is in this list because of a bug this very check should have
+   * caught and did not. The suite printed
+   *
+   *     all five languages exercised: go, java, javascript, php, python, typescript
+   *
+   * - five, listing six - for a whole day after PHP was added. The drift rules
+   * scanned every rule's metadata and never the code that PRINTS, so the one
+   * file whose entire job is checking for stale claims was the one file making
+   * one. A checker exempt from its own check is not a checker.
+   */
+  /*
+   * '.' IS IN THIS LIST BECAUSE cli.ts WAS NOT.
+   *
+   * The help text printed "in all five languages" for weeks after PHP shipped -
+   * the first thing `secureScan --help` says, to every user. The five
+   * subdirectories below were scanned; src/cli.ts sits at the ROOT of src/ and
+   * was walked by nothing.
+   *
+   * Fourth time a hand-written language claim has gone stale, and the third
+   * time the fix was "the checker was not looking there". Naming '.' rather
+   * than adding 'cli' means a new top-level file is covered on the day it is
+   * written instead of on the day it is wrong.
+   */
+  const sourceDirs = ['.', 'rules', 'report', 'core', 'taint', 'parse'];
   const literal = /(['"`])((?:\\.|(?!\1)[^\\])*)\1/g;
   const inSource: string[] = [];
-  for (const dir of sourceDirs) {
-    const base = path.resolve(HERE, '../../src', dir);
+  for (const dir of [...sourceDirs, 'tests']) {
+    const base =
+      dir === 'tests' ? path.resolve(HERE, '../../tests') : path.resolve(HERE, '../../src', dir);
+    // '.' means the src/ root only - its subdirectories are listed separately
+    // and walking them twice would double-report the same literal.
+    const shallow = dir === '.';
     const walkDir = async (at: string): Promise<void> => {
       for (const entry of await readdir(at, { withFileTypes: true })) {
         const full = path.join(at, entry.name);
-        if (entry.isDirectory()) await walkDir(full);
-        else if (entry.name.endsWith('.ts')) {
+        if (entry.isDirectory()) {
+          if (!shallow) await walkDir(full);
+          continue;
+        }
+        if (entry.name.endsWith('.ts')) {
           const text = await readFile(full, 'utf8');
           // Strip comments first so build-history notes are not flagged.
           const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*/g, '');
           for (const match of code.matchAll(literal)) {
-            if (phaseMention.test(match[2] ?? '')) {
-              inSource.push(`${dir}/${entry.name}: ${(match[2] ?? '').slice(0, 60)}`);
+            const value = match[2] ?? '';
+            if (phaseMention.test(value) || /\b(three|four|five|six|seven|eight)\s+languages?\b/i.test(value)) {
+              inSource.push(`${dir}/${entry.name}: ${value.slice(0, 60)}`);
             }
           }
         }
@@ -981,11 +1509,80 @@ async function main(): Promise<number> {
   if (inSource.length === 0) {
     passed++;
     console.log(
-      `    ${color.green(g('tick'))} no string literal in src/{${sourceDirs.join(',')}} names a phase number`,
+      `    ${color.green(g('tick'))} no string literal in src/{${sourceDirs.join(',')}} or tests/ ` +
+        `names a phase number or a hard-coded language count`,
     );
   } else {
     failed++;
     for (const hit of inSource.slice(0, 6)) console.log(`    ${color.red(g('cross'))} ${hit}`);
+  }
+
+  /*
+   * THE SAME DRIFT, IN THE ONE DIRECTORY THE DRIFT CHECK NEVER READ.
+   *
+   * The browser UI's landing card said
+   *
+   *     JavaScript \u00b7 TypeScript \u00b7 Python \u00b7 Java \u00b7 Go
+   *
+   * for weeks after PHP shipped - the front page of the tool advertising five
+   * of its six languages, to every person who opened it. Third time a
+   * hand-written language list has gone stale, and the check above, which
+   * exists precisely for this, walks src/{rules,report,core,taint,parse} and
+   * tests/ and has never once looked at ui/.
+   *
+   * A checker exempt from its own check is not a checker - that sentence is
+   * already written above this one about a different directory, which is the
+   * whole lesson: fixing the instance is not fixing the class.
+   *
+   * ui/engine/ is skipped because it is compiled from src/ and the rules above
+   * already cover its sources.
+   */
+  const languageNames = LANGUAGES.map((l) => l.displayName);
+  const partialLists: string[] = [];
+  for (const rel of ['index.html', 'app.js', 'worker.js']) {
+    const full = path.resolve(HERE, '../../ui', rel);
+    let text: string;
+    try {
+      text = await readFile(full, 'utf8');
+    } catch {
+      continue; // ui/ is optional in a source-only checkout
+    }
+    // Strip comments - build-history notes are allowed to name an old list.
+    const code = text
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    for (const [index, line] of code.split('\n').entries()) {
+      /*
+       * ESCAPED, because a display name is not a regular expression.
+       *
+       * This line built `/\bC++\b/` the moment C++ was added and crashed the
+       * whole runner with "Nothing to repeat". It had been correct for six
+       * languages by luck - every one of their names happened to be plain
+       * letters. A word boundary next to `+` does not mean what it looks like
+       * either, so the boundary is only applied where the name actually starts
+       * and ends with a word character.
+       */
+      const named = languageNames.filter((name) => {
+        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const left = /^\w/.test(name) ? '\\b' : '';
+        const right = /\w$/.test(name) ? '\\b' : '';
+        return new RegExp(`${left}${escaped}${right}`).test(line);
+      });
+      if (named.length >= 2 && named.length < languageNames.length) {
+        partialLists.push(`ui/${rel}:${index + 1} lists ${named.join(', ')} - missing ${languageNames.filter((n) => !named.includes(n)).join(', ')}`);
+      }
+    }
+  }
+  if (partialLists.length === 0) {
+    passed++;
+    console.log(
+      `    ${color.green(g('tick'))} no file in ui/ writes a partial language list ` +
+        `(${languageNames.length} languages, derived at runtime)`,
+    );
+  } else {
+    failed++;
+    for (const hit of partialLists.slice(0, 4)) console.log(`    ${color.red(g('cross'))} ${hit}`);
   }
 
   const stale = userFacingText.filter((entry) => phaseMention.test(entry.text));
@@ -1037,7 +1634,7 @@ async function main(): Promise<number> {
     }
   }
 
-  /* ---- parsing health across all five languages ---- */
+  /* ---- parsing health across every language ---- */
   console.log(`\n${color.bold('  Parser health')}`);
   if (result.parseProblems.length === 0) {
     passed++;
@@ -1055,10 +1652,355 @@ async function main(): Promise<number> {
   const missing = expectedLanguages.filter((l) => !languagesSeen.includes(l));
   if (missing.length === 0) {
     passed++;
-    console.log(`    ${color.green(g('tick'))} all five languages exercised: ${languagesSeen.join(', ')}`);
+    console.log(
+      `    ${color.green(g('tick'))} all ${languagesSeen.length} languages exercised: ` +
+        `${languagesSeen.join(', ')}`,
+    );
   } else {
     failed++;
     console.log(`    ${color.red(g('cross'))} no fixture exercised: ${missing.join(', ')}`);
+  }
+
+  /*
+   * ---- the README's own numbers ----
+   *
+   * FIFTH DRIFT BUG. The capabilities text, the test-suite output, ui/index.html
+   * and src/cli.ts have each gone stale in turn, and each time the fix was to
+   * derive the number instead of writing it down. The README was the one place
+   * still writing it down: it claimed 112 checks while the suite ran 198.
+   *
+   * A README that overstates is only embarrassing. A README that UNDERSTATES is
+   * worse than it looks, because "112 checks" is the number a client reads as
+   * the evidence behind every claim in the document. Either way it is a figure
+   * about this tool that this tool was not checking, which is the whole disease.
+   *
+   * This check runs LAST and counts itself: the total it compares against is
+   * `passed + failed + 1`, which is the same number the summary line prints
+   * below whether this check passes or fails.
+   */
+  /*
+   * ---- the README's DERIVED BLOCKS ----
+   *
+   * A NARROW INSTRUMENT TRUSTED AS A BROAD ONE.
+   *
+   * The check below this one has guarded the README's test-count line for some
+   * time, and it passed the whole while. Pointing a fresh reader at the repo
+   * found what it was not looking at:
+   *
+   *     README said   5 rules       registry ships  8
+   *     README said   5 languages   languages.ts    6, PHP absent entirely
+   *     README said   "Not SARIF"   report/sarif.ts is a SARIF 2.1.0 exporter
+   *     README said   13.8% recall  the scorer measures 76.4%
+   *
+   * Every one had been true when written. The check-count assertion was the
+   * right idea applied to exactly one sentence, and passing it was read as
+   * "the README is consistent" rather than "the README is consistent about the
+   * one line I taught it to read".
+   *
+   * So the counts, the coverage matrix and the benchmark table are generated
+   * now, and this regenerates them and compares. Prose outside the blocks stays
+   * hand-written on purpose - narrative is not derivable and should not pretend
+   * to be. The fix when this fails is `npm run sync:readme`.
+   */
+  console.log(`\n${color.bold('  README derived blocks')}`);
+  const readmePath = path.resolve(HERE, '../../README.md');
+  {
+    const markdown = await readFile(readmePath, 'utf8');
+    const resultPath = path.resolve(HERE, '../../docs/benchmark-result.json');
+    const expected: Array<[string, string]> = [
+      ['rule-matrix', renderRuleMatrix()],
+      ['counts', renderCounts()],
+    ];
+    let benchmarkNote = '';
+    try {
+      const result = JSON.parse(await readFile(resultPath, 'utf8')) as BenchmarkResult;
+      expected.push(['benchmark', renderBenchmark(result)]);
+      if (result.engineVersion !== ENGINE_CAPABILITIES.version) {
+        benchmarkNote =
+          ` (measured on ${result.engineVersion}, engine is now ` +
+          `${ENGINE_CAPABILITIES.version} - re-run \`npm run benchmark\`)`;
+      }
+    } catch {
+      benchmarkNote = ' (docs/benchmark-result.json missing - run `npm run benchmark`)';
+    }
+
+    const stale: string[] = [];
+    for (const [name, body] of expected) {
+      const actual = readBlock(markdown, name);
+      if (actual === null) stale.push(`block "${name}" is missing from README.md`);
+      else if (actual !== body.trim()) stale.push(`block "${name}" disagrees with the registry`);
+    }
+    if (stale.length === 0 && benchmarkNote === '') {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} ${expected.length} generated blocks match the registry ` +
+          `and the recorded benchmark`,
+      );
+    } else {
+      failed++;
+      for (const problem of stale) console.log(`    ${color.red(g('cross'))} ${problem}`);
+      if (benchmarkNote) console.log(`    ${color.red(g('cross'))} benchmark${benchmarkNote}`);
+      console.log(`      ${color.dim('fix: npm run sync:readme')}`);
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
+   * THE COVERAGE MATRIX MUST NOT CONTRADICT THE ENGINE.
+   *
+   * There are two independent paths to a finding, and only one of them reads
+   * the rule support table:
+   *
+   *   the SIGNATURE pass  ->  rulesForLanguage(), which SKIPS any rule whose
+   *                           support entry says not-implemented
+   *   the TAINT pass      ->  reaches a rule by id through SINK_KIND_RULE, and
+   *                           never consults support at all
+   *
+   * So a language can be listed in a taint dictionary while every rule declares
+   * it unsupported, and the scan will then print flow-verified findings
+   * underneath a coverage line saying that rule is NOT IMPLEMENTED for that
+   * language. That is exactly what happened when C and C++ were added: six
+   * verified command injections in a C file, and `command-injection/c` in the
+   * not-implemented list on the same screen.
+   *
+   * It is the worst class of bug this project can ship, because the thing being
+   * wrong is the honesty report itself. This check ties the two halves together:
+   * if a dictionary has a sink of kind K for language L, the rule that kind maps
+   * to must admit it covers L.
+   * ------------------------------------------------------------------ */
+  console.log(`\n${color.bold('  Coverage matrix vs engine')}`);
+  {
+    const contradictions: string[] = [];
+    for (const [language, dictionary] of Object.entries(TAINT_DICTIONARIES)) {
+      if (!dictionary) continue;
+      const kinds = new Set<string>([
+        ...dictionary.callSinks.map((sink) => sink.kind),
+        ...dictionary.assignSinks.map((sink) => sink.kind),
+        ...(dictionary.receiverSinks ?? []).map((sink) => sink.kind),
+      ]);
+      for (const kind of kinds) {
+        const ruleId = SINK_KIND_RULE[kind as keyof typeof SINK_KIND_RULE];
+        const rule = ALL_RULES.find((candidate) => candidate.id === ruleId);
+        if (!rule) {
+          contradictions.push(`${language}: sink kind "${kind}" maps to unknown rule "${ruleId}"`);
+          continue;
+        }
+        const support = rule.support[language as keyof typeof rule.support];
+        if (!support || support.status === 'not-implemented') {
+          contradictions.push(
+            `${ruleId}/${language}: the taint dictionary has a "${kind}" sink, so the engine ` +
+              `CAN report this - but support says ${support?.status ?? 'nothing'}`,
+          );
+        }
+      }
+    }
+
+    if (contradictions.length === 0) {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} every language with a taint sink is declared supported ` +
+          `by the rule that sink reports as`,
+      );
+    } else {
+      failed++;
+      for (const problem of contradictions.slice(0, 6)) {
+        console.log(`    ${color.red(g('cross'))} ${problem}`);
+      }
+      if (contradictions.length > 6) {
+        console.log(`      ${color.dim(`... and ${contradictions.length - 6} more`)}`);
+      }
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
+   * LICENCE - three places, one claim.
+   *
+   * The licence is stated in src/core/licence.ts, in package.json, in the
+   * LICENSE file and in the README. Four copies of a legal fact is four chances
+   * to be telling somebody something untrue, and this project's record with
+   * duplicated facts is bad enough to be a policy: the README claimed 112
+   * checks while 207 ran, and claimed 13.8% recall for about twenty versions
+   * after that stopped being true.
+   *
+   * A wrong check count embarrasses the author. A wrong licence misleads
+   * whoever relied on it, which is worse, so it gets a test.
+   * ------------------------------------------------------------------ */
+  console.log(`\n${color.bold('  Licence')}`);
+  {
+    const packageJson = JSON.parse(
+      await readFile(path.resolve(HERE, "../../package.json"), 'utf8'),
+    ) as { license?: string };
+
+    if (packageJson.license === LICENCE_SPDX) {
+      passed++;
+      console.log(`    ${color.green(g('tick'))} package.json says ${LICENCE_SPDX}`);
+    } else {
+      failed++;
+      console.log(
+        `    ${color.red(g('cross'))} package.json says "${packageJson.license ?? '(nothing)'}" ` +
+          `but the engine says ${LICENCE_SPDX}`,
+      );
+    }
+
+    let licenceText = '';
+    try {
+      licenceText = await readFile(path.resolve(HERE, "../../LICENSE"), 'utf8');
+    } catch {
+      /* absent - reported below */
+    }
+    // Length is checked as well as the heading: a LICENSE file that starts
+    // correctly and was then truncated is the failure this would otherwise miss,
+    // and the AGPL is ~34,000 characters.
+    if (licenceText.startsWith(LICENCE_FILE_HEADING) && licenceText.length > 30000) {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} LICENSE holds the full ${LICENCE_FILE_HEADING} ` +
+          `(${licenceText.length.toLocaleString()} characters)`,
+      );
+    } else {
+      failed++;
+      console.log(
+        `    ${color.red(g('cross'))} LICENSE is missing, truncated, or is not the ` +
+          `${LICENCE_FILE_HEADING} (${licenceText.length} characters)`,
+      );
+    }
+
+    // The README is where a human looks first, so it has to agree too.
+    const readmeText = await readFile(readmePath, 'utf8');
+    if (readmeText.includes(LICENCE_SPDX)) {
+      passed++;
+      console.log(`    ${color.green(g('tick'))} README names ${LICENCE_SPDX}`);
+    } else {
+      failed++;
+      console.log(
+        `    ${color.red(g('cross'))} README never names ${LICENCE_SPDX} - a reader has ` +
+          `no way to learn the terms without opening LICENSE`,
+      );
+    }
+
+    /**
+     * The packaged tarball must contain the source, not only the build output.
+     *
+     * This is a licence requirement rather than a nicety. Shipping compiled
+     * dist/ under the AGPL obliges the distributor to provide the Corresponding
+     * Source - the form a person would actually modify, which is the
+     * TypeScript. The `files` field shipped dist/src and not src until this
+     * check was written.
+     */
+    const files = (JSON.parse(await readFile(path.resolve(HERE, "../../package.json"), 'utf8')) as {
+      files?: string[];
+    }).files ?? [];
+    const missing = ['src', 'LICENSE'].filter((entry) => !files.includes(entry));
+    if (missing.length === 0) {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} the published package ships its own source and licence`,
+      );
+    } else {
+      failed++;
+      console.log(
+        `    ${color.red(g('cross'))} package.json "files" omits ${missing.join(' and ')} - ` +
+          `a copyleft licence on a package that ships no source is not a licence anyone can obey`,
+      );
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
+   * TREE MEMORY - the redesign must not have moved an answer.
+   *
+   * Syntax trees are now freed during a scan and the file parsed again if
+   * something needs it later (src/parse/tree-store.ts). That is the kind of
+   * change that can be wrong in a way no accuracy figure notices: a node
+   * located at the wrong offset in a re-parsed tree would produce a confident
+   * proof through the wrong function, and precision and recall would barely
+   * move.
+   *
+   * So the fixture tree is scanned twice - once with room for every tree, once
+   * with a budget small enough that nearly every one is evicted - and the two
+   * finding lists must be identical.
+   *
+   * The FIRST check is the one that makes the second mean anything. A budget
+   * that never actually evicts would let the comparison pass while testing
+   * nothing at all, which is exactly how a test ends up guarding an empty room.
+   * ------------------------------------------------------------------ */
+  console.log(`\n${color.bold('  Tree memory')}`);
+  {
+    const previousBudget = process.env['NS1_TREE_BUDGET_MB'];
+    process.env['NS1_TREE_BUDGET_MB'] = '1';
+    const squeezed = await scan(FIXTURES, {});
+    if (previousBudget === undefined) delete process.env['NS1_TREE_BUDGET_MB'];
+    else process.env['NS1_TREE_BUDGET_MB'] = previousBudget;
+
+    const memory = squeezed.treeMemory;
+    if (memory.evictions > 0 && memory.reparses > 0) {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} a 1MB budget really does evict ` +
+          `(${memory.evictions} evictions, ${memory.reparses} re-parses) - ` +
+          `so the comparison below is a real test`,
+      );
+    } else {
+      failed++;
+      console.log(
+        `    ${color.red(g('cross'))} a 1MB budget evicted ${memory.evictions} trees and ` +
+          `re-parsed ${memory.reparses} files - nothing was exercised, so the ` +
+          `identity check below proves nothing`,
+      );
+    }
+
+    // detectedAt is wall-clock and differs between any two scans.
+    const comparable = (findings: readonly Finding[]) =>
+      JSON.stringify(
+        findings.map(({ detectedAt: _ignored, ...rest }) => rest),
+      );
+    if (comparable(result.findings) === comparable(squeezed.findings)) {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} ${squeezed.findings.length} findings are identical ` +
+          `whether trees are held or re-parsed`,
+      );
+    } else {
+      failed++;
+      console.log(
+        `    ${color.red(g('cross'))} findings differ between a held-tree scan ` +
+          `(${result.findings.length}) and a re-parsed one (${squeezed.findings.length}) - ` +
+          `a re-parsed tree is not being read the same way`,
+      );
+    }
+
+    const relocationsFailed = squeezed.crossFile.enabled
+      ? squeezed.crossFile.relocationsFailed
+      : 0;
+    if (relocationsFailed === 0) {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} every indexed function was found again in its ` +
+          `re-parsed tree`,
+      );
+    } else {
+      failed++;
+      console.log(
+        `    ${color.red(g('cross'))} ${relocationsFailed} function(s) could not be located ` +
+          `in a re-parsed tree - the resolution was declined, but a deterministic ` +
+          `parse should never need that escape hatch`,
+      );
+    }
+  }
+
+  console.log(`\n${color.bold('  README self-consistency')}`);
+  const readmeClaim = /`npm test`\s*[—-]\s*([\d,]+)\s*checks/.exec(await readFile(readmePath, 'utf8'));
+  const totalWithThisCheck = passed + failed + 1;
+  const claimedCount = readmeClaim?.[1] ? Number(readmeClaim[1].replace(/,/g, '')) : NaN;
+  if (claimedCount === totalWithThisCheck) {
+    passed++;
+    console.log(
+      `    ${color.green(g('tick'))} README says ${claimedCount} checks, and ${totalWithThisCheck} ran`,
+    );
+  } else {
+    failed++;
+    console.log(
+      `    ${color.red(g('cross'))} README claims ${readmeClaim?.[1] ?? '(no number found)'} checks, ` +
+        `but ${totalWithThisCheck} ran - update the "npm test" line in README.md`,
+    );
   }
 
   /* ---- summary ---- */

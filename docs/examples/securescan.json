@@ -1,0 +1,20 @@
+{
+  "//": "Copy to .securescan.json in your repository root. Every key here also",
+  "//exclude": "exists as a command-line flag, and the flag always wins.",
+
+  "exclude": ["node_modules", "dist", "vendor", "**/*.min.js"],
+
+  "//failOn": "Exit 1 at or above this level. 'none' always exits 0.",
+  "failOn": "critical",
+
+  "//minSeverity": "Hide below this level in the TERMINAL report only. Findings",
+  "//minSeverity2": "stay in --json and --sarif regardless - the machine output",
+  "//minSeverity3": "is never allowed to be rosier than the human one.",
+  "minSeverity": "info",
+
+  "//only": "Restrict to these rule ids. Omit to run every rule.",
+  "//note": "There is deliberately NO way to disable a rule here. A config that",
+  "//note2": "can switch off the rules a repo fails makes findings vanish with",
+  "//note3": "no record. Use securescan:ignore <rule> - <reason> on the line",
+  "//note4": "instead; those are counted and listed in every report."
+}

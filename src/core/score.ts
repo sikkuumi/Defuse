@@ -118,6 +118,22 @@ export interface ScoreReport {
    * gauges, because it is what tells you how much of the dial to trust.
    */
   readonly blindSpots: readonly { readonly label: string; readonly count: number }[];
+  /**
+   * How many attacker-controlled SOURCES the tracer recognised in this scan.
+   *
+   * Reported ALWAYS, including - especially - when it is zero, which is why it
+   * cannot live in blindSpots above: that list drops anything with a count of
+   * zero, and zero is the interesting reading here.
+   *
+   * Elasticsearch is why. 3,999 Java files, a REST API over the network, and
+   * zero flow-verified findings. It contains 0 `@RequestParam` and 0
+   * `getParameter()` - it has its own REST layer, which the dictionaries do not
+   * model, so there was never a source to start a trace from. "0 flows proven"
+   * read like good news and was actually "we could not begin".
+   *
+   * Every flow number in a report is downstream of this one.
+   */
+  readonly sourcesFound: number;
 }
 
 function weigh(findings: readonly Finding[]): { total: number; bySeverity: Map<Severity, number> } {
@@ -297,6 +313,10 @@ export function scoreAnalysis(result: AnalysisResult, filesFound = 0): ScoreRepo
   // can see in the printed paths. Saying "3" while the paths show 2 looks like
   // an error until the label admits which population it is counting.
   const blindSpots = [
+    {
+      label: 'expressions too deeply nested to walk (generated or minified code)',
+      count: result.traceLimits.astTruncations,
+    },
     { label: 'call chains cut at the depth limit', count: result.traceLimits.depthTruncations },
     { label: 'recursive calls not re-entered', count: result.traceLimits.recursionStops },
     {
@@ -310,5 +330,11 @@ export function scoreAnalysis(result: AnalysisResult, filesFound = 0): ScoreRepo
     { label: 'files that did not fully parse', count: result.parseProblems.length },
   ].filter((spot) => spot.count > 0);
 
-  return { gauges, examinedNothing, shapesExamined: result.stats.shapesExamined, blindSpots };
+  return {
+    gauges,
+    examinedNothing,
+    shapesExamined: result.stats.shapesExamined,
+    blindSpots,
+    sourcesFound: result.traceLimits.sourcesFound,
+  };
 }

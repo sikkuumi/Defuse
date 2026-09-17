@@ -39,8 +39,10 @@ import {
   analyzeStringExpression,
   isStringBuildingExpression,
   looksLikeSql,
+  expandsOnlyPlaceholders,
   partsAreProvablyConstant,
 } from './lib/strings.js';
+import { partsAreGuarded } from './lib/guards.js';
 
 /**
  * Methods that hand a string to a database engine.
@@ -78,6 +80,24 @@ const QUERY_METHODS: Record<LanguageId, readonly string[]> = {
     'pg_query', 'pg_send_query', 'sqlite_query', 'sqlsrv_query',
     'mysql_query', 'db_query',
   ],
+  /*
+   * C database APIs are plain functions, not methods, and every one of them
+   * takes the SQL as a bare char* - there is no query builder to be confused
+   * with. The parameterised forms have DIFFERENT names (mysql_stmt_prepare,
+   * PQexecParams, sqlite3_prepare_v2), so they are absent here and the correct
+   * code stays quiet, which is the same distinction the other languages draw
+   * between `query` and `prepare`.
+   */
+  c: [
+    'mysql_query', 'mysql_real_query', 'PQexec', 'sqlite3_exec',
+    'sqlite3_get_table', 'dbsqlexec', 'SQLExecDirect',
+  ],
+  // C++ adds the method-call forms that wrapper libraries expose.
+  cpp: [
+    'mysql_query', 'mysql_real_query', 'PQexec', 'sqlite3_exec',
+    'sqlite3_get_table', 'SQLExecDirect',
+    'query', 'execute', 'exec',
+  ],
 };
 
 const METHOD_SETS: Record<LanguageId, ReadonlySet<string>> = {
@@ -87,6 +107,8 @@ const METHOD_SETS: Record<LanguageId, ReadonlySet<string>> = {
   java: new Set(QUERY_METHODS.java),
   go: new Set(QUERY_METHODS.go),
   php: new Set(QUERY_METHODS.php),
+  c: new Set(QUERY_METHODS.c),
+  cpp: new Set(QUERY_METHODS.cpp),
 };
 
 const MECHANISM_WORDS: Record<string, string> = {
@@ -140,6 +162,16 @@ export const sqlInjectionRule: Rule = {
       status: 'implemented',
       note: 'Covers PDO and mysqli in both their forms - the procedural functions (mysqli_query, pg_query) and the object methods ($pdo->query, ->prepare). `prepare` is watched on purpose: a prepared statement whose SQL was concatenated is not parameterised, it is a slower injection. NOT covered: an ORM that builds SQL inside its own package, and .blade.php / .twig templates, which are not parsed.',
     },
+    c: {
+      status: 'implemented',
+      note:
+        'Covers the C database APIs, which are plain functions taking the statement as a bare char*: mysql_query, mysql_real_query, PQexec, sqlite3_exec, sqlite3_get_table and SQLExecDirect. The parameterised forms have DIFFERENT names (mysql_stmt_prepare, PQexecParams, sqlite3_prepare_v2) so correct code stays quiet. Queries are almost always built by sprintf into a char buffer, which the out-parameter tracking follows.',
+    },
+    cpp: {
+      status: 'implemented',
+      note:
+        'Every C entry applies unchanged, since C++ inherits the whole libc surface and real code still uses it. Namespace-qualified calls (std::system) and method calls on objects are recognised in addition.',
+    },
   },
   check(shape, ctx): RuleHit | null {
     const language = ctx.language;
@@ -163,6 +195,17 @@ export const sqlInjectionRule: Rule = {
         // "Assembled" from values that are all fixed literals is not assembled
         // in any way a reader cares about. See partsAreProvablyConstant.
         if (partsAreProvablyConstant(arg, built.dynamicParts, language)) continue;
+        /*
+         * A VALIDATION GUARD. `is_numeric($octet[0])` transforms nothing, so the
+         * sanitiser model never saw it - but inside the branch it guards, the
+         * value provably holds no metacharacter. This is DVWA's own fix for
+         * command injection, and reporting it was the seventh time this project
+         * punished a corrected file. See lib/guards.ts for how narrow the list is.
+         */
+        if (partsAreGuarded(arg, built.dynamicParts, language)) continue;
+        // `${new Array(n).fill('(?,?)').join(',')}` expands to placeholders,
+        // never to data. Reporting it punishes the correct bulk-insert form.
+        if (built.dynamicParts.every((part) => expandsOnlyPlaceholders(part))) continue;
 
         const how = MECHANISM_WORDS[built.mechanism] ?? built.mechanism;
         return {
@@ -198,6 +241,8 @@ export const sqlInjectionRule: Rule = {
       if (!built.isDynamic) return null;
       if (!looksLikeSql(built.literalText)) return null;
       if (partsAreProvablyConstant(assignment.value, built.dynamicParts, language)) return null;
+      if (partsAreGuarded(assignment.value, built.dynamicParts, language)) return null;
+      if (built.dynamicParts.every((part) => expandsOnlyPlaceholders(part))) return null;
 
       return {
         node: assignment.node,

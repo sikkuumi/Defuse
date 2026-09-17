@@ -46,6 +46,14 @@ const DIRECT_WEAK_CALLS: Record<LanguageId, readonly string[]> = {
   java: ['md5Hex', 'sha1Hex', 'md5', 'sha1'], // Apache DigestUtils
   go: ['New', 'Sum', 'New224'], // md5.New(), sha1.Sum() - receiver tells us which
   php: ['md5', 'sha1', 'md5_file', 'sha1_file', 'crc32'],
+  /*
+   * OpenSSL's one-shot and streaming APIs, which is how virtually all C code
+   * hashes anything. MD5(), SHA1() and their _Init/_Update/_Final triples name
+   * the algorithm in the symbol, so the name alone is the whole signal - no
+   * receiver scoping needed, unlike Go's `md5.New()`.
+   */
+  c: ['MD5', 'SHA1', 'MD5_Init', 'SHA1_Init', 'MD4', 'MD4_Init', 'CC_MD5', 'CC_SHA1'],
+  cpp: ['MD5', 'SHA1', 'MD5_Init', 'SHA1_Init', 'MD4', 'MD4_Init', 'CC_MD5', 'CC_SHA1'],
 };
 
 /** Calls that take the algorithm as a STRING argument. */
@@ -56,6 +64,9 @@ const ALGORITHM_ARG_CALLS: Record<LanguageId, readonly string[]> = {
   java: ['getInstance'], // MessageDigest.getInstance("MD5")
   go: [],
   php: ['hash', 'hash_file', 'hash_init'], // hash("md5", $x)
+  // EVP_get_digestbyname("md5") is the string-argument form in OpenSSL.
+  c: ['EVP_get_digestbyname', 'EVP_MD_fetch'],
+  cpp: ['EVP_get_digestbyname', 'EVP_MD_fetch'],
 };
 
 const WEAK_ALGORITHMS = /^(md[245]|sha-?1|md5-sess|ripemd128?)$/i;
@@ -105,6 +116,16 @@ export const weakHashRule: Rule = {
     php: {
       status: 'implemented',
       note: 'Covers md5(), sha1(), their _file variants, crc32(), and hash("md5", ...). PHP names the algorithm in the function itself far more often than the others do, which makes this the most reliable weak-hash coverage in the tool.',
+    },
+    c: {
+      status: 'implemented',
+      note:
+        'OpenSSL\'s one-shot and streaming APIs, which is how nearly all C code hashes: MD5, SHA1, MD4 and their _Init variants, plus Apple\'s CC_MD5/CC_SHA1 and the string-argument form EVP_get_digestbyname("md5"). The algorithm is named in the symbol itself, so no receiver scoping is needed - which makes this more reliable in C than the Go coverage, where the package name is the only clue.',
+    },
+    cpp: {
+      status: 'implemented',
+      note:
+        'Every C entry applies unchanged, since C++ inherits the whole libc surface and real code still uses it. Namespace-qualified calls (std::system) and method calls on objects are recognised in addition.',
     },
   },
   check(shape, ctx): RuleHit | null {

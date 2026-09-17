@@ -26,14 +26,27 @@ import {
   flowVerifiedFinding,
   signatureFinding,
   type Finding,
+  type Severity,
   SEVERITY_ORDER,
 } from './finding.js';
 import { extractShapes } from '../engine/shapes.js';
 import { nodeLocation } from '../parse/location.js';
 import { initEngine, parseSourceFile, type ParsedFile, type ParseIssue } from '../parse/parser.js';
+import {
+  createTreeStore,
+  DEFAULT_TREE_BUDGET_BYTES,
+  type TreeStoreStats,
+} from '../parse/tree-store.js';
 import type { RuleContext, Shape } from '../rules/contract.js';
+import { isTestPath } from '../rules/lib/strings.js';
 import { getRule, rulesForLanguage, validateRegistry } from '../rules/registry.js';
-import { buildProjectIndex, type ProjectIndexStats } from '../taint/project.js';
+import {
+  buildProjectIndex,
+  importSpecifiers,
+  indexFunctions,
+  type IndexedFileInput,
+  type ProjectIndexStats,
+} from '../taint/project.js';
 import { traceFile, type TraceLimits } from '../taint/tracer.js';
 
 /** A file's text, already loaded by whichever shell is in charge of loading. */
@@ -48,6 +61,13 @@ export interface AnalyzeOptions {
   readonly onProgress?: (done: number, total: number, file: string) => void;
   /** Absolute path -> the path a human should see. Defaults to unchanged. */
   readonly toDisplay?: (absolutePath: string) => string;
+  /**
+   * How much WebAssembly heap the scan may spend on syntax trees before it
+   * starts freeing the least recently used one and parsing it again on demand.
+   * See src/parse/tree-store.ts. Bigger is faster; smaller finishes on machines
+   * where the default would be killed.
+   */
+  readonly treeBudgetBytes?: number;
 }
 
 export interface FileParseProblem {
@@ -138,6 +158,13 @@ export interface AnalysisResult {
   readonly crossFile:
     | (ProjectIndexStats & { readonly enabled: true })
     | { readonly enabled: false; readonly reason: string };
+  /**
+   * What the scan spent on syntax trees, and whether it had to trade time for
+   * memory to finish. Reported rather than assumed: a scan that spilled gave
+   * the same answers more slowly, and the user is entitled to know which of
+   * those two things happened to them.
+   */
+  readonly treeMemory: TreeStoreStats;
 }
 
 /**
@@ -187,7 +214,10 @@ export async function analyze(
   const cleanRanges: Array<{ ruleId: string; file: string; start: number; end: number }> = [];
   const verifiedClean: VerifiedClean[] = [];
   /** Summed across every file, so the report can say where the trace ran out. */
-  const traceLimits = { depthTruncations: 0, recursionStops: 0, unmodelledHops: 0 };
+  const traceLimits = {
+    astTruncations: 0, depthTruncations: 0, recursionStops: 0, unmodelledHops: 0,
+    sourcesFound: 0,
+  };
   const suppressions: Suppression[] = [];
   const parseProblems: FileParseProblem[] = [];
   const byLanguage: Record<string, number> = {};
@@ -199,15 +229,36 @@ export async function analyze(
   const only = options.only && options.only.length > 0 ? new Set(options.only) : null;
 
   /* ---------------------------------------------------------------------- *
-   * PASS 1 - parse everything before analysing anything.
+   * PASS 1 - parse everything, index it, and hand the tree to the store.
    *
-   * Phase 3b could parse a file, analyse it and throw the tree away. Cross-file
-   * tracing cannot: to follow a value into `./db.js` we must already hold that
-   * file's syntax tree. So parsing and analysis become two passes, and the
-   * whole project is in memory in between. That is a real cost, and it is why
-   * --no-cross-file exists.
+   * Analysis cannot begin until the import graph exists, and the import graph
+   * cannot exist until every file has been read, so this remains two passes.
+   * What CHANGED is what survives in between.
+   *
+   * It used to be every syntax tree in the project, all at once. A tree lives
+   * in WebAssembly memory that the garbage collector cannot reclaim, and
+   * nothing ever called delete(), so a scan cost about sixty times the size of
+   * the source it was scanning - a hard ceiling around 44 MB of source on an
+   * 8 GB machine, past which the operating system killed the process.
+   *
+   * The comment that used to sit here blamed cross-file tracing and pointed at
+   * --no-cross-file as the escape hatch. Measured, that was simply untrue:
+   * cross-file OFF used 535.8 MB against 528.8 MB with it ON. The trees were
+   * never freed in either mode.
+   *
+   * Now what survives PASS 1 is a RECORD per file - its text, its parse
+   * problems, its functions as byte offsets, its import specifiers as strings -
+   * and the tree goes to the store, which keeps as many as the budget allows
+   * and re-parses the rest on demand. See src/parse/tree-store.ts.
    * ---------------------------------------------------------------------- */
-  const parsedFiles: ParsedFile[] = [];
+  const store = createTreeStore(options.treeBudgetBytes ?? DEFAULT_TREE_BUDGET_BYTES);
+
+  /** Everything about a parsed file that does NOT keep its tree alive. */
+  interface FileRecord extends IndexedFileInput {
+    readonly parsed: Omit<ParsedFile, 'tree' | 'root'>;
+  }
+
+  const fileRecords: FileRecord[] = [];
   for (let index = 0; index < inputs.length; index++) {
     const input = inputs[index];
     if (!input) continue;
@@ -218,9 +269,22 @@ export async function analyze(
       filesSkipped++;
       continue;
     }
-    parsedFiles.push(outcome.file);
+    const { tree, root, ...rest } = outcome.file;
+    const languageId = outcome.file.language.id;
+
+    // Everything the index needs is read out HERE, while the tree is in hand.
+    // After this line nothing but the store may hold it.
+    fileRecords.push({
+      path: outcome.file.path,
+      language: languageId,
+      functions: indexFunctions(root, languageId),
+      importSpecifiers: importSpecifiers(root, languageId),
+      parsed: rest,
+    });
+    store.admit(outcome.file.path, outcome.file.source, outcome.file.grammar, tree);
+
     filesParsed++;
-    byLanguage[outcome.file.language.id] = (byLanguage[outcome.file.language.id] ?? 0) + 1;
+    byLanguage[languageId] = (byLanguage[languageId] ?? 0) + 1;
     if (outcome.file.parseIssues.length > 0) {
       parseProblems.push({ file: input.path, issues: outcome.file.parseIssues });
     }
@@ -235,29 +299,40 @@ export async function analyze(
    * PASS 2 - build the import graph, then analyse.
    * ---------------------------------------------------------------------- */
   /**
-   * Cross-file analysis needs every syntax tree in memory at once, and a tree
-   * costs roughly ten times its source. Past a certain size that stops being a
-   * trade-off and starts being an out-of-memory crash, so there is a ceiling -
-   * and when we hit it we SAY we turned the feature off rather than quietly
-   * returning fewer findings.
+   * The cross-file ceiling, which is now about the INDEX rather than the trees.
+   *
+   * It used to be justified by "cross-file analysis needs every syntax tree in
+   * memory at once, and a tree costs roughly ten times its source" - two claims,
+   * both wrong. The trees were held whether or not cross-file was on, and the
+   * cost is nearer sixty times than ten. What the index genuinely holds is a
+   * name, a parameter list and two integers per function, which is a few
+   * megabytes on a project of this size.
+   *
+   * The limit stays because an index over an enormous project is still real
+   * memory and a resolution over it is still real time, and because a stated
+   * limit that fires is better than an unstated one that kills the process. It
+   * is now what it always should have been: a threshold with a reason, not a
+   * consequence of a leak.
    */
   const MAX_CROSS_FILE_SOURCE_BYTES = 64 * 1024 * 1024;
-  const totalSourceBytes = parsedFiles.reduce((sum, f) => sum + f.source.length, 0);
+  const totalSourceBytes = fileRecords.reduce((sum, f) => sum + f.parsed.source.length, 0);
   const tooBig = totalSourceBytes > MAX_CROSS_FILE_SOURCE_BYTES;
 
   const crossFileEnabled = !options.noCrossFile && !tooBig;
   const crossFileOffReason = options.noCrossFile
     ? 'cross-file resolution was switched off'
     : `project is ${(totalSourceBytes / 1048576).toFixed(0)}MB of source, over the ` +
-      `${MAX_CROSS_FILE_SOURCE_BYTES / 1048576}MB ceiling for holding every syntax tree at once`;
-  const projectIndex = crossFileEnabled ? buildProjectIndex(parsedFiles) : undefined;
+      `${MAX_CROSS_FILE_SOURCE_BYTES / 1048576}MB ceiling for indexing every function in the project`;
+  const projectIndex = crossFileEnabled ? buildProjectIndex(fileRecords, store) : undefined;
 
   // A finding can now land in a file other than the one being scanned, so the
   // suppression check needs any file's lines on demand. Splitting every source
   // eagerly doubled peak memory on a large tree for data most scans never read,
   // so it is computed lazily and cached.
   const sourceByDisplayPath = new Map<string, string>();
-  for (const parsed of parsedFiles) sourceByDisplayPath.set(toDisplay(parsed.path), parsed.source);
+  for (const record of fileRecords) {
+    sourceByDisplayPath.set(toDisplay(record.path), record.parsed.source);
+  }
   const lineCache = new Map<string, string[]>();
   const linesOf = (displayPath: string): string[] => {
     const cached = lineCache.get(displayPath);
@@ -267,11 +342,26 @@ export async function analyze(
     return lines;
   };
 
-  for (let index = 0; index < parsedFiles.length; index++) {
-    const file = parsedFiles[index];
-    if (!file) continue;
-    const filePath = file.path;
+  for (let index = 0; index < fileRecords.length; index++) {
+    const record = fileRecords[index];
+    if (!record) continue;
+    const filePath = record.path;
     options.onProgress?.(inputs.length + index + 1, inputs.length * 2, filePath);
+
+    /* ---- the tree comes back here, and is pinned for this iteration ----
+     *
+     * Usually it was never gone: the store holds everything that fits in the
+     * budget, so a normal project parses each file exactly once and this is a
+     * lookup. On a project too big for the budget it is a re-parse, which costs
+     * time the old code did not spend - and the old code, on a project that
+     * size, did not finish at all.
+     *
+     * The pin is what makes it safe. Every Node produced below points into this
+     * tree's memory; freeing it while a rule or the tracer still holds one would
+     * not raise an error, it would read whatever moved in afterwards.        */
+    store.pin(filePath);
+    const tree = store.get(filePath);
+    const file: ParsedFile = { ...record.parsed, tree, root: tree.rootNode };
 
     const displayPath = toDisplay(filePath);
     const sourceLines = linesOf(displayPath);
@@ -324,15 +414,50 @@ export async function analyze(
           continue;
         }
 
+        /*
+         * TEST-FILE SEVERITY, DECIDED IN ONE PLACE FOR EVERY RULE.
+         *
+         * This policy used to live inside hardcoded-secret alone, which meant a
+         * fake password in a test dropped to low while an `eval()` in the file
+         * next to it stayed critical. Scanning pandas made the cost visible: 41
+         * critical findings, 33 of them inside the test suite, burying the eight
+         * in shipped code that were the actual answer.
+         *
+         * The reason to discount a test file is not that the finding is wrong -
+         * `eval()` in a test IS Python's eval - it is that the attacker position
+         * does not exist. Nobody reaches your test suite over the network. So
+         * the finding is kept, always, and only its rank changes.
+         *
+         * Doing it here rather than in each rule means a rule added next year
+         * inherits it without anyone remembering to.
+         *
+         * NOT APPLIED TO FLOW-VERIFIED FINDINGS, deliberately. isTestPath is a
+         * guess about a path, and it is wrong sometimes in the expensive
+         * direction: pandas SHIPS `pandas/_testing/`, and plenty of projects
+         * ship an `examples/` directory that real users copy from. A traced
+         * source-to-sink path is the strongest evidence this tool produces, and
+         * a filename pattern is not good enough grounds to quiet it.
+         */
+        const inTestFile = isTestPath(file.path);
+        const testRank = (s: Severity): Severity =>
+          !inTestFile ? s : s === 'critical' ? 'medium' : s === 'high' ? 'low' : s;
+
         const finding = signatureFinding({
           ruleId: rule.id,
           ruleName: rule.name,
           cwe: rule.cwe,
           owasp: rule.owasp,
-          severity: hit.severity ?? rule.severity,
+          severity: testRank(hit.severity ?? rule.severity),
           message: hit.message,
           location,
-          reasoning: hit.reasoning,
+          reasoning:
+            hit.reasoning +
+            (inTestFile
+              ? ' NOTE: this file looks like a test, fixture or example. The finding is ' +
+                'accurate about the code, but a test suite is not reachable by an attacker, ' +
+                'so severity is lowered rather than the finding dropped - test code does get ' +
+                'copied into production, and this is still in git history either way.'
+              : ''),
           limitations: hit.limitations ?? rule.limitations,
         });
 
@@ -352,9 +477,11 @@ export async function analyze(
      * and only because it can hand over the path that proves it.
      * ------------------------------------------------------------------ */
     const trace = traceFile(file, file.language.id, projectIndex, toDisplay);
+    traceLimits.astTruncations += trace.limits.astTruncations;
     traceLimits.depthTruncations += trace.limits.depthTruncations;
     traceLimits.recursionStops += trace.limits.recursionStops;
     traceLimits.unmodelledHops += trace.limits.unmodelledHops;
+    traceLimits.sourcesFound += trace.limits.sourcesFound;
 
     // Lines where a tainted value reached a sink but was properly sanitised.
     // The signature pass cannot see a sanitiser, so it guessed; the tracer can,
@@ -401,6 +528,54 @@ export async function analyze(
             `(${unmodelled.map((n) => `\`${n}()\``).join(', ')}). We assumed each one preserves ` +
             `the value. If any of them sanitises it, this finding is wrong - check those hops first.`
           : '';
+      /*
+       * A BRANCH WAS ASSUMED, SO THIS IS A GUESS - AND IT IS STILL REPORTED.
+       *
+       * The tracer keeps taint through a clean write it cannot prove happens,
+       * which is deliberately cautious and right: it errs toward reporting a
+       * value that might be clean rather than staying silent about one that
+       * might be dirty. What it may not do is hand that assumption to
+       * flowVerifiedFinding(), which prints "this is not a pattern guess - the
+       * data flow was followed". At that point nothing was followed.
+       *
+       * Django found it. In contrib/admin/options.py a tainted `msg` is set in
+       * an `except` block and a clean literal `msg` is set in an `elif` forty
+       * lines later; the sink is reachable only through the second. Seven
+       * correct-looking hops, across two files, proving a flow that cannot run.
+       *
+       * DROPPING IT WAS THE WRONG FIX, and the benchmark said so within a
+       * minute: recall fell 89.3% to 75.5%, because 89 real vulnerabilities in
+       * BenchmarkJava sit behind exactly this shape and the signature rules did
+       * not cover those lines. Silence about a real bug is the failure this
+       * scanner cannot detect in itself.
+       *
+       * So the finding survives with the label it has earned. The path is still
+       * printed - a reader can check the branch themselves - and the reasoning
+       * says which assumption it rests on.
+       */
+      if (flow.branchAssumed) {
+        findings.push(
+          signatureFinding({
+            ruleId: rule.id,
+            ruleName: rule.name,
+            cwe: rule.cwe,
+            owasp: rule.owasp,
+            severity: rule.severity,
+            message: `Possibly attacker-controlled data from \`${flow.origin}\` reaches ${flow.sinkDescription}`,
+            location,
+            reasoning:
+              `A value from \`${flow.origin}\` can reach ${flow.sinkDescription}, but the ` +
+              `path depends on a BRANCH THIS ENGINE DOES NOT EVALUATE: somewhere along it a ` +
+              `clean assignment sits inside an if/else, and we keep the taint rather than ` +
+              `assume the clean write always happens. That is the cautious reading, not a ` +
+              `proven one - if the two writes are in mutually exclusive branches, this path ` +
+              `cannot actually run. Check the branch before acting on it.`,
+            limitations: rule.limitations,
+          }),
+        );
+        continue;
+      }
+
       const finding = flowVerifiedFinding({
         unmodelledHops: flow.unknownHops,
         ruleId: rule.id,
@@ -455,7 +630,23 @@ export async function analyze(
         });
       }
     }
+
+    /* ---- the only safe place to let trees go ----
+     *
+     * Everything above has finished with this file: the rules have run, the
+     * tracer has returned, and every finding has been copied into plain data
+     * (paths, line numbers, text) rather than nodes. No Node from this file or
+     * from any file the tracer descended into is reachable any more, so the
+     * pins can be dropped and the store can reclaim whatever it needs to.
+     *
+     * Releasing anywhere INSIDE the loop body would be a use-after-free waiting
+     * for a big enough project to expose it.                                 */
+    store.releaseAll();
   }
+
+  // Findings are plain data by now; nothing below reads a syntax node.
+  const treeStoreStats = store.stats();
+  store.disposeAll();
 
   /* -------------------------------------------------------------------- *
    * MERGE. A signature finding at a place we have now verified is not a
@@ -553,6 +744,7 @@ export async function analyze(
     crossFile: projectIndex
       ? { enabled: true as const, ...projectIndex.stats() }
       : { enabled: false as const, reason: crossFileOffReason },
+    treeMemory: treeStoreStats,
     coverage: buildCoverageReport(),
   };
 }

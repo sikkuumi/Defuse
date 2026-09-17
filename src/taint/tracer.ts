@@ -53,6 +53,7 @@
 import type { Node } from 'web-tree-sitter';
 import type { FlowStep } from '../core/finding.js';
 import type { LanguageId } from '../parse/languages.js';
+import { expressionIsFullyGuarded } from '../rules/lib/guards.js';
 import { nodeLocation } from '../parse/location.js';
 import type { ParsedFile } from '../parse/parser.js';
 import { analyzeStringExpression, looksLikeHtml, looksLikeSql } from '../rules/lib/strings.js';
@@ -77,6 +78,38 @@ interface Taint {
    * weakest, so we carry them all the way onto the finding.
    */
   readonly unknownHops: readonly string[];
+  /**
+   * Set when this taint is sitting in a NAMED COMPARTMENT of an object rather
+   * than being the object itself - `req.setAttribute("k", dirty)` leaves `req`
+   * carrying a compartmented taint, `sb.append(dirty)` does not.
+   *
+   * It only matters in one place: an unmodelled call carries its receiver's
+   * taint, and for a compartmented receiver that is wrong unless the call is
+   * actually reading the compartment. Holds the reader method names that may.
+   */
+  readonly compartment?: readonly string[] | undefined;
+  /**
+   * Set when this taint SURVIVED a clean write only because the write was
+   * inside a branch we cannot evaluate.
+   *
+   * The rule that keeps it - "a conditional write cannot PROVE a value clean" -
+   * is deliberately conservative and right for a GUESS: it errs toward
+   * reporting a value that might be clean rather than staying silent about one
+   * that might be dirty. It is not right for a PROOF. Nothing was followed at
+   * that point; an assumption was made, and `flowVerifiedFinding()` goes on to
+   * print "this is not a pattern guess - the data flow was followed".
+   *
+   * Django drew this out. In contrib/admin/options.py a tainted `msg` is
+   * assigned in an `except` block at line 1601 and a clean literal `msg` is
+   * assigned in an `elif` forty lines later; the sink at 1646 is reachable only
+   * through the second. The trace printed seven correct-looking hops across two
+   * files and claimed proof of a flow that cannot happen.
+   *
+   * So the taint still travels and the finding is still reported - the caution
+   * is preserved exactly - but it is reported as signature-based, because that
+   * is what it is.
+   */
+  readonly branchAssumed?: boolean | undefined;
 }
 
 /**
@@ -104,6 +137,13 @@ export interface FlowResult {
   readonly sinkDescription: string;
   /** Functions on the path that we do not model. Named on the finding. */
   readonly unknownHops: readonly string[];
+  /**
+   * The value reached this sink only because a clean write was skipped for
+   * being conditional. The finding is still REPORTED - a missed bug is the one
+   * failure this scanner cannot see in itself - but it is reported as a guess,
+   * because a branch was assumed rather than followed. See branchAssumed.
+   */
+  readonly branchAssumed?: boolean;
   /** The file the sink is in - may not be the file being scanned. */
   readonly filePath: string;
 }
@@ -123,6 +163,16 @@ const FUNCTION_NODES: Record<string, readonly string[]> = {
     'method_definition', 'generator_function_declaration', 'generator_function',
   ],
   python: ['function_definition', 'lambda'],
+  /*
+   * C nests the name one level down: a function_definition has a `declarator`
+   * (the function_declarator) which in turn has the `declarator` that is the
+   * identifier. There is no `name` field anywhere on it, which is why
+   * functionNameOf() below exists - without it collectFunctions found zero C
+   * functions and every cross-function trace in the language stopped dead at
+   * the call, silently.
+   */
+  c: ['function_definition'],
+  cpp: ['function_definition', 'lambda_expression'],
   java: ['method_declaration', 'constructor_declaration', 'lambda_expression'],
   go: ['function_declaration', 'method_declaration', 'func_literal'],
   php: [
@@ -144,6 +194,59 @@ const FUNCTION_NODES: Record<string, readonly string[]> = {
  * it looked like the language worked.
  */
 const VARIABLE_NODES = new Set(['identifier', 'variable_name']);
+
+/**
+ * Assignment targets that bind SEVERAL names at once.
+ *
+ *     const { syncUrl } = req.body;
+ *     const [first] = request.args.getlist("x");
+ *
+ * The tracer read the whole pattern as one name - literally the string
+ * "{ syncUrl }" - which matches nothing anyone ever looks up, so the taint was
+ * recorded under a key no read could find and every destructured request field
+ * came out clean.
+ *
+ * This is not an exotic shape. It is how modern JavaScript and TypeScript read
+ * request fields, and it silently defeated every rule at once: a Gemini-written
+ * Express app had `const { syncUrl } = req.body` two lines above an SSRF, and
+ * the trace died at the brace.
+ *
+ * Every name in the pattern is bound to the taint of the whole right-hand side.
+ * That is the container rule again - if the object is dirty, everything read
+ * out of it is treated as dirty - and it errs toward reporting.
+ */
+const DESTRUCTURING_NODES = new Set([
+  'object_pattern', // JS/TS  const { a, b } = x
+  'array_pattern', // JS/TS  const [a, b] = x
+  'pattern_list', // Python a, b = x
+  'tuple_pattern',
+  'list_pattern',
+]);
+
+/** Every plain name a destructuring pattern introduces, however nested. */
+function namesBoundBy(pattern: Node): string[] {
+  const names: string[] = [];
+  const visit = (node: Node, depth: number): void => {
+    if (depth > 6) return;
+    for (const child of node.namedChildren) {
+      if (!child) continue;
+      // `{ a: renamed }` - the NAME the body will use is on the right.
+      if (child.type === 'pair_pattern' || child.type === 'object_assignment_pattern') {
+        const value = child.childForFieldName('value') ?? child.namedChildren[1] ?? null;
+        if (value) visit(value.type === 'identifier' ? child : value, depth + 1);
+        if (value && VARIABLE_NODES.has(value.type)) names.push(text(value));
+        continue;
+      }
+      if (VARIABLE_NODES.has(child.type) || child.type === 'shorthand_property_identifier_pattern') {
+        names.push(text(child));
+        continue;
+      }
+      visit(child, depth + 1);
+    }
+  };
+  visit(pattern, 0);
+  return names;
+}
 
 const UNWRAP_NODES = new Set([
   'parenthesized_expression',
@@ -180,6 +283,16 @@ const MEMBER_NODES = new Set([
   'subscript',
   'index_expression',
   'array_access', // Java    a[i]
+  /*
+   * C and C++: `obj.field`, `ptr->field`, and `s.c_str`.
+   *
+   * Its receiver sits in the `argument` field rather than `object`, which is
+   * why the lookup below tries several names. Without this entry `s.c_str()`
+   * had no receiver at all, so a tainted std::string went clean the moment
+   * anybody called the one method that gets the bytes out of it - which is the
+   * only way a std::string ever reaches system().
+   */
+  'field_expression',
 ]);
 
 /**
@@ -265,6 +378,86 @@ const INTERPOLATION_NODES = new Set(['template_substitution', 'interpolation']);
  * The direction matters: this errs toward reporting a value that might be
  * clean, rather than staying silent about one that might be dirty.
  */
+
+/**
+ * The loop variable and the collection of a for-each, per grammar.
+ *
+ * Every language spells this differently and two of them hide the parts inside
+ * an intermediate node, which is why a single childForFieldName() call would
+ * have worked for Java and quietly returned nothing for the rest - the same
+ * shape of mistake as the if-statement's `consequence` vs `body`, recorded in
+ * rules/lib/guards.ts.
+ */
+const FOREACH_NODES = new Set([
+  'enhanced_for_statement', // Java   for (String v : values)
+  'for_in_statement',       // JS/TS  for (const v of values)
+  'for_statement',          // Python for v in values      (also Go's plain for)
+  'for_range_loop',         // Go     for _, v := range values
+  'foreach_statement',      // PHP    foreach ($values as $v)
+]);
+
+interface ForeachBinding {
+  readonly name: Node;
+  readonly iterable: Node;
+}
+
+function foreachBinding(node: Node): ForeachBinding | null {
+  // Java: `name` and `value` fields. JS/TS and Python: `left` and `right`.
+  const name = node.childForFieldName('name') ?? node.childForFieldName('left');
+  const iterable = node.childForFieldName('value') ?? node.childForFieldName('right');
+  if (name && iterable) return { name, iterable };
+
+  // Go hides both inside a range_clause child; PHP has no fields at all and
+  // spells it `foreach (EXPR as $v)`, so the last variable before the body is
+  // the binding and the first expression is the collection.
+  const range = node.namedChildren.find((c): c is Node => c?.type === 'range_clause');
+  if (range) {
+    const left = range.childForFieldName('left');
+    const right = range.childForFieldName('right');
+    if (left && right) {
+      // `for _, v := range values` - the VALUE is the second name, not the index.
+      const names = left.namedChildren.filter((c): c is Node => c !== null);
+      const chosen = names.length > 1 ? names[names.length - 1] : names[0];
+      if (chosen) return { name: chosen, iterable: right };
+    }
+    return null;
+  }
+
+  if (node.type === 'foreach_statement') {
+    const parts = node.namedChildren.filter((c): c is Node => c !== null);
+    const body = node.childForFieldName('body');
+    const beforeBody = body ? parts.filter((c) => c.startIndex < body.startIndex) : parts;
+    const iterablePhp = beforeBody[0];
+    const namePhp = beforeBody[beforeBody.length - 1];
+    // `foreach ($a as $k => $v)` puts the pair in a `pair` node; take its value.
+    const resolved =
+      namePhp?.type === 'pair' || namePhp?.type === 'by_ref'
+        ? namePhp.namedChildren[namePhp.namedChildCount - 1] ?? namePhp
+        : namePhp;
+    if (iterablePhp && resolved && iterablePhp !== resolved) {
+      return { name: resolved, iterable: iterablePhp };
+    }
+  }
+  return null;
+}
+
+/**
+ * Calls that APPLY a function to every element of a collection.
+ *
+ * Deliberately tiny. These are the shapes where naming a sanitiser is the same
+ * as calling it on each element; anything looser would let an arbitrary
+ * callback argument read as proof of safety.
+ */
+const HIGHER_ORDER_APPLIERS = new Set(['map', 'imap', 'starmap', 'forEach']);
+
+/** Comprehensions, which apply their element expression to every item. */
+const COMPREHENSION_NODES = new Set([
+  'list_comprehension',
+  'dictionary_comprehension',
+  'set_comprehension',
+  'generator_expression',
+]);
+
 const CONDITIONAL_NODES = new Set([
   'if_statement',
   'else_clause',
@@ -317,6 +510,32 @@ function lastSegment(value: string): string {
 }
 
 /**
+ * Strip a C declarator down to the name it declares.
+ *
+ * `char *user = getenv("X")` gives an assignment whose TARGET is the whole
+ * declarator, `*user`, not the identifier. The binding loop below rejects any
+ * name that is not a plain identifier - a deliberate guard against binding
+ * taint to something it cannot name - so `*user` was silently dropped, `user`
+ * read as clean, and every C flow through a pointer variable died on the
+ * declaration line.
+ *
+ * It was invisible because the shapes that DO work are common enough to look
+ * like success: `char buf[64]` is an array_declarator whose text is `buf[64]`,
+ * whose last segment is a clean name, and a plain `p = argv[1]` never goes
+ * through a declarator at all. Only the pointer form broke, which is most of
+ * real C.
+ *
+ * Deliberately conservative: it removes leading `*` and `&` and any array
+ * suffix, and returns the input unchanged if what is left is not a plain
+ * identifier. A declarator this cannot reduce is still refused rather than
+ * guessed at.
+ */
+function stripDeclarator(value: string): string {
+  const stripped = value.trim().replace(/^[*&\s]+/, '').replace(/\s*\[[^\]]*\]\s*$/, '').trim();
+  return /^[A-Za-z_$][\w$]*$/.test(stripped) ? stripped : value;
+}
+
+/**
  * "What is being called, and on what?"
  *
  * Every grammar spells this differently. JS and Python put the whole callee in
@@ -332,6 +551,7 @@ function calleeOf(callNode: Node): { node: Node | null; text: string; receiver: 
     const receiver = MEMBER_NODES.has(fn.type)
       ? fn.childForFieldName('object') ??
         fn.childForFieldName('operand') ??
+        fn.childForFieldName('argument') ?? // C/C++ field_expression
         fn.namedChildren[0] ??
         null
       : null;
@@ -369,8 +589,42 @@ function argumentsOf(callNode: Node): Node[] {
  * We need names, not types: to follow a value into a function we bind the
  * incoming taint to the name the body will use to refer to it.
  */
+/**
+ * The identifier a function definition binds, across grammars.
+ *
+ * Every language this engine supported until C put the name in a `name` field.
+ * C puts it inside a declarator: function_definition.declarator is a
+ * function_declarator, and ITS declarator is the identifier. Pointer-returning
+ * functions nest one level deeper again (`char *f(void)` wraps the whole thing
+ * in a pointer_declarator), so this walks down rather than assuming a depth.
+ */
+function functionNameOf(fnNode: Node): Node | null {
+  const direct = fnNode.childForFieldName('name');
+  if (direct) return direct;
+
+  let node: Node | null = fnNode.childForFieldName('declarator');
+  for (let depth = 0; node && depth < 6; depth++) {
+    if (node.type === 'identifier' || node.type === 'field_identifier') return node;
+    node = node.childForFieldName('declarator');
+  }
+  return null;
+}
+
+/** The parameter list, which C hangs off the declarator rather than the definition. */
+function parameterListOf(fnNode: Node): Node | null {
+  const direct = fnNode.childForFieldName('parameters');
+  if (direct) return direct;
+  let node: Node | null = fnNode.childForFieldName('declarator');
+  for (let depth = 0; node && depth < 6; depth++) {
+    const params = node.childForFieldName('parameters');
+    if (params) return params;
+    node = node.childForFieldName('declarator');
+  }
+  return null;
+}
+
 function parameterNames(fnNode: Node): string[] {
-  const container = fnNode.childForFieldName('parameters');
+  const container = parameterListOf(fnNode);
   if (!container) {
     // Single-parameter arrow function: `x => ...` has no parameter list node.
     const bare = fnNode.childForFieldName('parameter');
@@ -385,9 +639,14 @@ function parameterNames(fnNode: Node): string[] {
     }
     // typed_parameter / required_parameter / formal_parameter / parameter_declaration
     const named =
-      child.childForFieldName('name') ?? child.childForFieldName('pattern') ?? null;
+      child.childForFieldName('name') ??
+      child.childForFieldName('pattern') ??
+      // C: parameter_declaration's name lives in `declarator`, and arrives with
+      // its pointer stars attached (`*dst`). stripDeclarator removes them.
+      child.childForFieldName('declarator') ??
+      null;
     if (named) {
-      names.push(text(named));
+      names.push(stripDeclarator(text(named)));
       continue;
     }
     const identifier = child.namedChildren.find(
@@ -396,6 +655,160 @@ function parameterNames(fnNode: Node): string[] {
     names.push(identifier ? text(identifier) : '');
   }
   return names;
+}
+
+/**
+ * Parameter declarations with their FULL text, annotations included.
+ *
+ * `parameterNames` above deliberately returns only names, because binding a
+ * caller's argument to a callee's name is all it is for. Recognising a Spring
+ * binding needs the opposite half - the annotation sitting in front of the
+ * name - so this returns both rather than making the other function lie about
+ * what it does.
+ */
+function parameterDeclarations(fnNode: Node): Array<{ name: string; text: string; node: Node }> {
+  const container = fnNode.childForFieldName('parameters');
+  if (!container) return [];
+  const out: Array<{ name: string; text: string; node: Node }> = [];
+  for (const child of container.namedChildren) {
+    if (!child) continue;
+    const named =
+      child.childForFieldName('name') ??
+      child.childForFieldName('pattern') ??
+      child.namedChildren.find((c): c is Node => c !== null && VARIABLE_NODES.has(c.type)) ??
+      null;
+    if (!named) continue;
+    out.push({ name: text(named), text: text(child), node: child });
+  }
+  return out;
+}
+
+
+/**
+ * DECLARED TYPES, so a receiver check can see past the variable's name.
+ *
+ * `receiverPattern` matches the TEXT in front of the call, which works for
+ * `Runtime.getRuntime().exec(cmd)` and fails completely for the form
+ * BenchmarkJava actually uses 188 times:
+ *
+ *     Runtime r = Runtime.getRuntime();
+ *     r.exec(cmd);
+ *
+ * The receiver is `r`. Scoping `exec` to a runtime-looking receiver removed 16
+ * false positives and 13 TRUE ones in the same change - a straight trade, not
+ * an improvement, and the benchmark said so within a minute.
+ *
+ * Java, Go and TypeScript all write the type down at the declaration, so it is
+ * there to be read. This is one shallow pass over the file collecting
+ * `Type name = ...` and `var name Type`; it is not type inference and does not
+ * pretend to be. A name declared twice with different types in one file is
+ * recorded once and is a known imprecision - the alternative is threading a
+ * type environment through every scope, which is a much larger change than the
+ * problem justifies.
+ */
+function declaredTypes(root: Node, language: LanguageId): Map<string, string> {
+  const types = new Map<string, string>();
+  if (language !== 'java' && language !== 'go' && language !== 'typescript') return types;
+  const visit = (node: Node, depth: number): void => {
+    if (depth > 60) return;
+    if (
+      node.type === 'local_variable_declaration' ||
+      node.type === 'field_declaration' ||
+      node.type === 'var_declaration' ||
+      node.type === 'var_spec'
+    ) {
+      const typeNode = node.childForFieldName('type');
+      const typeText = typeNode ? text(typeNode) : '';
+      if (typeText) {
+        for (const child of node.namedChildren) {
+          if (!child) continue;
+          const nameNode =
+            child.type === 'variable_declarator'
+              ? child.childForFieldName('name')
+              : VARIABLE_NODES.has(child.type)
+                ? child
+                : null;
+          if (nameNode) types.set(text(nameNode), typeText);
+        }
+      }
+    }
+    for (const child of node.namedChildren) if (child) visit(child, depth + 1);
+  };
+  visit(root, 0);
+  return types;
+}
+
+
+/**
+ * The bare NAME of a receiver, with the language's decoration removed.
+ *
+ * PHP writes `$conn->query(...)`, and comparing "$conn" against a list holding
+ * "conn" fails silently - which is exactly what happened: scoping the PHP SQL
+ * sink dropped two asserted flow-verified findings and resurrected a false
+ * positive in the safe fixture, because the receiver never matched anything and
+ * the tracer stopped proving the sanitiser ran.
+ *
+ * Go pointers (`*db`), references (`&db`) and PHP's sigil are punctuation about
+ * how the value is held, not about what it is. The last segment after a dot is
+ * the object being called on.
+ */
+function ownerName(receiverText: string): string {
+  const last = receiverText.split(/[.\s(\[]/).filter(Boolean).pop() ?? receiverText;
+  return last.replace(/^[$*&]+/, '');
+}
+
+
+/**
+ * LOCAL ALIASES OF A DANGEROUS FUNCTION.
+ *
+ *     import { exec } from "child_process";
+ *     const execAsync = promisify(exec);
+ *     await execAsync(command);            // <- invisible to a name list
+ *
+ * That is CVE-2025-53107, twenty-three vulnerable files, and we found zero of
+ * them. The sink list holds `exec`; the call says `execAsync`. Nothing about
+ * the danger changed - only the label on it.
+ *
+ * The near-identical CVE-2025-59046 WAS caught, and only because that author
+ * happened to write `const exec = promisify(execCb)` - aliasing back to the
+ * name we already knew. Two CVEs, one real difference between them, and it was
+ * luck.
+ *
+ * `promisify` is the standard Node idiom for exactly these APIs, so this is not
+ * an exotic shape; it is the normal one. This pass reads the file for
+ * declarations that bind a known sink name to a new identifier and returns the
+ * mapping, so the sink check can recognise both.
+ *
+ * FILE-LOCAL ONLY. An alias exported from another module is still missed, and
+ * that is a documented gap rather than a silent one.
+ */
+function sinkAliases(root: Node, knownSinkNames: ReadonlySet<string>): Map<string, string> {
+  const aliases = new Map<string, string>();
+  const visit = (node: Node, depth: number): void => {
+    if (depth > 40) return;
+    if (node.type === 'variable_declarator' || node.type === 'short_var_declaration') {
+      const nameNode = node.childForFieldName('name') ?? node.childForFieldName('left');
+      const valueNode = node.childForFieldName('value') ?? node.childForFieldName('right');
+      if (nameNode && valueNode) {
+        const alias = text(nameNode);
+        const initialiser = text(valueNode);
+        // Only wrappers that PASS THE FUNCTION ALONG: promisify(fn),
+        // util.promisify(fn), require('child_process').fn, cp.fn.
+        if (/^(?:[\w.]*\bpromisify\s*\(|require\s*\(|[\w$]+\.)/.test(initialiser)) {
+          for (const sinkName of knownSinkNames) {
+            if (alias === sinkName) continue;
+            if (new RegExp(`\\b${sinkName}\\b`).test(initialiser)) {
+              aliases.set(alias, sinkName);
+              break;
+            }
+          }
+        }
+      }
+    }
+    for (const child of node.namedChildren) if (child) visit(child, depth + 1);
+  };
+  visit(root, 0);
+  return aliases;
 }
 
 /** A function we can follow a value into. */
@@ -425,7 +838,7 @@ export function collectFunctions(root: Node, language: LanguageId): Map<string, 
 
   const visit = (node: Node): void => {
     if (functionTypes.has(node.type)) {
-      const nameNode = node.childForFieldName('name');
+      const nameNode = functionNameOf(node);
       if (nameNode) register(text(nameNode), node);
     }
     // `const helper = (x) => {...}` - the name is on the declarator.
@@ -504,6 +917,35 @@ export interface TraceLimits {
   readonly recursionStops: number;
   /** Hops through a function we do not model, where taint was carried anyway. */
   readonly unmodelledHops: number;
+  /**
+   * How many distinct places an attacker-controlled SOURCE was recognised.
+   *
+   * This exists because of a silence. Elasticsearch - 3,999 Java files, a REST
+   * API, a network service - produced zero flow-verified findings, and the
+   * report had no way to say why. It contains 0 `@RequestParam` and 0
+   * `getParameter()`: it uses its own REST layer, which the dictionaries do not
+   * model, so the tracer never found a single source to start from.
+   *
+   * Every number in a report is downstream of this one. Zero sources means
+   * zero flows can exist no matter how good the tracer is, and a reader
+   * deserves to be told that rather than reading "0 flow-verified" as good news.
+   */
+  readonly sourcesFound: number;
+  /**
+   * Statements not walked because the syntax tree was nested deeper than the
+   * walk will go.
+   *
+   * Distinct from depthTruncations, which counts CALL chains. This one counts
+   * places where a single EXPRESSION was too deep - and it exists because a
+   * 25,809-file scan of the TypeScript repository died with "Maximum call stack
+   * size exceeded" on a file containing one expression with 1,499 `+` operators.
+   * The walk recursed 1,499 frames and took the process with it.
+   *
+   * A crash is the worst possible answer: it produces no report at all, so a
+   * whole scan is lost to one pathological file. Stopping is better - but only
+   * if we SAY we stopped, which is what this counter is for.
+   */
+  readonly astTruncations: number;
 }
 
 export interface TraceOutcome {
@@ -546,19 +988,28 @@ export function traceFile(
   const seenDepth = new Set<string>();
   const seenRecursion = new Set<string>();
   const seenUnmodelled = new Set<string>();
+  /** Sites where the syntax tree was deeper than MAX_AST_DEPTH. */
+  const seenDeepAst = new Set<string>();
   const siteOf = (n: Node, filePath: string) => `${filePath}#${n.id}`;
 
   const dictionary = TAINT_DICTIONARIES[language];
   // Java and Go: no dictionary yet. Reported in the coverage section, not hidden.
+  const seenSources = new Set<string>();
   const limits = (): TraceLimits => ({
+    astTruncations: seenDeepAst.size,
     depthTruncations: seenDepth.size,
     recursionStops: seenRecursion.size,
     unmodelledHops: seenUnmodelled.size,
+    sourcesFound: seenSources.size,
   });
 
   if (!dictionary) return { flows: [], sanitized: [], limits: limits() };
 
   const functionTypes = new Set(FUNCTION_NODES[language] ?? []);
+  const fileTypes = declaredTypes(file.root, language);
+  const knownSinkNames = new Set<string>();
+  for (const sink of dictionary.callSinks) for (const m of sink.methods) knownSinkNames.add(m);
+  const fileAliases = sinkAliases(file.root, knownSinkNames);
   const results: FlowResult[] = [];
   const sanitized: SanitizedFlow[] = [];
 
@@ -637,6 +1088,7 @@ export function traceFile(
   const sourceTaint = (node: Node, expression: string): Taint | null => {
     for (const source of dictionary.sources) {
       if (!source.pattern.test(expression)) continue;
+      seenSources.add(siteOf(node, currentPath));
       return {
         steps: [
           step('source', node, `\`${expression.slice(0, 60)}\` is ${source.description}`),
@@ -654,6 +1106,8 @@ export function traceFile(
     sanitizedFor: taint.sanitizedFor,
     origin: taint.origin,
     unknownHops: taint.unknownHops,
+    compartment: taint.compartment,
+    branchAssumed: taint.branchAssumed,
   });
 
   /**
@@ -775,6 +1229,60 @@ export function traceFile(
       return null;
     }
 
+    /*
+     * A COMPREHENSION THAT ESCAPES EVERY ELEMENT.
+     *
+     *     kwargs_safe = {k: conditional_escape(v) for (k, v) in kwargs.items()}
+     *
+     * The line directly below the map() call in Django's format_html. Both
+     * idioms sit in the same six-line function, so covering one and not the
+     * other would have left the very case that started this half-fixed - and
+     * did, until the fixture caught it.
+     *
+     * Same rule as the higher-order applier: if EVERY element passes through a
+     * sanitiser, the collection is washed for that sanitiser's kinds. The
+     * element expression is the whole test - a comprehension whose body is a
+     * bare name, or a call this engine does not know, proves nothing and is
+     * asserted as still-reported in vulnerable/higher-order-escape-fence.py.
+     */
+    if (COMPREHENSION_NODES.has(node.type)) {
+      const body = node.namedChildren.find((c): c is Node => c !== null);
+      // A dict comprehension's body is a `pair`; the VALUE is what gets escaped.
+      const element =
+        body?.type === 'pair'
+          ? body.childForFieldName('value') ?? body
+          : body;
+      const applied =
+        element && CALL_NODES.has(element.type)
+          ? dictionary.sanitizers.find((san) =>
+              san.names.includes(lastSegment(calleeOf(element).text)),
+            )
+          : undefined;
+      if (applied && element) {
+        for (const child of node.namedChildren) {
+          if (!child || child === body) continue;
+          const iterated = child.childForFieldName('right') ?? child;
+          const taint = evaluate(iterated, scope, depth + 1);
+          if (!taint) continue;
+          return {
+            steps: [
+              ...taint.steps,
+              step(
+                'sanitizer',
+                node,
+                `every element passed through \`${lastSegment(calleeOf(element).text)}()\` ` +
+                  `by a comprehension - ${applied.description}`,
+                applied.kinds,
+              ),
+            ],
+            sanitizedFor: new Set([...taint.sanitizedFor, ...applied.kinds]),
+            origin: taint.origin,
+            unknownHops: taint.unknownHops,
+          };
+        }
+      }
+    }
+
     // `cond ? a : b` and Python's `a if cond else b`. We do not evaluate the
     // condition - if EITHER branch can be dirty, the result can be dirty.
     if (node.type === 'ternary_expression' || node.type === 'conditional_expression') {
@@ -807,6 +1315,61 @@ export function traceFile(
     // characters appear anywhere inside the expression.
     const asSource = sourceTaint(node, `${calleeText}(`);
     if (asSource) return asSource;
+
+    /*
+     * A SANITISER PASSED AS A VALUE, NOT CALLED.
+     *
+     *     args_safe = map(conditional_escape, args)          django/utils/html.py
+     *
+     * That is Django's format_html - the function its own docstring calls the
+     * one you should use instead of str.format to build HTML - and this scanner
+     * reported it as flow-verified XSS. Eighth time this project has punished a
+     * fix, and the most prominent target yet.
+     *
+     * Everything needed was already present. `mark_safe` was a sink, correctly:
+     * mark_safe(user_input) really is dangerous. `conditional_escape` was in the
+     * sanitiser list. What nothing modelled is that the escaping happened
+     * through a HIGHER-ORDER call: the sanitiser was never written as
+     * `escape(x)` at a place the tracer watches, it was handed to map() as a
+     * value and applied out of sight.
+     *
+     * A sanitiser recognised only in the shape `escape(x)` stops working the
+     * moment somebody writes idiomatic Python - and both idioms sit on adjacent
+     * lines of that one Django function, map() then a dict comprehension.
+     *
+     * The cost of missing it compounds: the second Django finding was a CALLER
+     * of format_html. One unmodelled shape at the bottom of a framework
+     * propagates into every place that uses it.
+     */
+    if (HIGHER_ORDER_APPLIERS.has(name)) {
+      for (const arg of args) {
+        const applied = dictionary.sanitizers.find((san) =>
+          san.names.includes(lastSegment(text(arg))),
+        );
+        if (!applied) continue;
+        // The collection being mapped over is the OTHER argument.
+        for (const other of args) {
+          if (other === arg) continue;
+          const taint = evaluate(other, scope, depth + 1);
+          if (!taint) continue;
+          return {
+            steps: [
+              ...taint.steps,
+              step(
+                'sanitizer',
+                node,
+                `every element passed through \`${lastSegment(text(arg))}()\` by ` +
+                  `\`${name}()\` - ${applied.description}`,
+                applied.kinds,
+              ),
+            ],
+            sanitizedFor: new Set([...taint.sanitizedFor, ...applied.kinds]),
+            origin: taint.origin,
+            unknownHops: taint.unknownHops,
+          };
+        }
+      }
+    }
 
     // A sanitiser: the value stays traceable, but is marked washed for the
     // kinds this particular soap actually works on.
@@ -881,8 +1444,30 @@ export function traceFile(
       carried = evaluate(arg, scope, depth + 1);
       if (carried) break;
     }
+    /*
+     * TAINT ARRIVING FROM THE RECEIVER, which is where Jenkins went wrong.
+     *
+     * No argument was dirty, so the only way this call can be dirty is if the
+     * OBJECT is. Usually that is right - `sb.toString()` on a dirtied
+     * StringBuilder is exactly the dirty string. But when the object was
+     * dirtied through a KEYED write, the taint is in a named compartment and
+     * this call may have nothing to do with it:
+     *
+     *     req.setAttribute("loginForm", dirty);
+     *     req.getContextPath()      // <- not the compartment. Not dirty.
+     *
+     * So a compartmented receiver only carries taint out through a reader of
+     * that compartment. Reading it back DOES carry, and clears the compartment,
+     * because the value is now in the caller's hands rather than filed away.
+     */
+    const fromReceiver = carried === null;
     carried ??= evaluate(receiver, scope, depth + 1);
     if (!carried) return null;
+    let compartment = carried.compartment;
+    if (fromReceiver && compartment) {
+      if (!compartment.includes(name)) return null;
+      compartment = undefined;
+    }
     seenUnmodelled.add(siteOf(node, scope.filePath));
 
     return {
@@ -898,6 +1483,7 @@ export function traceFile(
       sanitizedFor: carried.sanitizedFor,
       origin: carried.origin,
       unknownHops: [...carried.unknownHops, name],
+      compartment,
     };
   };
 
@@ -910,8 +1496,39 @@ export function traceFile(
     // then put it in a SQL query".
     const steps: FlowStep[] = taint.steps.map((s) => {
       if (s.kind !== 'sanitizer') return { kind: s.kind, location: s.location, description: s.description };
-      if (s.sanitizesKinds?.includes(kind)) {
+      /*
+       * A SANITISER STEP FROM SOMEBODY ELSE'S VALUE.
+       *
+       * Scanning WordPress on the new page-buffer sink crashed the whole scan
+       * on the engine's own invariant: "path contains a sanitiser - that is a
+       * CLEAN flow, not a verified vulnerability." The invariant was right to
+       * fire and right to crash rather than publish. The path was wrong.
+       *
+       *     $html .= '<a href="' . esc_url($u) . '">' . $label . '</a>';
+       *
+       * Two tainted values merge here. `esc_url($u)` is escaped; `$label` is
+       * not. `sanitizedFor` correctly ends up WITHOUT xss - the finding is
+       * real, because $label is raw - but the merged step list still carried
+       * the esc_url sanitiser step from the other contributor. One narrative
+       * assembled out of two different values' histories.
+       *
+       * So a step only stays a SANITISER when the value actually reaching this
+       * sink was sanitised for this kind. Otherwise it is something that
+       * happened to a sibling expression, and the path says so instead of
+       * claiming a cleanliness the traced value never had.
+       */
+      const coversThisKind = s.sanitizesKinds?.includes(kind) ?? false;
+      if (coversThisKind && taint.sanitizedFor.has(kind)) {
         return { kind: s.kind, location: s.location, description: s.description };
+      }
+      if (coversThisKind) {
+        return {
+          kind: 'propagation',
+          location: s.location,
+          description:
+            `${s.description} - NOTE: this covered a DIFFERENT value in the same ` +
+            `expression. The value followed here never went through it.`,
+        };
       }
       return {
         kind: 'propagation',
@@ -927,6 +1544,52 @@ export function traceFile(
       description,
     });
     return steps;
+  };
+
+  /**
+   * ONE RETRACTION, THREE PLACES THAT CAN REPORT.
+   *
+   * `checkTaintAtSink` says in its own comment that it was factored out "so a
+   * second kind of sink cannot get half of this right". It was, and then two
+   * more emission sites grew their own inline copies of the sanitised check -
+   * so when the validation guard was added to the one factored function, DVWA's
+   * `exec/impossible.php` carried on being reported through a path that had
+   * never heard of it.
+   *
+   * Every reason to NOT report belongs here, and `npm test` fails if a
+   * `results.push` appears in this file without a `retracted()` guarding it.
+   */
+  const retracted = (taint: Taint, valueNode: Node, kind: SinkKind): 'sanitised' | null => {
+    /*
+     * WE ASSUMED A BRANCH. THAT IS NOT A PROOF.
+     *
+     * The value reached here only because a clean write was skipped for being
+     * conditional - see the note on branchAssumed. Reporting is right; calling
+     * it flow-verified is not, and the difference between those two sentences
+     * is this project's whole product. The signature rules still cover the
+     * line, so the caution survives and only the overclaim is dropped.
+     *
+     * This sits in the shared gate rather than in checkTaintAtSink, because the
+     * first attempt put it in checkTaintAtSink alone and Django carried on being
+     * reported: the finding came through one of the OTHER two emission sites.
+     * That is the fourth-time-lesson recorded on this function - every reason
+     * not to report belongs here, or it only half exists.
+     */
+    if (taint.sanitizedFor.has(kind)) return 'sanitised';
+    // Cleanliness established by the control flow rather than by transforming
+    // the value: inside `if (is_numeric($octet[0]) && ...)` the value provably
+    // holds no metacharacter. See rules/lib/guards.ts.
+    if (expressionIsFullyGuarded(valueNode, language)) return 'sanitised';
+    return null;
+  };
+
+  const recordRetraction = (sinkNode: Node, kind: SinkKind): void => {
+    sanitized.push({
+      ruleId: SINK_KIND_RULE[kind],
+      sinkNode,
+      kind,
+      filePath: toDisplay(currentPath),
+    });
   };
 
   /**
@@ -947,13 +1610,9 @@ export function traceFile(
     /** The sink step's own wording, which may say more than the headline. */
     pathDescription = `reaches ${description}`,
   ): void => {
-    if (taint.sanitizedFor.has(kind)) {
-      sanitized.push({
-        ruleId: SINK_KIND_RULE[kind],
-        sinkNode: valueNode,
-        kind,
-        filePath: toDisplay(currentPath),
-      });
+    const verdict = retracted(taint, valueNode, kind);
+    if (verdict) {
+      if (verdict === 'sanitised') recordRetraction(valueNode, kind);
       return;
     }
     results.push({
@@ -965,6 +1624,7 @@ export function traceFile(
       origin: taint.origin,
       sinkDescription: description,
       unknownHops: taint.unknownHops,
+      branchAssumed: taint.branchAssumed ?? false,
       filePath: toDisplay(currentPath),
     });
   };
@@ -992,6 +1652,91 @@ export function traceFile(
    * capability block, because a new source of imprecision that nobody announced
    * is exactly the kind of quiet overclaim this engine is built against.
    */
+  /**
+   * THE OUTPUT-PARAMETER MUTATOR - C's version of the same idea, and the one
+   * shape without which C coverage would be nearly zero.
+   *
+   * checkMutation below binds taint to the RECEIVER, because in every language
+   * this engine supported until now the thing being filled sits to the left of
+   * the dot:
+   *
+   *     sb.append(dirty)        ->  `sb`
+   *
+   * C has no receiver. The destination is argument ZERO, and the value goes in
+   * after it:
+   *
+   *     sprintf(cmd, "ping %s", argv[1]);   ->  `cmd`
+   *     strcpy(buf, argv[1]);               ->  `buf`
+   *     strcat(path, getenv("X"));          ->  `path`
+   *
+   * That is not a corner case, it is THE C idiom - the two-line build-then-run
+   * pattern that every command injection in the language is written in. With
+   * only the receiver rule, `sprintf(cmd, ...)` would taint nothing, `cmd`
+   * would read as clean, and `system(cmd)` on the next line would be silent.
+   * Every fixture in vulnerable/cmdi.c is this shape.
+   *
+   * Argument zero is excluded from the tainted-value scan for the same reason
+   * `writerArgPattern` excludes it on the sink side: it is where the output
+   * goes, not what is written.
+   */
+  const checkOutParamMutation = (node: Node, scope: Scope): void => {
+    const method = lastSegment(calleeOf(node).text);
+
+    /*
+     * READER FUNCTIONS: the call IS the source, and the bytes land in an
+     * argument rather than in the return value.
+     *
+     *     fgets(line, sizeof(line), stdin);
+     *     system(line);
+     *
+     * Nothing here is an expression the source patterns could match - fgets
+     * returns a pointer nobody keeps, and `line` was declared clean on the
+     * line above. Without this the two statements are unrelated and reading a
+     * command from standard input is invisible, which is the oldest shape of
+     * this bug there is.
+     */
+    for (const reader of dictionary.outParamSources ?? []) {
+      if (!reader.names.includes(method)) continue;
+      const destination = argumentsOf(node)[reader.destination];
+      if (!destination) continue;
+      const name = lastSegment(text(destination));
+      if (!name || !/^[A-Za-z_][\w]*$/.test(name)) continue;
+      seenSources.add(siteOf(node, currentPath));
+      scope.env.set(name, {
+        steps: [
+          step('source', node, `\`${name}\` is filled by \`${method}()\` from ${reader.description}`),
+        ],
+        sanitizedFor: new Set(),
+        origin: `${method}()`,
+        unknownHops: [],
+      });
+      return;
+    }
+
+    const outParams = dictionary.outParamMutators;
+    if (!outParams || outParams.length === 0) return;
+    if (!outParams.includes(method)) return;
+
+    const args = argumentsOf(node);
+    const destination = args[0];
+    if (!destination) return;
+
+    // Only something we can name. `sprintf(ptr->buf, ...)` gives us no single
+    // variable to bind, so it is left alone rather than guessed at.
+    const destinationName = lastSegment(text(destination));
+    if (!destinationName || !/^[A-Za-z_][\w]*$/.test(destinationName)) return;
+
+    for (const arg of args.slice(1)) {
+      const taint = evaluate(arg, scope);
+      if (!taint) continue;
+      scope.env.set(
+        destinationName,
+        addStep(taint, node, `written into \`${destinationName}\` by \`${method}()\``),
+      );
+      return;
+    }
+  };
+
   const checkMutation = (node: Node, scope: Scope): void => {
     const mutators = dictionary.mutators;
     if (!mutators || mutators.length === 0) return;
@@ -1005,12 +1750,26 @@ export function traceFile(
     const receiverName = lastSegment(text(callee.receiver));
     if (!receiverName || !/^[A-Za-z_$][\w$]*$/.test(receiverName)) return;
 
+    // A keyed write files the value in a NAMED COMPARTMENT of an object that is
+    // primarily something else. The object is dirty for reads of that store and
+    // clean for everything else it does. See safe/keyed-container.java.
+    const keyed = dictionary.keyedMutators?.includes(method) ?? false;
+    const readers = dictionary.keyedReaders;
+
     for (const arg of argumentsOf(node)) {
       const taint = evaluate(arg, scope);
       if (!taint) continue;
+      const stored = addStep(
+        taint,
+        node,
+        keyed
+          ? `filed into \`${receiverName}\` under a key via \`${method}()\` - reads of that ` +
+            `store are tainted, other methods on \`${receiverName}\` are not`
+          : `collected into \`${receiverName}\` via \`${method}()\``,
+      );
       scope.env.set(
         receiverName,
-        addStep(taint, node, `collected into \`${receiverName}\` via \`${method}()\``),
+        keyed && readers ? { ...stored, compartment: readers } : stored,
       );
       return;
     }
@@ -1054,15 +1813,25 @@ export function traceFile(
     const args = argumentsOf(node);
 
     for (const sink of dictionary.callSinks) {
-      if (!sink.methods.includes(name)) continue;
+      // The name as written, or the sink it was locally aliased to.
+      const aliasedTo = fileAliases.get(name);
+      const effective = sink.methods.includes(name) ? name : aliasedTo;
+      if (!effective || !sink.methods.includes(effective)) continue;
+      if (sink.bareOnly && callee.receiver) {
+        const owner = ownerName(text(callee.receiver));
+        if (!(sink.allowedReceivers ?? []).includes(owner)) continue;
+      }
       if (sink.requiredReceivers && sink.requiredReceivers.length > 0) {
         const receiver = callee.receiver ? text(callee.receiver) : '';
-        const last = receiver.split(/[.\s(\[]/).filter(Boolean).pop() ?? receiver;
+        const last = ownerName(receiver) || receiver;
         if (!sink.requiredReceivers.some((name) => last === name)) continue;
       }
       if (sink.receiverPattern) {
         const receiver = callee.receiver ? text(callee.receiver) : '';
-        if (!sink.receiverPattern.test(receiver)) continue;
+        // The variable's NAME, or the type it was declared with. `r.exec(cmd)`
+        // says nothing; `Runtime r = ...` two lines up says everything.
+        const declared = fileTypes.get(receiver) ?? fileTypes.get(lastSegment(receiver)) ?? '';
+        if (!sink.receiverPattern.test(receiver) && !sink.receiverPattern.test(declared)) continue;
       }
       if (sink.requiresShellOption && !sink.requiresShellOption.test(wholeCall)) continue;
       // The safe form of a deserialiser is the same call with a restriction
@@ -1090,7 +1859,19 @@ export function traceFile(
       const indexes =
         sink.argIndexes === 'all' ? args.map((_, index) => index) : sink.argIndexes;
 
+      /*
+       * Sinks whose destination is ARGUMENT ZERO, not the receiver.
+       * `fmt.Fprintf(w, ...)` - see writerArgPattern in types.ts.
+       */
+      if (sink.writerArgPattern) {
+        const writer = args[0] ? text(args[0]) : '';
+        const declared = fileTypes.get(writer) ?? fileTypes.get(lastSegment(writer)) ?? '';
+        if (!sink.writerArgPattern.test(writer) && !sink.writerArgPattern.test(declared)) continue;
+      }
+
       for (const index of indexes) {
+        // Argument zero is the destination, not the payload.
+        if (sink.writerArgPattern && index === 0) continue;
         const arg = args[index];
         if (!arg) continue;
 
@@ -1118,13 +1899,9 @@ export function traceFile(
         // recording, because it lets the scan RETRACT the signature-based
         // guess at this line instead of nagging about code that is provably
         // correct. Confirmed-clean is a result too.
-        if (taint.sanitizedFor.has(sink.kind)) {
-          sanitized.push({
-            ruleId: SINK_KIND_RULE[sink.kind],
-            sinkNode: node,
-            kind: sink.kind,
-            filePath: toDisplay(currentPath),
-          });
+        const verdict = retracted(taint, arg, sink.kind);
+        if (verdict) {
+          if (verdict === 'sanitised') recordRetraction(node, sink.kind);
           continue;
         }
 
@@ -1137,6 +1914,7 @@ export function traceFile(
           origin: taint.origin,
           sinkDescription: sink.description,
           unknownHops: taint.unknownHops,
+          branchAssumed: taint.branchAssumed ?? false,
           filePath: toDisplay(currentPath),
         });
       }
@@ -1144,16 +1922,18 @@ export function traceFile(
   };
 
   const checkAssignSink = (assignNode: Node, target: Node, value: Node, taint: Taint): void => {
-    const name = lastSegment(text(target)).replace(/^["']|["']$/g, '');
+    // The sigil goes the same way it does for receivers: PHP writes $html and
+    // the sink list holds html. See ownerName() for the receiver-side twin.
+    const name = lastSegment(text(target)).replace(/^["']|["']$/g, '').replace(/^[$*&]+/, '');
     for (const sink of dictionary.assignSinks) {
       if (!sink.properties.includes(name)) continue;
-      if (taint.sanitizedFor.has(sink.kind)) {
-        sanitized.push({
-          ruleId: SINK_KIND_RULE[sink.kind],
-          sinkNode: assignNode,
-          kind: sink.kind,
-          filePath: toDisplay(currentPath),
-        });
+      // A name-based sink has to see the shape it claims to parse. See the
+      // note on contentCheck in types.ts - `$sql .= $where` is not a page.
+      if (sink.contentCheck === 'html' && !looksLikeHtml(text(value))) continue;
+      if (sink.contentCheck === 'sql' && !looksLikeSql(text(value))) continue;
+      const verdict = retracted(taint, value, sink.kind);
+      if (verdict) {
+        if (verdict === 'sanitised') recordRetraction(assignNode, sink.kind);
         continue;
       }
       results.push({
@@ -1165,6 +1945,7 @@ export function traceFile(
         origin: taint.origin,
         sinkDescription: sink.description,
         unknownHops: taint.unknownHops,
+        branchAssumed: taint.branchAssumed ?? false,
         filePath: toDisplay(currentPath),
       });
     }
@@ -1187,6 +1968,9 @@ export function traceFile(
       ['left', 'right'],
       ['name', 'value'],
       ['key', 'value'],
+      // C and C++: `char *user = getenv("X")` is an init_declarator, whose
+      // fields are `declarator` and `value` rather than any of the above.
+      ['declarator', 'value'],
     ];
     for (const [targetField, valueField] of pairs) {
       const target = node.childForFieldName(targetField);
@@ -1209,18 +1993,80 @@ export function traceFile(
     'var_spec', // Go  var x = ...
     'const_spec', // Go  const x = ...
     'property_element', // PHP  class property with a default
+    /*
+     * C/C++ declaration-with-initialiser: `char *user = getenv("X")`.
+     *
+     * THIS LIST AND THE SHAPE QUERIES IN engine/shapes.ts ARE THE SAME FACT
+     * WRITTEN TWICE, and this entry is what that costs. The query knew about
+     * init_declarator from the first commit; the tracer's own walk did not, so
+     * every C value bound at its declaration read as clean while direct
+     * arguments traced perfectly - `printf(getenv("X"))` was flow-verified and
+     * `char *u = getenv("X"); printf(u);` was not, which is most of real C.
+     *
+     * It failed quietly because the shapes that DO work look like success: a
+     * plain `p = argv[1]` is an assignment_expression and was always covered.
+     */
+    'init_declarator',
   ]);
 
   /** PHP statements that write their argument straight to the response body. */
   const ECHO_NODES = new Set(['echo_statement', 'print_intrinsic']);
 
-  const walk = (node: Node, scope: Scope): void => {
+  /**
+   * How deep the statement walk will recurse into a syntax tree.
+   *
+   * `0 + 1 + 2 + ... + 1499` parses as a binary_expression nested 1,499 deep,
+   * and each level is one stack frame here. Node's default stack takes roughly
+   * a thousand of these frames before it gives up and kills the process, which
+   * means one file in TypeScript's own test suite could destroy a 25,809-file
+   * scan and return NOTHING - no findings, no report, no partial result.
+   *
+   * 400 is comfortably under the limit and far past any hand-written code.
+   * Anything deeper is generated, minified or a stress test, and the honest
+   * response is to stop and count it rather than to crash or to pretend the
+   * file was fully examined.
+   */
+  const MAX_AST_DEPTH = 400;
+
+  const walk = (node: Node, scope: Scope, depth = 0): void => {
+    if (depth > MAX_AST_DEPTH) {
+      seenDeepAst.add(siteOf(node, scope.filePath));
+      return;
+    }
     // A nested function is a separate notebook. Queue it, don't descend.
     if (node !== scope.body && functionTypes.has(node.type)) {
       const body = node.childForFieldName('body') ?? node;
+      const env = new Map(scope.env);
+      /*
+       * PARAMETERS THAT ARE ALREADY ATTACKER-CONTROLLED WHEN THE BODY STARTS.
+       *
+       * Every other source is an expression the body evaluates. A framework
+       * binding is not: Spring reads the query string, converts it, and hands
+       * the method a plain String. By the time the body runs there is nothing
+       * left to match - the only evidence is the annotation on the declaration,
+       * which is why this has to happen HERE, as the scope is created, rather
+       * than in sourceTaint().
+       *
+       * Zero flow-verified findings on OWASP WebGoat is what this cost. See the
+       * long note on parameterSources in dictionaries.ts.
+       */
+      for (const source of dictionary.parameterSources ?? []) {
+        for (const parameter of parameterDeclarations(node)) {
+          if (!parameter.name || !source.pattern.test(parameter.text)) continue;
+          seenSources.add(siteOf(parameter.node, scope.filePath));
+          env.set(parameter.name, {
+            steps: [
+              step('source', parameter.node, `\`${parameter.name}\` is ${source.description}`),
+            ],
+            sanitizedFor: new Set(),
+            origin: parameter.name,
+            unknownHops: [],
+          });
+        }
+      }
       queue.push({
         body,
-        env: new Map(scope.env),
+        env,
         filePath: scope.filePath,
         prepared: new Set(scope.prepared),
         builders: new Set(scope.builders),
@@ -1246,6 +2092,47 @@ export function traceFile(
       }
     }
 
+    /*
+     * A FOR-EACH INTRODUCES A NAME, AND NOTHING WAS BINDING IT.
+     *
+     *     String[] values = request.getParameterValues("q");
+     *     out.write(values[0]);                  // flow-verified
+     *     for (String v : values) out.write(v);  // signature-based only
+     *
+     * Subscripting a tainted array carried the taint; iterating the same array
+     * threw it away, because `v` was never entered into the environment and so
+     * evaluated to clean.
+     *
+     * The loop node types were ALREADY listed in CONDITIONAL_NODES - the tracer
+     * knew a for-each was a branch, and used that to decide a clean write inside
+     * one cannot prove a value safe. Knowing a construct exists and modelling
+     * what it does are different things, and the first reads exactly like the
+     * second until something measures it.
+     *
+     * Found by diagnosing BenchmarkJava's remaining 123 misses: every one had no
+     * source recognised, and fourteen of them were `for (Cookie c :
+     * request.getCookies())` - a source this engine has always known, thrown
+     * away by the loop around it. It looked like a cookie bug and was not.
+     *
+     * Container-insensitive, like every other collection in this engine: the
+     * loop variable takes the taint of the whole iterable, so iterating a list
+     * with one dirty element treats every element as dirty. That errs toward
+     * reporting, which is the direction this project takes on purpose.
+     */
+    if (FOREACH_NODES.has(node.type)) {
+      const binding = foreachBinding(node);
+      if (binding) {
+        const taint = evaluate(binding.iterable, scope);
+        const name = text(binding.name).replace(/^[$*&]+/, '').trim();
+        if (taint && /^[A-Za-z_$][\w$]*$/.test(name)) {
+          scope.env.set(
+            name,
+            addStep(taint, binding.name, `bound to \`${name}\` by a for-each over the collection`),
+          );
+        }
+      }
+    }
+
     if (ASSIGNMENT_NODES.has(node.type)) {
       const parts = assignmentParts(node);
       if (parts) {
@@ -1261,10 +2148,13 @@ export function traceFile(
         // of the returned values really carries it - but erring this way keeps
         // the extremely common `value, err :=` idiom traceable, and it is
         // recorded in the Go coverage note rather than left as a surprise.
-        const targetNames =
+        const targetNames = (
           parts.target.type === 'expression_list'
             ? parts.target.namedChildren.filter((c): c is Node => c !== null).map((c) => text(c))
-            : [text(parts.target)];
+            : DESTRUCTURING_NODES.has(parts.target.type)
+              ? namesBoundBy(parts.target)
+              : [text(parts.target)]
+        ).map(stripDeclarator);
 
         // `stmt, err := db.Prepare(sql)` - remember that `stmt` is a handle.
         // Go wraps the right-hand side in an expression_list, so unwrap first;
@@ -1288,7 +2178,13 @@ export function traceFile(
           if (taint) {
             scope.env.set(targetName, addStep(taint, parts.target, `stored in \`${targetName}\``));
           } else if (scope.env.has(targetName) && underCondition(node, scope.body)) {
-            // A clean write we cannot prove happens. Keep the dirt.
+            /*
+             * A clean write we cannot prove happens. Keep the dirt - but record
+             * that we ASSUMED rather than followed, so no proof is claimed on
+             * the strength of it. See the note on branchAssumed.
+             */
+            const kept = scope.env.get(targetName);
+            if (kept) scope.env.set(targetName, { ...kept, branchAssumed: true });
           } else {
             scope.env.delete(targetName); // reassigned to something clean
           }
@@ -1303,9 +2199,10 @@ export function traceFile(
         // dangerous act needs no arguments. Having one dispatch here and three
         // in the statement branch meant the same call was analysed differently
         // depending on whether anybody kept its result.
-        for (const child of parts.value.namedChildren) if (child) walk(child, scope);
+        for (const child of parts.value.namedChildren) if (child) walk(child, scope, depth + 1);
         if (CALL_NODES.has(parts.value.type)) {
           checkMutation(parts.value, scope);
+          checkOutParamMutation(parts.value, scope);
           checkReceiverSink(parts.value, scope);
           checkCallSink(parts.value, scope);
         }
@@ -1354,6 +2251,7 @@ export function traceFile(
 
     if (CALL_NODES.has(node.type)) {
       checkMutation(node, scope);
+      checkOutParamMutation(node, scope);
       checkReceiverSink(node, scope);
       checkCallSink(node, scope);
       // A bare call statement - `helper(req.query.id);` - is never evaluated as
@@ -1363,7 +2261,7 @@ export function traceFile(
     }
 
     for (const child of node.namedChildren) {
-      if (child) walk(child, scope);
+      if (child) walk(child, scope, depth + 1);
     }
   };
 
@@ -1376,6 +2274,36 @@ export function traceFile(
   ): { handled: boolean; taint: Taint | null } => {
     const { text: calleeText } = calleeOf(node);
     const calleeName = lastSegment(calleeText);
+
+    /*
+     * A FULLY QUALIFIED CALL IS NOT A LOCAL FUNCTION, however the names line up.
+     *
+     *     java.util.Collections.list(request.getParameterNames())
+     *
+     * resolved to a fixture's own `list(HttpServletRequest, HttpServletResponse)`
+     * three files away, because resolution used the LAST SEGMENT of the callee
+     * and threw the package path away. The descent then "handled" the call and
+     * returned that unrelated method's answer, which was nothing - so a proof
+     * that existed when the file was scanned alone disappeared when it was
+     * scanned alongside its neighbours.
+     *
+     * That is the worst shape a bug can take here: the same code, analysed
+     * twice, giving two answers, with no message either time.
+     *
+     * The engine's limitations already say "whether a function is actually
+     * EXPORTED is not checked - a module-private helper with a matching name
+     * could be entered". This is that, with a fact available to rule it out and
+     * nobody reading it. `java.util.Collections` names one class in one package;
+     * a local method cannot be it.
+     *
+     * The test is the Java package convention - lowercase segments then a
+     * Capitalised type - which is deliberately narrow. `Utils.list(x)` and
+     * `this.list(x)` are unqualified enough to still resolve locally, and are
+     * left alone.
+     */
+    if (/^[a-z][\w$]*(?:\.[a-z][\w$]*)+\.[A-Z][\w$]*\.[\w$]+$/.test(calleeText.trim())) {
+      return { handled: false, taint: null };
+    }
 
     /* ---- PHASE 3c: the function may live in another file. ----
      * We look locally first, then ask the project index. The index only

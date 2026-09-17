@@ -137,6 +137,10 @@ header {
   padding: 3px 9px; border-radius: 3px; font-weight: 600;
 }
 .tagline { margin-left: auto; color: var(--muted); font-size: 13px; }
+.licence {
+  margin: 28px 0 8px; padding-top: 14px; border-top: 1px solid var(--line);
+  color: var(--muted); font-size: 12px; line-height: 1.6; max-width: 900px;
+}
 
 /* ------------------------------- intake --------------------------------- */
 #intake { padding: 56px 0 24px; }
@@ -595,9 +599,16 @@ code, .code {
         <button id="pickFiles">Choose files</button>
         <button id="sample">Load a sample</button>
       </div>
-      <p style="margin-top:22px;font-size:12.5px;color:var(--faint)">
-        JavaScript · TypeScript · Python · Java · Go
-      </p>
+      <!--
+        FILLED FROM `LANGUAGES` AT RUNTIME - do not write the list here.
+        This line read "JavaScript · TypeScript · Python · Java · Go" for weeks
+        after PHP shipped: the front page of the tool advertised five of its six
+        languages. Third time a hand-written list has drifted, and the drift
+        check that exists to catch exactly this scanned src/ and tests/ and
+        never ui/. Both halves are fixed - the list is derived, and the check
+        now reads this file.
+      -->
+      <p id="langList" style="margin-top:22px;font-size:12.5px;color:var(--faint)"></p>
     </div>
     <input type="file" id="dirInput" webkitdirectory directory multiple />
     <input type="file" id="fileInput" multiple />
@@ -654,6 +665,16 @@ code, .code {
     <div class="section-title">What this scan did NOT check</div>
     <div class="gaps" id="gaps"></div>
   </section>
+
+  <!--
+    FILLED FROM `NETWORK_SOURCE_NOTICE` AT RUNTIME - do not write the text here.
+    Section 13 of the AGPL says a modified version served over a network must
+    "prominently offer" its users the source. A notice only the maintainer ever
+    reads is not an offer, and a second copy of the sentence in this file is a
+    second thing to forget to update - the language list two hundred lines up
+    was wrong for weeks for exactly that reason.
+  -->
+  <footer class="licence" id="licence"></footer>
 
 </div>
 <script type="module" src="/app.js"></script>

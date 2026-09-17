@@ -93,6 +93,9 @@ const GLYPHS = {
   middot: ['\u00b7', '-'],
   arrow: ['\u2192', '->'],
   ellipsis: ['\u2026', '...'],
+  // Windows PowerShell renders U+26A0 inconsistently; the ASCII fallback keeps
+  // the warning legible everywhere, which for a warning is the whole point.
+  warn: ['\u26a0', '!'],
 } as const;
 
 export type GlyphName = keyof typeof GLYPHS;

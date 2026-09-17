@@ -22,8 +22,16 @@
  *      language expansion is mostly unlocking files we already have on disk.
  */
 
-/** The five languages NS-1 supports. */
-export type LanguageId = 'javascript' | 'typescript' | 'python' | 'java' | 'go' | 'php';
+/** The languages NS-1 supports. */
+export type LanguageId =
+  | 'javascript'
+  | 'typescript'
+  | 'python'
+  | 'java'
+  | 'go'
+  | 'php'
+  | 'c'
+  | 'cpp';
 
 export interface Dialect {
   /** File extensions handled by this dialect. */
@@ -110,6 +118,44 @@ export const LANGUAGES: readonly LanguageSpec[] = [
     grammar: 'go',
     notes:
       'Go source only; go.mod, go.sum and generated protobuf files are skipped as noise.',
+  },
+  {
+    id: 'c',
+    displayName: 'C',
+    extensions: ['.c'],
+    grammar: 'c',
+    notes:
+      'MEMORY SAFETY IS NOT ANALYSED. C is famous for buffer overflows, use-after-free, ' +
+      'double-free and integer overflow, and this engine models none of them - it tracks ' +
+      'values, not sizes, allocations or pointer aliasing. What IS analysed is the same ' +
+      'thing analysed in every other language: attacker-controlled data reaching a ' +
+      'dangerous call. In C that means shells (system, popen, exec*), format strings ' +
+      '(printf-family, where a tainted FORMAT argument is CWE-134 and a taint engine ' +
+      'catches it exactly), and copies with no length bound (strcpy, strcat, sprintf, ' +
+      'gets). A finding that data reaches an unbounded copy is NOT a claim that the ' +
+      'destination is too small - that needs size analysis we do not have - so the ' +
+      'wording says "reaches a copy with no length bound" and means only that. ' +
+      'THE PREPROCESSOR IS NOT RUN: #include is not followed, #ifdef branches are all ' +
+      'parsed as though taken, and a macro that hides a sink (#define RUN(x) system(x)) ' +
+      'is invisible.',
+  },
+  {
+    id: 'cpp',
+    displayName: 'C++',
+    extensions: ['.cpp', '.cc', '.cxx', '.c++', '.hpp', '.hh', '.hxx', '.h'],
+    grammar: 'cpp',
+    notes:
+      'Every C limitation applies, plus: templates are parsed but not instantiated, so a ' +
+      'sink reached only through a template specialisation is missed, and operator ' +
+      'overloading is not resolved - a custom operator<< that executes a command reads ' +
+      'as an ordinary stream write. ' +
+      'THE .h EXTENSION IS TREATED AS C++, deliberately and against appearances. It is ' +
+      'ambiguous - most .h files in the world are C - but the two grammars are not ' +
+      'symmetric: measured on this project\'s own fixtures, the C++ grammar parses C ' +
+      'with zero error nodes while the C grammar produces eleven on C++. Choosing the ' +
+      'superset costs a C project a cosmetic mislabel in the per-language counts; ' +
+      'choosing C would cost a C++ header every std:: sink in it, silently. A wrong ' +
+      'label is better than a missing finding.',
   },
 ];
 

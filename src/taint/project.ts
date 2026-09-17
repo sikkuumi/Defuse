@@ -44,8 +44,61 @@
 import type { Node } from 'web-tree-sitter';
 import { basenameOf, dirnameOf, joinPath, resolveFrom, toPosix } from '../core/paths.js';
 import type { LanguageId } from '../parse/languages.js';
-import type { ParsedFile } from '../parse/parser.js';
-import { collectFunctions, type CrossFileResolver, type LocalFunction } from './tracer.js';
+import { nodeAtRange, type TreeStore } from '../parse/tree-store.js';
+import { collectFunctions, type CrossFileResolver } from './tracer.js';
+
+/**
+ * A function recorded as COORDINATES rather than as a syntax node.
+ *
+ * This is the change that lets the memory ceiling go away. The index used to
+ * hold a live Node for every function body in the project, and a Node keeps its
+ * whole tree alive - so indexing the project pinned every tree in it, whether
+ * or not anything ever traced into them. Holding two integers and a string
+ * instead lets the trees be freed, at the cost of parsing a file again on the
+ * rare occasion the tracer actually descends into it.
+ *
+ * bodyType is recorded alongside the offsets because a byte range alone is not
+ * always unique: a node can share its exact extent with its parent. The type is
+ * what tells them apart, and a lookup that cannot match both is refused.
+ */
+export interface IndexedFunction {
+  readonly name: string;
+  readonly params: readonly string[];
+  readonly bodyStart: number;
+  readonly bodyEnd: number;
+  readonly bodyType: string;
+}
+
+/**
+ * What buildProjectIndex needs from each file. Everything here is extracted
+ * while the file's tree is hot during the first pass, so the index itself never
+ * touches a tree and never holds one.
+ */
+export interface IndexedFileInput {
+  readonly path: string;
+  readonly language: LanguageId;
+  readonly functions: ReadonlyMap<string, IndexedFunction>;
+  /** Raw module specifiers, already read out of the tree. */
+  readonly importSpecifiers: readonly string[];
+}
+
+/** Turn a file's functions into coordinates, using the tracer's own definition. */
+export function indexFunctions(
+  root: Node,
+  language: LanguageId,
+): Map<string, IndexedFunction> {
+  const indexed = new Map<string, IndexedFunction>();
+  for (const [name, fn] of collectFunctions(root, language)) {
+    indexed.set(name, {
+      name: fn.name,
+      params: fn.params,
+      bodyStart: fn.body.startIndex,
+      bodyEnd: fn.body.endIndex,
+      bodyType: fn.body.type,
+    });
+  }
+  return indexed;
+}
 
 interface IndexedFile {
   /** The path exactly as the shell gave it to us - what reports will show. */
@@ -54,7 +107,7 @@ interface IndexedFile {
   readonly posix: string;
   readonly directory: string;
   readonly language: LanguageId;
-  readonly functions: Map<string, LocalFunction>;
+  readonly functions: ReadonlyMap<string, IndexedFunction>;
   /** Absolute paths of files this one imports, as far as we could resolve them. */
   readonly imports: Set<string>;
 }
@@ -63,10 +116,37 @@ export interface ProjectIndexStats {
   readonly filesIndexed: number;
   readonly functionsIndexed: number;
   readonly importEdges: number;
+  /**
+   * Import statements we READ but could not point at a file in this scan.
+   *
+   * Counted because it is the difference between "this code imports nothing"
+   * and "this code imports 117 things and you gave me none of them". A beginner
+   * scanned juice-shop's server.ts on its own, got zero findings, and concluded
+   * the tool was broken. It was not: server.ts is a wiring file whose 117
+   * imports all pointed outside the scan, so every trace stopped at the first
+   * module boundary. The same repository's routes/ directory produces seven
+   * findings, two of them flow-verified.
+   *
+   * The report had the evidence - importEdges was 0 - and never said what it
+   * meant. An undeclared blind spot is exactly what this project refuses to
+   * ship, so it is declared now.
+   */
+  readonly importsUnresolved: number;
   /** Times a cross-file call WAS followed. */
   readonly resolved: number;
   /** Times several files defined the name and we refused to choose. */
   readonly ambiguous: number;
+  /**
+   * Times a function was found in the index but could not be located again in
+   * the re-parsed tree, and the resolution was declined rather than guessed.
+   *
+   * This should be zero forever: the parse is deterministic, so a node recorded
+   * at bytes 400-980 as a `block` is a `block` at bytes 400-980 every time the
+   * same file is parsed with the same grammar. It is counted anyway, because
+   * "should be impossible" is how a tool ends up tracing into the wrong
+   * function and printing a confident proof of it.
+   */
+  readonly relocationsFailed: number;
 }
 
 export interface ProjectIndex extends CrossFileResolver {
@@ -89,6 +169,24 @@ const IMPORT_NODES: Record<LanguageId, readonly string[]> = {
   // resolves classes with no import line at all. Cross-file tracing in PHP is
   // therefore NOT implemented - stated here rather than half-attempted.
   php: [],
+  /*
+   * C and C++ resolve calls at LINK time, not through anything written in the
+   * source, and that is a harder problem than it first looks.
+   *
+   * `#include` brings in DECLARATIONS, not definitions - the body of the
+   * function lives in a .c file the header never names, chosen by a Makefile
+   * we do not read. So following an include would lead to a prototype and stop.
+   *
+   * Same-directory resolution, which is what makes Java and Go work above, is
+   * actively unsafe here: `static` gives a C function FILE scope, and every
+   * large C project has a dozen different `static int init(void)` definitions
+   * sitting in the same folder. Matching by name would let the tracer walk into
+   * a function the caller provably cannot see, and print a step-by-step proof
+   * through it. That is the exact failure this project exists to refuse, so
+   * cross-file tracing in the C family is NOT implemented and says so.
+   */
+  c: [],
+  cpp: [],
 };
 
 function unquote(raw: string): string {
@@ -96,7 +194,7 @@ function unquote(raw: string): string {
 }
 
 /** The raw module specifiers this file mentions, e.g. "./db", "app.helpers". */
-function importSpecifiers(root: Node, language: LanguageId): string[] {
+export function importSpecifiers(root: Node, language: LanguageId): string[] {
   const wanted = new Set(IMPORT_NODES[language]);
   if (wanted.size === 0) return [];
   const specifiers: string[] = [];
@@ -196,7 +294,17 @@ function resolveSpecifier(
   return null;
 }
 
-export function buildProjectIndex(files: readonly ParsedFile[]): ProjectIndex {
+/**
+ * @param files  one record per scanned file, with functions and import
+ *               specifiers ALREADY extracted from its tree.
+ * @param store  where trees come from. Only touched when a resolution actually
+ *               succeeds, which on real projects is a small fraction of files -
+ *               the index itself is built without a single tree in hand.
+ */
+export function buildProjectIndex(
+  files: readonly IndexedFileInput[],
+  store: TreeStore,
+): ProjectIndex {
   const byPath = new Map<string, IndexedFile>();
   // Resolution happens in normalised space; lookups map back to the original.
   const known = new Set(files.map((f) => toPosix(f.path)));
@@ -207,23 +315,30 @@ export function buildProjectIndex(files: readonly ParsedFile[]): ProjectIndex {
       path: file.path,
       posix: toPosix(file.path),
       directory: dirnameOf(file.path),
-      language: file.language.id,
-      functions: collectFunctions(file.root, file.language.id),
+      language: file.language,
+      functions: file.functions,
       imports: new Set<string>(),
     });
   }
 
   // Second pass: resolve specifiers now that every path is known.
   let importEdges = 0;
+  let importsUnresolved = 0;
   for (const file of files) {
     const entry = byPath.get(file.path);
     if (!entry) continue;
-    for (const specifier of importSpecifiers(file.root, file.language.id)) {
+    for (const specifier of file.importSpecifiers) {
       const resolvedPosix = resolveSpecifier(specifier, entry, known);
       const resolved = resolvedPosix ? originalOf.get(resolvedPosix) : undefined;
       if (resolved && resolved !== file.path) {
         entry.imports.add(resolved);
         importEdges++;
+      } else if (!/^[a-z@][\w@/.-]*$/i.test(specifier) || specifier.startsWith('.')) {
+        // A RELATIVE import that resolved to nothing means the file it names is
+        // outside the scan. A bare specifier (`express`, `@angular/core`) is a
+        // package and is expected not to resolve - counting those would drown
+        // the real signal in node_modules noise.
+        importsUnresolved++;
       }
     }
   }
@@ -260,6 +375,7 @@ export function buildProjectIndex(files: readonly ParsedFile[]): ProjectIndex {
 
   let resolved = 0;
   let ambiguous = 0;
+  let relocationsFailed = 0;
   let functionsIndexed = 0;
   for (const entry of byPath.values()) functionsIndexed += entry.functions.size;
 
@@ -289,10 +405,35 @@ export function buildProjectIndex(files: readonly ParsedFile[]): ProjectIndex {
       }
 
       const winner = hits[0];
-      const fn = winner?.functions.get(name);
-      if (!winner || !fn) return null;
+      const indexed = winner?.functions.get(name);
+      if (!winner || !indexed) return null;
+
+      /* ---- materialise: coordinates back into a live syntax node ----
+       *
+       * This is the only place in the scan that can pull a tree back off disk,
+       * and it is deliberately the LAST thing that happens - after the file has
+       * been chosen and the ambiguity check has passed. Resolving first and
+       * parsing second means a project with thousands of files that never
+       * resolve into each other never re-parses anything.
+       *
+       * The pin lasts until the caller releases it, because the Node handed
+       * back here points into this tree's memory and nothing else keeps it
+       * alive.                                                               */
+      store.pin(winner.path);
+      const tree = store.get(winner.path);
+      const body = nodeAtRange(
+        tree.rootNode,
+        indexed.bodyStart,
+        indexed.bodyEnd,
+        indexed.bodyType,
+      );
+      if (!body) {
+        relocationsFailed++;
+        return null;
+      }
+
       resolved++;
-      return { path: winner.path, fn };
+      return { path: winner.path, fn: { name: indexed.name, params: indexed.params, body } };
     },
 
     noteAmbiguous() {
@@ -303,8 +444,10 @@ export function buildProjectIndex(files: readonly ParsedFile[]): ProjectIndex {
       filesIndexed: byPath.size,
       functionsIndexed,
       importEdges,
+      importsUnresolved,
       resolved,
       ambiguous,
+      relocationsFailed,
     }),
   };
 }

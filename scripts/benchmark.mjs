@@ -14,7 +14,7 @@
  *
  * Usage:  node scripts/benchmark.mjs
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -71,13 +71,18 @@ let fp = 0;
 let fn = 0;
 let tn = 0;
 const missedBy = {};
+const falsePositives = [];
 for (const [name, { category, vulnerable }] of expected) {
   const flagged = reported.get(name)?.has(category) ?? false;
   if (vulnerable && flagged) tp++;
   else if (vulnerable && !flagged) {
     fn++;
     missedBy[category] = (missedBy[category] ?? 0) + 1;
-  } else if (!vulnerable && flagged) fp++;
+
+  } else if (!vulnerable && flagged) {
+    fp++;
+    falsePositives.push(name);
+  }
   else tn++;
 }
 
@@ -88,3 +93,79 @@ console.log(`  scored test cases : ${expected.size}`);
 console.log(`  TP ${tp}   FP ${fp}   FN ${fn}   TN ${tn}`);
 console.log(`  precision ${(precision * 100).toFixed(1)}%   recall ${(recall * 100).toFixed(1)}%`);
 console.log(`  missed by category: ${JSON.stringify(missedBy)}`);
+
+/*
+ * IS THE "DELIBERATE TRAPS" CLAIM STILL TRUE?
+ *
+ * The README asserted for a long time that "most false positives are the
+ * benchmark's deliberate traps" - BenchmarkJava's constant-branch decoys:
+ *
+ *     int num = 86;
+ *     if ((7 * 42) - num > 200) bar = "This_should_always_happen";
+ *     else bar = param;
+ *
+ * That sentence was written when FP was 49. FP is now 345, a 7x rise caused by
+ * the Spring and JAX-RS source bindings, and nobody re-checked whether the
+ * composition of those false positives is still the same. An empirical claim
+ * that survives the thing that changed its subject is not a claim any more, it
+ * is a leftover.
+ *
+ * So it is measured rather than asserted: read every false-positive file and
+ * look for the decoy's shape - a constant-arithmetic condition guarding the
+ * assignment. Whatever the number turns out to be is what the README will say.
+ */
+const TRAP_SHAPES = [
+  /if\s*\(\s*\(?\s*\d+\s*[*+\-/]\s*\d+\s*\)?\s*[-+*/]?\s*\w*\s*[<>=]/, // (7 * 42) - num > 200
+  /if\s*\(\s*\d+\s*[<>=]+\s*\d+\s*\)/,                                  // if (5 > 3)
+  /This_should_always_happen|Nothing_to_see_here|safe_value/i,          // the decoy strings
+];
+let trapped = 0;
+for (const name of falsePositives) {
+  const file = join(benchmark, `src/main/java/org/owasp/benchmark/testcode/${name}.java`);
+  if (!existsSync(file)) continue;
+  const body = readFileSync(file, 'utf8');
+  if (TRAP_SHAPES.some((re) => re.test(body))) trapped++;
+}
+const trapShare = fp === 0 ? 0 : trapped / fp;
+console.log(`  of ${fp} false positives, ${trapped} carry the constant-branch decoy (${(trapShare * 100).toFixed(0)}%)`);
+
+/*
+ * WRITE THE RESULT DOWN, so the README cannot outlive it.
+ *
+ * The README carried 64.5% precision / 13.8% recall for about twenty versions
+ * after the engine measured 58.8% / 76.4%. Both were honest when written; the
+ * first was simply left behind by the Spring and JAX-RS source bindings.
+ *
+ * A number a human retypes into prose is a number that goes stale silently. So
+ * the scorer now emits its own result and `npm test` compares the README's
+ * table against this file - re-measure, or the build fails. It cannot be
+ * quietly wrong any more, only loudly out of date.
+ */
+const resultPath = join(root, 'docs/benchmark-result.json');
+// Placeholder replaced below - the trap measurement runs first now.
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+writeFileSync(
+  resultPath,
+  `${JSON.stringify(
+    {
+      scored: expected.size,
+      tp,
+      fp,
+      fn,
+      tn,
+      precision: `${(precision * 100).toFixed(1)}%`,
+      recall: `${(recall * 100).toFixed(1)}%`,
+      missedByCategory: missedBy,
+      filesParsed: result.diagnostics?.stats?.filesParsed ?? 0,
+      parseErrors: result.diagnostics?.stats?.filesWithParseErrors ?? 0,
+      durationMs: result.diagnostics?.stats?.durationMs ?? 0,
+      decoyFalsePositives: trapped,
+      decoyShare: `${(trapShare * 100).toFixed(0)}%`,
+      engineVersion: pkg.version,
+      measuredAt: new Date().toISOString().slice(0, 10),
+    },
+    null,
+    2,
+  )}\n`,
+);
+console.log(`\n  written to docs/benchmark-result.json`);

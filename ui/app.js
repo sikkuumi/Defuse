@@ -6,7 +6,17 @@
  * ever starts deciding things, the browser and the CLI have begun to disagree.
  */
 
-import { SCANNABLE_EXTENSIONS } from '/engine/parse/languages.js';
+import { LANGUAGES, SCANNABLE_EXTENSIONS } from '/engine/parse/languages.js';
+import { NETWORK_SOURCE_NOTICE } from '/engine/core/licence.js';
+
+// The landing card's language line. Derived, never typed - see the comment in
+// index.html for what typing it cost.
+const langList = document.getElementById('langList');
+if (langList) langList.textContent = LANGUAGES.map((l) => l.displayName).join(' \u00b7 ');
+
+// The licence notice, from the same constant the CLI prints.
+const licence = document.getElementById('licence');
+if (licence) licence.textContent = NETWORK_SOURCE_NOTICE;
 
 const $ = (id) => document.getElementById(id);
 const scannable = new Set(SCANNABLE_EXTENSIONS);

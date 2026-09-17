@@ -19,9 +19,48 @@ smoothed over.
 The tool also prints, on every run, a list of what it did **not** check. That is
 the product. The rules are table stakes; the labelling is the difference.
 
+<!-- derived:counts -->
+**10 rules** across **8 languages** (JavaScript, TypeScript, Python, Java, PHP, Go, C, C++).
+<!-- /derived -->
+
 ---
 
 ## Quick start
+
+**Run it without installing anything:**
+
+```bash
+npx github:<your-github-user>/ns1-securescan scan ./src
+```
+
+> Not on the npm registry yet, so the install is straight from the repository —
+> substitute the account it lives under. This is stated rather than a
+> `npx ns1-securescan` line that does not resolve: a README whose very first
+> command fails is a worse first impression than one extra clause.
+
+That is the whole setup. The WASM grammars ship inside the package and are
+resolved from `node_modules`, so there is no toolchain to install, no compiler,
+and nothing to configure — two runtime dependencies and a Node 18+ runtime.
+
+Two instruments prove this rather than assuming it, because installing from a
+registry and installing from a repository fail in different ways:
+
+- **`npm run install-check`** packs the tarball and installs it. Catches a file
+  missing from `files`, a `bin` path that does not survive compilation, grammars
+  that resolve relative to the repo instead of `node_modules`.
+- **`npm run git-install-check`** commits the tree to a throwaway repository and
+  installs *that*, which runs `prepare` and compiles on the spot. Catches a
+  `.gitignore` that excludes something the build needs, or a build that only
+  works on the author's machine — the failure modes `npm pack` cannot see,
+  because `npm pack` ships something already built.
+
+Both scan a multi-language sample through the installed binary and through the
+local build, and **fail unless the findings are identical** — same rules, same
+lines, same confidence labels. A packaged scanner that reports differently from
+the developer's copy is worse than one that fails to start, because it fails
+quietly.
+
+**Working on the engine itself:**
 
 ```bash
 npm install
@@ -32,7 +71,18 @@ node dist/src/cli.js scan tests/fixtures       # scan the sample vulnerable code
 npm test                                       # verify every rule fires correctly
 
 npm run ui                                     # the browser UI on :4173
+npm run install-check                          # is the published package the same program?
+npm run git-install-check                      # does a clone of this repo build and behave?
+npm run memory                                 # what does a scan cost per byte of source?
+npm run identity                               # did a refactor move any answer?
 ```
+
+`npm run identity` is the one to run before and after anything that is *meant*
+to change nothing. It scans twelve fixed targets and hashes the findings, the
+proof steps and the diagnostic counters underneath them, because the accuracy
+figures are averages and two findings moving in opposite directions cancel out
+in an average. `--record` captures the current behaviour as the baseline — only
+ever from a tree whose other instruments you have just run and believed.
 
 > **Windows / PowerShell note.** In this README and in `--help`, `<path>` and
 > `<file>` are *placeholders* — replace them with a real path. Do not type the
@@ -45,13 +95,16 @@ npm run ui                                     # the browser UI on :4173
 > node dist/src/cli.js ast .\tests\fixtures\vulnerable\sqli.js
 > ```
 
-Once installed globally (`npm link`), the command is `secureScan`:
+Installed globally (`npm i -g github:<your-github-user>/ns1-securescan`), the command is `securescan`
+(`secureScan` also works — both names are declared, because a camelCase binary
+resolves on macOS and not on the Linux box your CI runs on):
 
 ```bash
-secureScan scan ./src
-secureScan scan ./src --json > findings.json
-secureScan ast ./src/app.js                    # see the syntax tree
-secureScan rules --explain sql-injection       # read the write-up for a rule
+securescan scan ./src
+securescan scan ./src --json > findings.json
+securescan scan ./src --sarif > results.sarif   # for GitHub code scanning
+securescan ast ./src/app.js                    # see the syntax tree
+securescan rules --explain sql-injection       # read the write-up for a rule
 ```
 
 ---
@@ -93,7 +146,7 @@ byte-identical findings in both:
 | sanitised flows retracted | 2 | 2 |
 
 Nothing is uploaded: the parser, the rules and the taint tracer all run inside
-the tab. `npm run ui` compiles, copies the engine and the six WASM grammars into
+the tab. `npm run ui` compiles, copies the engine and the WASM grammars into
 `ui/`, and serves it on :4173. There is no bundler and no new dependency - the
 build step is one file rewrite, because browsers cannot resolve the bare
 specifier `web-tree-sitter` and import maps do not reach inside module workers.
@@ -334,8 +387,8 @@ expressed in four grammars with four different node names. `engine/shapes.ts`
 holds one tree-sitter query per language that reduces all of them to a single
 `CallSite` object.
 
-The consequence: **a rule is written once and works in five languages**, and
-adding a sixth language means adding two query strings — not editing five rules.
+The consequence: **a rule is written once and works in every language**, and
+adding the next one means adding two query strings — not editing every rule.
 
 ---
 
@@ -490,15 +543,26 @@ That is the honest version of a guess: make it, then show your work.
 
 ## Signature rules
 
-| Rule | CWE | OWASP 2021 | JS | TS | PY | JAVA | GO |
-|---|---|---|:--:|:--:|:--:|:--:|:--:|
-| `sql-injection` | CWE-89 | A03 Injection | ● | ● | ● | ● | ● |
-| `command-injection` | CWE-78 | A03 Injection | ● | ● | ● | ◐ | ◐ |
-| `xss` | CWE-79 | A03 Injection | ● | ● | ◐ | ◐ | ◐ |
-| `hardcoded-secret` | CWE-798 | A07 Auth Failures | ● | ● | ● | ● | ● |
-| `weak-hash` | CWE-327 | A02 Crypto Failures | ● | ● | ● | ● | ◐ |
+<!-- derived:rule-matrix -->
+| Rule | CWE | OWASP | JS | TS | PY | JAVA | PHP | GO | C | CPP |
+|---|---|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+| `sql-injection` | CWE-89 | A05:2025 Injection | ● | ● | ● | ● | ● | ● | ● | ● |
+| `command-injection` | CWE-78 | A05:2025 Injection | ● | ● | ● | ◐ | ● | ◐ | ● | ● |
+| `format-string` | CWE-134 | A05:2025 Injection | ○ | ○ | ○ | ○ | ○ | ○ | ● | ● |
+| `unbounded-copy` | CWE-120 | A05:2025 Injection | ○ | ○ | ○ | ○ | ○ | ○ | ◐ | ◐ |
+| `code-injection` | CWE-94 | A05:2025 Injection | ● | ● | ● | ◐ | ● | ○ | ○ | ○ |
+| `xss` | CWE-79 | A05:2025 Injection | ● | ● | ◐ | ◐ | ◐ | ◐ | ○ | ○ |
+| `ssrf` | CWE-918 | A01:2025 Broken Access Control | ● | ● | ● | ◐ | ● | ● | ○ | ○ |
+| `unsafe-deserialization` | CWE-502 | A08:2025 Software or Data Integrity Failures | ◐ | ◐ | ● | ◐ | ● | ○ | ○ | ○ |
+| `hardcoded-secret` | CWE-798 | A07:2025 Authentication Failures | ● | ● | ● | ● | ● | ● | ● | ● |
+| `weak-hash` | CWE-327 | A04:2025 Cryptographic Failures | ● | ● | ● | ● | ● | ◐ | ● | ● |
 
-● implemented ◐ partial ○ not implemented
+● implemented  ◐ partial  ○ not implemented
+
+10 rules across 8 languages. This table is generated from
+`ALL_RULES` and `LANGUAGES` by `npm run sync:readme`, and `npm test` fails if it
+drifts - the counts in it are not maintained by hand.
+<!-- /derived -->
 
 `secureScan rules --explain <id>` prints the full write-up for any rule,
 including exactly what each ◐ is missing. Those notes are also printed at the
@@ -529,7 +593,23 @@ Useful flags:
                         no finding that crosses a module boundary
 --coverage-matrix       print the full rule × language table
 --show-suppressed       list findings silenced by securescan:ignore comments
+--sarif                 SARIF 2.1.0, for GitHub code scanning and any SARIF viewer
+--compact               one line per finding
+--no-config             ignore .securescan.json even if one is present
 ```
+
+**`--sarif`**: real SARIF 2.1.0, typed against `@types/sarif`. The confidence
+label is carried three ways so it cannot be lost in transit — a `[flow-verified]`
+or `[signature-based, UNVERIFIED]` message prefix, a `properties.confidence`
+field, and a `codeFlows` entry that exists **only** for verified findings. A
+test fails if a `codeFlow` ever appears on an unverified one. See
+`docs/examples/github-code-scanning.yml` for the workflow.
+
+**`.securescan.json`**: project config for `exclude`, `only`, `failOn` and
+`minSeverity`. Command-line flags win over the file, broken JSON exits 2 rather
+than being ignored, and **a rule cannot be disabled by config** — by design, so
+a repository cannot quietly switch off the check it fails. See
+`docs/examples/securescan.json`.
 
 `--exclude` never hides quietly. The report prints how many files and whole
 directories it removed, because a blind spot you asked for is still a blind
@@ -549,10 +629,15 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 112 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 282 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.
+
+That number is itself one of the checks. It had been wrong — this line said 112
+while the suite ran 198 — which made it the fifth place in this project where a
+figure went stale because it was written down instead of derived. The last check
+in the run now reads this sentence and fails if it disagrees with the count.
 
 **`npm run metamorphic` — 175 generated programs.** This one goes the other way.
 Rather than hunting for code whose answer is known, it *generates* code whose
@@ -623,10 +708,9 @@ and limitations.
 ## Measured on real code
 
 The signature pass was validated against five real repositories — axios,
-express, flask, gin and gson: **820 files, all five languages, zero parse
-errors, ~4.5 seconds.**
+express, flask, gin and gson: **820 files, zero parse errors, ~4.5 seconds.**
 
-The first run produced 179 findings, of which 167 were in test trees and most of
+The first run of that validation produced 179 findings, of which 167 were in test trees and most of
 the rest were noise: the entropy heuristic was flagging `'application/x-www-form-urlencoded'`
 and `'abcdefghijklmnopqrstuvwxyz'` as possible secrets, and `auth` was matching
 inside `author`. Three fixes followed — a structural gate before the entropy
@@ -685,22 +769,28 @@ BenchmarkJava is 2,740 Java test cases, each labelled by OWASP as a real
 vulnerability or a deliberate decoy. It is the closest thing this field has to
 an exam with an answer key, so here is the exam result, unedited:
 
-| category | cases | real | TP | FP | FN | precision | recall |
+<!-- derived:benchmark -->
+| | cases | TP | FP | FN | TN | precision | recall |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| sqli | 504 | 272 | 45 | 32 | 227 | 58.4% | 16.5% |
-| cmdi | 251 | 126 | 6 | 7 | 120 | 46.2% | 4.8% |
-| xss | 455 | 246 | 38 | 10 | 208 | 79.2% | 15.4% |
-| **overall** | **1210** | **644** | **89** | **49** | **555** | **64.5%** | **13.8%** |
+| **overall** | **1210** | **575** | **391** | **69** | **175** | **59.5%** | **89.3%** |
 
-2,766 files, zero parse errors, 12.7 seconds.
+2740 files, 0 parse errors, 20.3 seconds, on engine 0.5.0 (2026-09-17).
 
-**Recall is low and that is the honest headline.** Most misses are shapes the
-tracer does not model: values stored in a `Map` or array and read back,
-`StringBuilder` mutation, and helpers living in another class. Every one of
-those is in the limitations list above.
+**Precision is the weaker side.** 391 false positives against 69 false negatives - 5.7x as many - so the cost of this engine is triage time, not missed bugs.
 
-**Most false positives are the benchmark's deliberate traps**, and they are all
-the same trap:
+Missed by category: xss 48, cmdi 20, sqli 1. Of the 391 false positives, **144 (37%)** carry BenchmarkJava's constant-branch decoy - the `if ((7 * 42) - num > 200)` shape that needs constant folding plus branch feasibility to see through, which the limitations list says this engine does not do. The remainder are ours.
+
+Every number above is generated by `npm run benchmark` into
+`docs/benchmark-result.json` - including the sentence naming the weaker side,
+because an interpretation kept by hand goes stale exactly like a figure does.
+<!-- /derived -->
+
+**What the misses are.** Shapes the tracer does not model: values stored in a
+`Map` or array and read back, `StringBuilder` mutation, and helpers living in
+another class. Every one is in the limitations list above.
+
+**What the decoys are.** The share named in the block above is BenchmarkJava's
+deliberate trap, which is always the same shape:
 
 ```java
 int num = 86;
@@ -709,23 +799,48 @@ else bar = param;
 ```
 
 `294 - 86 = 208`, so the constant branch always wins and `bar` is never tainted.
-Seeing that requires constant folding plus branch feasibility analysis — which
-is precisely the "branch conditions are not evaluated" line in our own
-limitations. The benchmark is testing for a capability we say we do not have,
-and it catches us exactly where we said it would.
+Seeing that needs constant folding plus branch feasibility — precisely the
+"branch conditions are not evaluated" line in our own limitations. The benchmark
+tests for a capability we say we do not have, and catches us where we said it
+would.
 
-These numbers are not good yet. They are *measured*, which is the point: a
-scanner that will not publish its own exam result is asking you to take its word
-for something it has not checked either.
+That share used to be stated here as "most". It was **37%** when finally
+measured, and it had been written when the false-positive count was 49 rather
+than 345 — an empirical claim that outlived the thing that changed its subject.
+It is generated now, from the scorer reading every false-positive file.
 
-### Cross-file resolution changed precision, not the benchmark score
+These numbers are *measured*, which is the point: a scanner that will not publish
+its own exam result is asking you to take its word for something it has not
+checked either.
 
-Cross-file tracing left BenchmarkJava at exactly 64.5% / 13.8%. Its test cases
-are self-contained servlets, and the shared helpers they *do* use are referenced
-by fully-qualified name with no `import`, so there was nothing for an import
-graph to resolve. Honest result: no change.
+### What moved the score, and what did not
 
-Where it did change things:
+**Cross-file tracing: no change.** It left BenchmarkJava at exactly the figure it
+started from. The test cases are self-contained servlets, and the shared helpers
+they *do* use are referenced by fully-qualified name with no `import`, so there
+was nothing for an import graph to resolve. Honest result: zero.
+
+**Framework source bindings: the whole score.** Recall sat at **13.8%** for a
+long time because the Java source list was built from raw servlet getters, and
+BenchmarkJava's own cases bind their inputs through Spring and JAX-RS
+annotations. Adding `@RequestParam` / `@QueryParam` and friends, plus
+`declaredTypes()` so `Runtime r = Runtime.getRuntime(); r.exec(cmd)` is seen as
+a shell call, took recall to **76.4%**.
+
+Precision went the other way, **64.5% → 58.8%**, and that trade is worth stating
+plainly rather than hiding: finding five and a half times as many real
+vulnerabilities also surfaces more false ones. Given the choice between a
+scanner that misses six real bugs in seven and one that finds three in four at
+the cost of more noise you can triage, this project takes the second — and
+labels every finding so you can tell which pile you are looking at.
+
+That is also why the table above is generated rather than typed. The 13.8%
+figure sat in this file for roughly twenty versions after it stopped being true,
+because it was prose restating a number the program already knew.
+
+Where it did change things — **a point-in-time A/B from when cross-file tracing
+landed**, kept because the govwa row is the argument, not because these are the
+current totals (for those, run the instruments):
 
 | project | before | after | why |
 |---|--:|--:|---|
@@ -764,8 +879,53 @@ Stated here, in the code, and in every scan report:
 - **No framework awareness.** Express routing and Django views are just code.
 - **No template files.** `.html`, `.jinja`, `.jsp` are never parsed, so
   `{{ x|safe }}` inside a template is invisible.
-- **Not SARIF.** The JSON deliberately *resembles* SARIF without claiming to be
-  it. Emitting invalid SARIF and calling it SARIF would be its own small lie.
+- **No taint through a database or a queue.** Stored (second-order) XSS, where
+  a value is written on one request and printed on a later one, is not followed.
+
+### How much memory a scan costs
+
+A tree-sitter syntax tree lives in a WebAssembly heap that JavaScript's garbage
+collector cannot see into, so it is never reclaimed on its own — the only thing
+that frees one is an explicit `delete()`. For most of this project's life,
+nothing called it, and a scan therefore cost about **sixty times** the source it
+was reading. Past roughly 44 MB of source on an 8 GB machine the operating
+system killed the process, which is a worse failure than a slow answer because
+it produces no answer at all.
+
+The engine now holds as many trees as a stated budget allows and parses a file
+again if something needs it after its tree was dropped. Measured on one 54 MB
+corpus — **same binary, only the budget changed**:
+
+| tree budget | peak RSS | time | marginal cost | findings |
+|---|--:|--:|--:|--:|
+| hold everything (old behaviour) | 1474 MB | 175.6s | 25.7× | 8544 |
+| 256 MB | 716 MB | 188.5s | 7.25× | 8544 |
+
+Half the memory for 7% more time, and the findings are byte-identical. On an
+8 GB machine that moves the practical ceiling from about 312 MB of source to
+about **1.1 GB**, and changes the failure mode from *killed* to *slower*. A scan
+that spilled says so: `diagnostics.treeMemory.reparses` above zero means files
+were parsed more than once, and `NS1_TREE_BUDGET_MB` trades memory back for
+speed.
+
+Two separate things were wrong, and both are worth naming because the second is
+the more expensive kind of bug:
+
+1. The index held a live syntax node for every function in the project, which
+   pinned every tree whether or not anything ever traced into it. Recording two
+   byte offsets and a node type instead took Django's marginal cost from 59.4×
+   to 22.9× **with no eviction at all**.
+2. The code said the trees were held *"because cross-file tracing needs to
+   resolve into any file at any time"*, and pointed at `--no-cross-file` as the
+   escape hatch. Measured, cross-file OFF used 535.8 MB against 528.8 MB with it
+   ON. The ceiling was real; the explanation for it was invented, and an invented
+   explanation is worse than none — it stops anybody looking.
+
+The identity of every finding under eviction is enforced by `npm test`, which
+scans the fixture tree twice, once with a budget small enough to evict almost
+every tree, and fails if the two finding lists differ — and separately fails if
+that budget turns out not to have evicted anything, because a test that guards
+an empty room passes for the wrong reason.
 
 ## Roadmap
 
@@ -779,9 +939,11 @@ and `npm test` fails if a phase number reappears anywhere a user can read it.
 
 | Capability | Evidence |
 |---|---|
-| Tree-sitter parsing, shape layer, 5 rules × 5 languages | 49 fixtures, zero parse errors |
+| Tree-sitter parsing, shape layer — see the coverage matrix above for rules × languages | 99 fixtures, zero parse errors |
+| SARIF 2.1.0 export (`--sarif`) carrying the confidence label three ways | a test fails if a `codeFlow` appears on an unverified finding |
+| `.securescan.json` config, `--exclude` / `--only` / `--fail-on` / `--min-severity` | a rule cannot be disabled by config, by design |
 | Honesty labelling enforced by the type system | `flowVerifiedFinding()` throws on an incomplete path |
-| Taint tracing within a function, kind-scoped sanitisers | 24 verified flows in the fixture set |
+| Taint tracing within a function, kind-scoped sanitisers | verified flows asserted per-line by `EXPECT-FLOW` annotations |
 | Call graph within a file, unmodelled hops named on the finding | measured against OWASP Benchmark |
 | Cross-file tracing through a resolved import graph | 4 findings with paths spanning 2+ files |
 | Prepared-statement awareness, `--exclude` | govwa: 4 findings → 1, three were correct code |
@@ -796,7 +958,6 @@ and `npm test` fails if a phase number reappears anywhere a user can read it.
 |---|---|
 | Remediation: context-aware fixes and before/after diffs | a finding you can act on beats a finding you can read |
 | Language expansion — 31 more grammars already ship in `tree-sitter-wasms` | the parser layer already supports them; the dictionaries do not |
-| Real SARIF export, CI integrations | findings that reach the pull request rather than the terminal |
 | Framework awareness (Express, Django, Spring) | today a value that only becomes attacker-controlled through a framework binding is not seen as a source |
 
 ---
@@ -832,3 +993,36 @@ docs/GLOSSARY.md       every security term used in this repo, in plain language
 Two runtime dependencies: `web-tree-sitter` and `tree-sitter-wasms`. No CLI
 framework, no colour library — both are short enough to read in full
 (`src/cli.ts`, `src/report/colors.ts`).
+
+---
+
+## Licence
+
+**AGPL-3.0-only.** The full text is in [LICENSE](LICENSE).
+
+In plain language, because a licence nobody understands protects nobody:
+
+- **Scanning your own code puts no obligation on you at all.** Running this tool
+  over a closed-source, proprietary or commercial repository is the intended use
+  and changes nothing about the code being scanned. The licence covers *this
+  program*, not what you point it at.
+- **Running it unmodified inside your company is free and unencumbered.**
+- The obligation attaches in one case: if you **modify** it and let other people
+  use your modified version **over a network**, section 13 says you must offer
+  those users its source.
+
+That last clause is the reason it is AGPL rather than GPL. `npm run ui` serves a
+browser shell that runs the same compiled engine; under a permissive licence
+somebody could host exactly that, change it, and never publish a line.
+
+If those terms do not work for you — and for some companies they genuinely do
+not — the copyright is held in one place and a commercial licence can be
+discussed.
+
+The licence is declared once, in `src/core/licence.ts`, and `npm test` fails if
+this file, `package.json` or `LICENSE` disagrees with it. Four copies of a legal
+fact is four chances to tell somebody something untrue, and this repository has
+a documented history of exactly that: the README claimed 112 checks while 207
+ran, and quoted a 13.8% recall figure for about twenty versions after it stopped
+being true. A wrong check count embarrasses the author; a wrong licence misleads
+whoever relied on it.

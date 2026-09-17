@@ -18,10 +18,12 @@
  *   2  the tool itself failed (bad arguments, unreadable path, internal error)
  */
 
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { SEVERITY_ORDER, type Severity } from './core/finding.js';
 import { buildCoverageReport } from './core/coverage.js';
+import { LICENCE_LINE, LICENCE_SPDX } from './core/licence.js';
 import { scan } from './engine/scan.js';
 import { SHAPE_QUERY_SOURCES } from './engine/shapes.js';
 import { dumpAst } from './parse/astDump.js';
@@ -32,6 +34,7 @@ import { ALL_RULES, validateRegistry } from './rules/registry.js';
 import { color, g, setAsciiMode, wrapText } from './report/colors.js';
 import { renderHuman } from './report/human.js';
 import { renderJson } from './report/json.js';
+import { renderSarif } from './report/sarif.js';
 
 interface Args {
   readonly command: string;
@@ -106,13 +109,62 @@ function parseSeverity(value: string | undefined, fallback: Severity): Severity 
   return value as Severity;
 }
 
+
+/* --------------------------------------------------------------- config -- */
+
+/**
+ * Per-project settings, so a repository can carry its own scan policy.
+ *
+ * Without this, every option lives in whichever command line last ran it -
+ * which means a CI job and a developer's terminal can silently disagree about
+ * what counts as a failure. A file in the repo is the only place both of them
+ * can read the same answer from.
+ *
+ * DELIBERATELY SMALL. Four keys, all of which already exist as flags, and no
+ * ability to enable, disable or reconfigure a RULE. A config that can turn
+ * rules off invites a repo to quietly switch off the ones it fails, and the
+ * finding disappears with no record. Suppression already has an honest form -
+ * `securescan:ignore <rule> - <reason>` on the line, which the report counts
+ * and lists.
+ *
+ * The command line always wins, so a person can override the file without
+ * editing it, and `--no-config` ignores it entirely.
+ */
+interface FileConfig {
+  readonly exclude?: readonly string[];
+  readonly only?: readonly string[];
+  readonly failOn?: string;
+  readonly minSeverity?: string;
+}
+
+const CONFIG_NAME = '.securescan.json';
+
+function loadConfig(startDir: string): { config: FileConfig; path: string | null } {
+  for (const dir of [startDir, process.cwd()]) {
+    const candidate = path.join(dir, CONFIG_NAME);
+    if (!existsSync(candidate)) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(candidate, 'utf8')) as FileConfig;
+      return { config: parsed, path: candidate };
+    } catch (error) {
+      // A broken config is reported, never ignored. Silently falling back to
+      // defaults would mean a repo believing it has a policy that never ran.
+      console.error(
+        color.red(`error: ${candidate} is not valid JSON — ${(error as Error).message}`),
+      );
+      process.exit(2);
+    }
+  }
+  return { config: {}, path: null };
+}
+
 /* ------------------------------------------------------------------ help -- */
 
 function printHelp(): void {
   const b = color.bold;
   console.log(`
 ${b('NS-1 SecureScan')} — honesty-first static application security testing
-${color.dim('Signature matching plus data-flow verification, in all five languages.')}
+${color.dim(`Signature matching plus data-flow verification, in all ${LANGUAGES.length} languages.`)}
 ${color.dim('Flows are followed across functions and, where imports resolve, across files.')}
 
 ${b('USAGE')}
@@ -123,7 +175,11 @@ ${b('USAGE')}
 
 ${b('SCAN OPTIONS')}
   --json                    machine-readable output (superset of the terminal report)
-  --compact                 with --json, emit a single line
+  --sarif                   SARIF 2.1.0, for GitHub/GitLab code scanning. A
+                            flow-verified finding carries its traced path as a
+                            SARIF codeFlow; a signature-based one carries none,
+                            and every message opens with which it is.
+  --compact                 with --json or --sarif, emit a single line
   --min-severity=<level>    hide findings below this level in the terminal report
                             (they remain in --json).  critical|high|medium|low|info
   --fail-on=<level>         exit code 1 at or above this level. default: high
@@ -132,11 +188,14 @@ ${b('SCAN OPTIONS')}
   --exclude=<globs>         comma-separated paths to skip. A bare word matches any
                             directory of that name; * and ** work as usual.
                             e.g. --exclude=tests,vendor,**/*.min.js
+  --no-config               ignore .securescan.json
   --show-suppressed         list findings silenced by securescan:ignore comments
   --coverage-matrix         print the full rule x language support table
   --no-cross-file           do not resolve imports; analyse each file alone.
-                            Faster and uses far less memory on huge trees, at
-                            the cost of every finding that crosses a module.
+                            Faster, at the cost of every finding that crosses a
+                            module. It does NOT save memory - that was measured
+                            and was not true. Set NS1_TREE_BUDGET_MB to trade
+                            memory for speed instead.
   --ascii                   plain ASCII output - no box-drawing characters.
                             Chosen automatically when redirecting on Windows.
   --quiet                   suppress the per-file progress line
@@ -145,6 +204,14 @@ ${b('AST OPTIONS')}
   --depth=<n>               how deep to print (default 12)
   --anonymous               include punctuation/keyword nodes
   --max-lines=<n>           truncate output (default 400)
+
+${b('ENVIRONMENT')}
+  NS1_TREE_BUDGET_MB        how much memory syntax trees may hold before the
+                            least recently used one is freed and the file parsed
+                            again on demand. Default 1024. Lower it to finish on
+                            a small machine; raise it to go faster. The findings
+                            are the same either way - a test fails if they are
+                            not - and the report says when files were re-parsed.
 
 ${b('EXIT CODES')}
   0  nothing at or above the --fail-on threshold
@@ -157,6 +224,9 @@ ${b('THE POINT OF THIS TOOL')}
   ${color.green('flow-verified')}   = we followed attacker data from its source into the sink
                     and print every hop, so you can check the claim yourself.
   The report also lists what was NOT checked. That is the product.
+
+${b('LICENCE')}
+  ${LICENCE_LINE}
 `);
 }
 
@@ -197,8 +267,15 @@ async function commandScan(args: Args): Promise<number> {
   }
 
   const asJson = args.flags.has('json');
-  const quiet = args.flags.has('quiet') || asJson;
-  const only = flagString(args, 'only')?.split(',').map((s) => s.trim()).filter(Boolean) ?? [];
+  const asSarif = args.flags.has('sarif');
+  const quiet = args.flags.has('quiet') || asJson || asSarif;
+  const configForOnly = args.flags.has('no-config')
+    ? ({} as FileConfig)
+    : loadConfig(statSync(resolved).isDirectory() ? resolved : path.dirname(resolved)).config;
+  const only =
+    flagString(args, 'only')?.split(',').map((s) => s.trim()).filter(Boolean) ??
+    configForOnly.only ??
+    [];
 
   for (const id of only) {
     if (!ALL_RULES.some((r) => r.id === id)) {
@@ -209,12 +286,25 @@ async function commandScan(args: Args): Promise<number> {
     }
   }
 
-  const minSeverity = parseSeverity(flagString(args, 'min-severity'), 'info');
-  const failOnRaw = flagString(args, 'fail-on') ?? 'high';
+  // The command line wins over the file; the file wins over the defaults.
+  const { config, path: configPath } = args.flags.has('no-config')
+    ? { config: {} as FileConfig, path: null }
+    : loadConfig(statSync(resolved).isDirectory() ? resolved : path.dirname(resolved));
+  if (configPath && !quiet) {
+    console.error(color.dim(`using ${path.relative(process.cwd(), configPath) || CONFIG_NAME}`));
+  }
+
+  const minSeverity = parseSeverity(
+    flagString(args, 'min-severity') ?? config.minSeverity,
+    'info',
+  );
+  const failOnRaw = flagString(args, 'fail-on') ?? config.failOn ?? 'high';
   const failOn = failOnRaw === 'none' ? null : parseSeverity(failOnRaw, 'high');
 
   const exclude =
-    flagString(args, 'exclude')?.split(',').map((s) => s.trim()).filter(Boolean) ?? [];
+    flagString(args, 'exclude')?.split(',').map((s) => s.trim()).filter(Boolean) ??
+    config.exclude ??
+    [];
 
   const result = await scan(resolved, {
     only,
@@ -233,7 +323,9 @@ async function commandScan(args: Args): Promise<number> {
 
   if (!quiet) process.stderr.write(`\r${' '.repeat(70)}\r`);
 
-  if (asJson) {
+  if (asSarif) {
+    console.log(renderSarif(result, !args.flags.has('compact')));
+  } else if (asJson) {
     console.log(renderJson(result, !args.flags.has('compact')));
   } else {
     console.log(
@@ -413,6 +505,7 @@ async function main(): Promise<number> {
 
   if (args.flags.has('version') || args.flags.has('v')) {
     console.log(buildCoverageReport().engine.version);
+    console.log(LICENCE_SPDX);
     return 0;
   }
   if (args.command === '' || args.flags.has('help') || args.flags.has('h')) {
@@ -441,7 +534,45 @@ main()
     process.exitCode = code;
   })
   .catch((error: unknown) => {
-    console.error(color.red(`\ninternal error: ${(error as Error).message}`));
+    const message = (error as Error).message ?? String(error);
+
+    /*
+     * `Aborted()` is the WebAssembly heap giving up, and on its own it tells
+     * the reader nothing at all.
+     *
+     * Every syntax tree tree-sitter builds lives in a WASM heap that JavaScript
+     * garbage collection cannot reach, and nothing frees them during a scan
+     * because cross-file tracing has to be able to resolve into any file at any
+     * time. Memory therefore grows with total SOURCE BYTES - measured at 60-70x
+     * - and past roughly 120MB on an 8GB machine the heap aborts or the
+     * operating system kills the process.
+     *
+     * The failure is total: no findings, no partial report, nothing. Somebody
+     * hitting this deserves to know what happened and what to do instead of a
+     * bare `Aborted()`, which is what they got the first time it happened to a
+     * real user scanning VS Code.
+     */
+    if (/Aborted|Maximum call stack|heap out of memory|allocation failed/i.test(message)) {
+      console.error(color.red('\nout of memory - the scan did not finish and produced no report.'));
+      console.error(
+        color.dim(
+          '\n  Memory grows with the total SIZE of the source, not the file count: about\n' +
+            '  60-70x the bytes on disk, because every parsed syntax tree is held for the\n' +
+            '  whole scan so cross-file tracing can resolve into it. On an 8GB machine that\n' +
+            '  is a ceiling of roughly 120MB of source.\n' +
+            '\n  Scan one package at a time instead:\n' +
+            '    scan src/vs/base      scan src/vs/platform      scan src/vs/editor\n' +
+            '\n  --exclude=tests,node_modules also helps, and node --max-old-space-size=8192\n' +
+            '  buys some headroom. This is a known limitation, recorded in the report\'s\n' +
+            '  "not implemented" list, and it needs a redesign rather than a flag.',
+        ),
+      );
+      if (process.env['NS1_DEBUG']) console.error((error as Error).stack);
+      process.exitCode = 2;
+      return;
+    }
+
+    console.error(color.red(`\ninternal error: ${message}`));
     if (process.env['NS1_DEBUG']) console.error((error as Error).stack);
     process.exitCode = 2;
   });

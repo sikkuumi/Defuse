@@ -1,0 +1,134 @@
+{
+  "fixtures": {
+    "hash": "4de9c660f7bee240",
+    "findingsHash": "f597003b238b8a6c",
+    "total": 190,
+    "flowVerified": 104,
+    "signature": 86,
+    "filesParsed": 113,
+    "functionsIndexed": 275,
+    "resolved": 7,
+    "ambiguous": 0
+  },
+  "axios": {
+    "hash": "fbf43d9017fa04a2",
+    "findingsHash": "b43fc61f19f86684",
+    "total": 23,
+    "flowVerified": 0,
+    "signature": 23,
+    "filesParsed": 234,
+    "functionsIndexed": 993,
+    "resolved": 1782,
+    "ambiguous": 68
+  },
+  "express": {
+    "hash": "7f26f775dcdfec21",
+    "findingsHash": "edf8566687e655fa",
+    "total": 6,
+    "flowVerified": 0,
+    "signature": 6,
+    "filesParsed": 141,
+    "functionsIndexed": 249,
+    "resolved": 69,
+    "ambiguous": 0
+  },
+  "flask": {
+    "hash": "04c095124b81724c",
+    "findingsHash": "d8b0efdb9bcccf9f",
+    "total": 13,
+    "flowVerified": 0,
+    "signature": 13,
+    "filesParsed": 83,
+    "functionsIndexed": 1163,
+    "resolved": 302,
+    "ambiguous": 2
+  },
+  "gin": {
+    "hash": "9c2b6bd749ddc148",
+    "findingsHash": "4f53cda18c2baa0c",
+    "total": 0,
+    "flowVerified": 0,
+    "signature": 0,
+    "filesParsed": 98,
+    "functionsIndexed": 1267,
+    "resolved": 3054,
+    "ambiguous": 1889
+  },
+  "gson": {
+    "hash": "7ac47b8c206d1575",
+    "findingsHash": "7befc22a21e72227",
+    "total": 1,
+    "flowVerified": 0,
+    "signature": 1,
+    "filesParsed": 264,
+    "functionsIndexed": 2919,
+    "resolved": 4256,
+    "ambiguous": 2376
+  },
+  "NodeGoat": {
+    "hash": "430675df8435bad1",
+    "findingsHash": "05b4d4ae8d267308",
+    "total": 9,
+    "flowVerified": 4,
+    "signature": 5,
+    "filesParsed": 40,
+    "functionsIndexed": 74,
+    "resolved": 25,
+    "ambiguous": 0
+  },
+  "Vulnerable-Flask-App": {
+    "hash": "69db5e46be6ecde5",
+    "findingsHash": "c9144a576fec0fef",
+    "total": 20,
+    "flowVerified": 1,
+    "signature": 19,
+    "filesParsed": 4,
+    "functionsIndexed": 804,
+    "resolved": 0,
+    "ambiguous": 0
+  },
+  "dvna": {
+    "hash": "db0d0b72beb40194",
+    "findingsHash": "9d082a7aecf0ade0",
+    "total": 6,
+    "flowVerified": 3,
+    "signature": 3,
+    "filesParsed": 12,
+    "functionsIndexed": 26,
+    "resolved": 0,
+    "ambiguous": 0
+  },
+  "govwa": {
+    "hash": "7d0888c7a6a76b37",
+    "findingsHash": "5f0253332d8263f4",
+    "total": 7,
+    "flowVerified": 1,
+    "signature": 6,
+    "filesParsed": 23,
+    "functionsIndexed": 334,
+    "resolved": 43,
+    "ambiguous": 0
+  },
+  "BenchmarkJava": {
+    "hash": "c38351e123d7d8fe",
+    "findingsHash": "2b14f57628738c9f",
+    "total": 2727,
+    "flowVerified": 614,
+    "signature": 2113,
+    "filesParsed": 2770,
+    "functionsIndexed": 7640,
+    "resolved": 126,
+    "ambiguous": 251
+  },
+  "dvwa": {
+    "hash": "9c848f496cc9b3d5",
+    "findingsHash": "5308fd09b15fcf86",
+    "total": 171,
+    "flowVerified": 58,
+    "signature": 113,
+    "filesParsed": 179,
+    "functionsIndexed": 225,
+    "resolved": 0,
+    "ambiguous": 0
+  }
+}

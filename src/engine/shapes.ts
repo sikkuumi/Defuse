@@ -42,6 +42,16 @@ import { getLanguage, type ParsedFile } from '../parse/parser.js';
  * CALL SITES: "something is being called with arguments"
  * ------------------------------------------------------------------------ */
 
+/** Shared by C and C++, because C++ is a superset of these two shapes. */
+const C_CALL_QUERY = `
+  (call_expression
+    function: (identifier) @method
+    arguments: (argument_list) @args) @call
+  (call_expression
+    function: (field_expression argument: (_) @receiver field: (field_identifier) @method)
+    arguments: (argument_list) @args) @call
+`;
+
 const CALL_QUERIES: Record<LanguageId, string> = {
   javascript: `
     (call_expression
@@ -115,6 +125,29 @@ const CALL_QUERIES: Record<LanguageId, string> = {
       (name) @method
       (arguments) @args) @call
   `,
+
+  /*
+   * C. Two shapes only, because C has two: a bare call, and a call through a
+   * struct member. Every node type and field name below was read off the real
+   * grammar with a query probe rather than assumed - the same discipline the
+   * PHP entry learned the hard way, when `if_statement` turned out to use
+   * `body` where every other grammar uses `consequence`.
+   */
+  c: C_CALL_QUERY,
+
+  /*
+   * C++ is C plus namespaces. `std::system(cmd)` parses as a
+   * qualified_identifier, NOT an identifier, so a query that only matched the
+   * C shapes would miss it - and reaching system() through <cstdlib> is the
+   * stylistically CORRECT way to do it in C++, which means the well-written
+   * code would be the code that slipped through.
+   */
+  cpp: `
+    ${C_CALL_QUERY}
+    (call_expression
+      function: (qualified_identifier name: (identifier) @method)
+      arguments: (argument_list) @args) @call
+  `,
 };
 
 /* ---------------------------------------------------------------------------
@@ -130,6 +163,11 @@ const JS_ASSIGN_QUERY = `
   (variable_declarator name: (_) @target value: (_) @value) @assign
   (pair key: (_) @target value: (_) @value) @assign
   (augmented_assignment_expression left: (_) @target right: (_) @value) @assign
+`;
+
+const C_ASSIGN_QUERY = `
+  (assignment_expression left: (_) @target right: (_) @value) @assign
+  (init_declarator declarator: (_) @target value: (_) @value) @assign
 `;
 
 const ASSIGNMENT_QUERIES: Record<LanguageId, string> = {
@@ -159,6 +197,17 @@ const ASSIGNMENT_QUERIES: Record<LanguageId, string> = {
     (const_spec name: (identifier) @target value: (expression_list) @value) @assign
     (keyed_element (literal_element (identifier) @target) (literal_element (_) @value)) @assign
   `,
+
+  /*
+   * C and C++ share these. `init_declarator` is the declaration-with-value
+   * form (`char *p = getenv(...)`), and its @target captures the DECLARATOR
+   * rather than a bare name - so `*name = getenv("USER")` yields a target of
+   * `*name`, pointer star included. The tracer strips it; see POINTER_PREFIX
+   * in taint/tracer.ts. Recorded here because it is the kind of detail that
+   * silently halves a language's coverage if nobody notices it.
+   */
+  c: C_ASSIGN_QUERY,
+  cpp: C_ASSIGN_QUERY,
 };
 
 /* ------------------------------------------------------------------------ */

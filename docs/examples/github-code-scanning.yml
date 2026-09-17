@@ -1,0 +1,54 @@
+# Run NS-1 SecureScan on every pull request and publish the results into
+# GitHub's Security tab.
+#
+# WHAT YOU WILL SEE, and why it looks different from other scanners:
+#
+# A finding whose data flow was TRACED arrives with a SARIF codeFlow attached,
+# so GitHub renders the full source-to-sink path as clickable steps. A finding
+# that was only pattern-matched has no codeFlow, and its message opens with
+# "[signature-based, UNVERIFIED]". That asymmetry is deliberate - it is the
+# whole point of the tool, and it survives the trip into CI rather than being
+# flattened into "12 alerts".
+#
+# --fail-on controls the build, and is SEPARATE from what gets uploaded.
+# Everything is reported to the Security tab; only findings at or above
+# --fail-on stop the pipeline. Start at `critical` on an existing codebase and
+# tighten once the backlog is down, rather than switching rules off.
+
+name: Security scan
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write   # required to upload SARIF
+
+jobs:
+  securescan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build the scanner
+        run: npm ci && npm run build
+
+      # `|| true` so a failing gate still uploads its results - a blocked merge
+      # with no visible reason is a worse experience than a noisy one.
+      - name: Scan
+        run: node dist/src/cli.js scan . --sarif --fail-on=critical > securescan.sarif || true
+
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: securescan.sarif
+          category: ns1-securescan
+
+      # Re-run for the exit code, now that the results are safely uploaded.
+      - name: Enforce the gate
+        run: node dist/src/cli.js scan . --quiet --fail-on=critical

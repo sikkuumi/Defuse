@@ -34,7 +34,30 @@ const NODE_ONLY = new Set([
   'report/colors.js',
 ]);
 
-const GRAMMARS = ['javascript', 'typescript', 'tsx', 'python', 'java', 'go', 'php'];
+/**
+ * DERIVED FROM THE LANGUAGE REGISTRY, never typed.
+ *
+ * This was a hand-written list of seven names, and it went stale the moment C
+ * and C++ were added: the CLI could scan them and the browser could not, which
+ * quietly breaks the one promise this project makes about the two shells - that
+ * they run the same engine. Nothing would have failed loudly. A .c file dropped
+ * into the page would simply have been "unsupported", in a tool whose whole
+ * pitch is that it tells you what it did not look at.
+ *
+ * It is the fifth hand-maintained list in this repository to go stale (see the
+ * README counts, the benchmark headline, the escaper list and the test-path
+ * list), so it is now computed from LANGUAGES - primary grammars plus every
+ * dialect grammar - and adding a language can no longer forget the browser.
+ */
+const { LANGUAGES } = await import(new URL('../dist/src/parse/languages.js', import.meta.url));
+const GRAMMARS = [
+  ...new Set(
+    LANGUAGES.flatMap((language) => [
+      language.grammar,
+      ...(language.dialects ?? []).map((dialect) => dialect.grammar),
+    ]),
+  ),
+];
 
 async function copyEngine(from, to, prefix = '') {
   await mkdir(to, { recursive: true });

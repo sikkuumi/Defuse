@@ -1,15 +1,17 @@
 {
   "name": "ns1-securescan",
   "version": "0.5.0",
-  "description": "Honesty-first SAST scanner. One engine, two shells: a CLI and a browser UI. Every finding is labelled signature-based or flow-verified, and a verified one prints the path that proves it.",
-  "license": "UNLICENSED",
+  "description": "A SAST scanner that labels every finding signature-based or flow-verified, and prints what it did not check.",
+  "license": "AGPL-3.0-only",
   "private": true,
+  "author": "Farhaad",
   "type": "module",
   "bin": {
+    "securescan": "./dist/src/cli.js",
     "secureScan": "./dist/src/cli.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=18"
   },
   "scripts": {
     "build": "tsc",
@@ -22,7 +24,14 @@
     "ui": "npm run build --silent && node scripts/build-ui.mjs && node scripts/serve-ui.mjs",
     "build:ui": "npm run build --silent && node scripts/build-ui.mjs",
     "metamorphic": "npm run build --silent && node dist/tests/metamorphic.js",
-    "benchmark": "npm run build --silent && node scripts/benchmark.mjs"
+    "benchmark": "npm run build --silent && node scripts/benchmark.mjs",
+    "dvwa": "npm run build --silent && node scripts/dvwa.mjs",
+    "sync:readme": "npm run build --silent && node scripts/sync-readme.mjs",
+    "prepare": "npm run build",
+    "install-check": "node scripts/install-check.mjs",
+    "git-install-check": "npm run build --silent && node scripts/git-install-check.mjs",
+    "memory": "npm run build --silent && node scripts/memory.mjs",
+    "identity": "npm run build --silent && node scripts/identity.mjs"
   },
   "dependencies": {
     "tree-sitter-wasms": "0.1.13",
@@ -30,6 +39,24 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/sarif": "^2.1.7",
     "typescript": "^5.7.2"
-  }
+  },
+  "keywords": [
+    "sast",
+    "static-analysis",
+    "security",
+    "taint-analysis",
+    "sarif",
+    "tree-sitter",
+    "vulnerability-scanner"
+  ],
+  "files": [
+    "dist/src",
+    "src",
+    "tsconfig.json",
+    "docs/examples",
+    "README.md",
+    "LICENSE"
+  ]
 }

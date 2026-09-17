@@ -40,6 +40,9 @@ import type { LanguageId } from '../parse/languages.js';
 import { asAssignment, asCall, type Rule, type RuleHit } from './contract.js';
 import {
   isLikelyPlaceholder,
+  looksLikeProse,
+  echoesItsOwnName,
+  isStructuralIdentifier,
   isStringLiteral,
   isTestPath,
   looksLikeToken,
@@ -81,7 +84,7 @@ const SECRET_NAME = new RegExp(
  * a secret, its location, or a boolean about it. Checked first.
  */
 const NOT_A_SECRET =
-  /(_?(name|field|label|header|type|env|var|path|file|url|uri|prompt|placeholder|hash|algo|algorithm|regex|pattern|length|expiry|ttl|enabled|required)$)|^(has|is|use|should|allow|require)/i;
+  /(_?(name|field|label|header|type|env|var|path|file|url|uri|prompt|placeholder|examples?|samples?|hash|algo|algorithm|regex|pattern|length|expiry|ttl|enabled|required)$)|^(has|is|use|should|allow|require)/i;
 
 /** Entropy threshold above which a long literal starts looking machine-generated. */
 const ENTROPY_THRESHOLD = 4.0;
@@ -145,6 +148,16 @@ export const hardcodedSecretRule: Rule = {
       status: 'implemented',
       note: 'Covers $var = "..." and class property declarations. NOT covered: define(\'API_KEY\', \'...\') and const declarations, which are a different shape - a documented gap, not a silent one.',
     },
+    c: {
+      status: 'implemented',
+      note:
+        'String literals and initialisers are analysed exactly as in every other language - C has no interpolation, so a credential is either a literal or it is not. NOT COVERED: a secret assembled by the preprocessor (#define KEY "...") is invisible, because the preprocessor is not run.',
+    },
+    cpp: {
+      status: 'implemented',
+      note:
+        'Every C entry applies unchanged, since C++ inherits the whole libc surface and real code still uses it. Namespace-qualified calls (std::system) and method calls on objects are recognised in addition.',
+    },
   },
   check(shape, ctx): RuleHit | null {
     const language = ctx.language;
@@ -155,15 +168,21 @@ export const hardcodedSecretRule: Rule = {
      * trees. Dropping them silently would be dishonest (a committed key is
      * committed wherever it lives) and reporting them as HIGH buries the real
      * ones. So: keep the finding, lower the severity, say why in the reasoning.
+     *
+     * THE SEVERITY PART OF THIS NOW HAPPENS IN core/analyze.ts, for every rule
+     * rather than only this one - see the note there. What stays here is the
+     * sentence only a credential rule can write: that the VALUE is likely a
+     * stand-in. `eval()` in a test is still a real eval; `password = 'x'` in a
+     * test is usually not a real password, and that difference is worth saying.
      */
     const inTests = isTestPath(ctx.file.path);
     const testNote = inTests
-      ? ' NOTE: this file looks like a test, fixture or example, so the value is probably ' +
-        'a stand-in rather than a live credential - severity lowered for that reason. It is ' +
-        'still committed to git history, and fixtures do get copy-pasted into production.'
+      ? ' NOTE: in a test or fixture file the value is usually a stand-in rather than a ' +
+        'live credential. It is still committed to git history, and fixtures do get ' +
+        'copy-pasted into production.'
       : '';
-    const downgrade = (severity: 'critical' | 'high' | 'medium'): 'critical' | 'high' | 'medium' | 'low' =>
-      inTests ? (severity === 'critical' ? 'medium' : 'low') : severity;
+    const downgrade = (severity: 'critical' | 'high' | 'medium'): 'critical' | 'high' | 'medium' =>
+      severity;
 
     /* ---- Any string literal argument that matches a known vendor format ----
      * e.g. client.init("AKIAIOSFODNN7EXAMPLE"). No variable name to go on, but
@@ -216,10 +235,24 @@ export const hardcodedSecretRule: Rule = {
     }
 
     if (isLikelyPlaceholder(value)) return null;
+    /*
+     * A SECRET IS NOT A SENTENCE. cal.com stores its user-facing error strings
+     * under credential-shaped names - `encryption_key_missing`, `api_key_invalid`
+     * - so the name pattern matched and the value was an error message. See
+     * looksLikeProse(), which is deliberately word-shaped rather than
+     * space-shaped so that a diceware passphrase still reports.
+     */
+    if (looksLikeProse(name, value)) return null;
+    // A value that only restates its own variable name is a lookup key, not a
+    // credential. See echoesItsOwnName() - this was 152 findings on Keycloak.
+    if (echoesItsOwnName(name, value)) return null;
 
     /* ---- Signal 2: the variable name says "credential". ---- */
     if (SECRET_NAME.test(name) && !NOT_A_SECRET.test(name)) {
       if (value.length < 4) return null; // "", "x" - not a real secret
+      // A suspicious NAME cannot outvote a value that is structurally not a
+      // key. `token: 'delimiter.curly'` is a theme scope, not a credential.
+      if (isStructuralIdentifier(value)) return null;
       return {
         node: assignment.node,
         severity: downgrade('high'),
@@ -235,6 +268,36 @@ export const hardcodedSecretRule: Rule = {
     /* ---- Signal 3: entropy only. Weakest - and labelled as such. ---- */
     // The structural gate comes FIRST: entropy alone cannot tell a key from a
     // MIME type. See looksLikeToken() for the measurements that motivated this.
+    /*
+     * AN IDENTIFIER IS NOT A CREDENTIAL, however random it looks.
+     *
+     * Mattermost's TypeScript produced 266 hardcoded-secret findings and 160
+     * came down this path, nearly all of them shaped like
+     *
+     *     id: 'owsyt8n43jfxjpzh9np93mx1wa'
+     *     group_id: 'cpa9q4w7m2x5c8v1b6n3k0jr5h'
+     *
+     * in `.test.tsx` fixtures. Those are Mattermost's 26-character record ids.
+     * The entropy heuristic is not wrong about them - they ARE random, that is
+     * the point of an id - it is just answering a question nobody asked.
+     *
+     * Unlike the name path, the entropy path had no name check whatsoever: it
+     * fired on any variable at all. A name that says "identifier" is the
+     * cheapest possible signal that randomness is expected here, and this is
+     * the WEAKEST of the three signals to begin with, so a hardcoded session id
+     * lost to it costs a `medium` guess rather than a real detection.
+     */
+    if (/(^|_)(id|ids|uuid|guid|sid|gid|uid)$/i.test(name) || /Id$/.test(name)) return null;
+    /*
+     * A PROPERTY NAMED `example` IS DOCUMENTATION, and it is high-entropy on
+     * purpose - a sample ID or JWT has to look real to be useful. cal.com's
+     * OpenAPI output schemas are built from them. The entropy path had no name
+     * check at all until Mattermost's record ids forced one directly above;
+     * this is the same idea, and `example` is the OpenAPI keyword rather than a
+     * guess at intent.
+     */
+    if (/(^|[._-])examples?$|(^|[._-])samples?$/i.test(name)) return null;
+
     if (value.length >= MIN_ENTROPY_LENGTH && looksLikeToken(value)) {
       const entropy = shannonEntropy(value);
       if (entropy >= ENTROPY_THRESHOLD) {
