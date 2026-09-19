@@ -2048,6 +2048,55 @@ export function traceFile(
   /* ---- the statement walk ---- */
 
   /** Does this node sit inside a branch or loop body within the current scope? */
+  /**
+   * A NULL DEFAULT IS NOT A SANITISER.
+   *
+   *     String param = request.getParameter("q");   // tainted
+   *     if (param == null) param = "";              // clean write, conditional
+   *
+   * `underCondition` sees a clean write it cannot prove happens and marks the
+   * taint `branchAssumed`, which costs the finding its proof. But the two cases
+   * here are DISJOINT: the write fires only when the value is null, and the
+   * taint exists only when it is not. Nothing was assumed - the tainted path is
+   * the only path there is. And in the case the guard does fire, what reaches
+   * the sink is a constant carrying no payload.
+   *
+   * THE OPERATOR IS THE WHOLE RULE. `if (x != null) x = "safe"` puts the clean
+   * write exactly on the tainted value and really might clean it; that one must
+   * stay a guess. So this matches equality-against-null only, on the same name
+   * being written, and demands that EVERY enclosing conditional qualify - one
+   * ordinary `if` in the chain and we know nothing again.
+   *
+   * Measured before building: 171 of BenchmarkJava's 320 found-but-unproven
+   * real vulnerabilities are downgraded for an unevaluated branch, and this
+   * idiom is the largest single shape among them. It is also ordinary Java
+   * rather than a benchmark artefact, which is why it was worth doing first.
+   */
+  const NULL_LITERALS = 'null|NULL|None|nil|undefined';
+  const guardCannotCleanTarget = (node: Node, body: Node, targetName: string): boolean => {
+    const name = targetName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const test = new RegExp(
+      `^\\(?\\s*(?:${name}\\s*={2,3}\\s*(?:${NULL_LITERALS})` +
+        `|(?:${NULL_LITERALS})\\s*={2,3}\\s*${name}` +
+        `|${name}\\s+is\\s+None)\\s*\\)?$`,
+    );
+    let current: Node | null = node.parent;
+    let seen = 0;
+    while (current && current !== body) {
+      if (CONDITIONAL_NODES.has(current.type)) {
+        // An `else` branch of a null test is the NON-null path - the opposite
+        // case - so it never qualifies.
+        if (current.type !== 'if_statement') return false;
+        const condition = current.childForFieldName('condition');
+        if (!condition) return false;
+        if (!test.test(text(condition).trim())) return false;
+        seen++;
+      }
+      current = current.parent;
+    }
+    return seen > 0;
+  };
+
   const underCondition = (node: Node, body: Node): boolean => {
     let current: Node | null = node.parent;
     while (current && current !== body) {
@@ -2278,7 +2327,10 @@ export function traceFile(
              * the strength of it. See the note on branchAssumed.
              */
             const kept = scope.env.get(targetName);
-            if (kept) scope.env.set(targetName, { ...kept, branchAssumed: true });
+            if (kept) {
+              const certain = guardCannotCleanTarget(node, scope.body, targetName);
+              scope.env.set(targetName, certain ? kept : { ...kept, branchAssumed: true });
+            }
           } else {
             scope.env.delete(targetName); // reassigned to something clean
           }

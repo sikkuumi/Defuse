@@ -13,9 +13,9 @@
   },
   "filesParsed": 2740,
   "parseErrors": 0,
-  "durationMs": 19957,
+  "durationMs": 25960,
   "decoyFalsePositives": 144,
   "decoyShare": "37%",
   "engineVersion": "0.5.0",
-  "measuredAt": "2026-09-18"
+  "measuredAt": "2026-09-19"
 }

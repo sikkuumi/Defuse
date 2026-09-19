@@ -1,43 +1,43 @@
 {
   "scored": 1210,
   "findingsByConfidence": {
-    "flow-verified": 424,
-    "signature-based": 1927
+    "flow-verified": 460,
+    "signature-based": 1891
   },
-  "casesWithBothLabels": 8,
+  "casesWithBothLabels": 5,
   "tiers": [
     {
       "label": "flow-verified only",
-      "tp": 255,
-      "fp": 100,
-      "fn": 389,
-      "tn": 466,
-      "precision": "71.8%",
-      "recall": "39.6%",
-      "decoyFalsePositives": 97,
+      "tp": 272,
+      "fp": 116,
+      "fn": 372,
+      "tn": 450,
+      "precision": "70.1%",
+      "recall": "42.2%",
+      "decoyFalsePositives": 113,
       "decoyShare": "97%",
       "nonDecoyFalsePositives": 3,
       "missedByCategory": {
-        "sqli": 190,
-        "xss": 123,
-        "cmdi": 76
+        "sqli": 182,
+        "xss": 116,
+        "cmdi": 74
       }
     },
     {
       "label": "signature-only",
-      "tp": 320,
-      "fp": 291,
-      "fn": 324,
-      "tn": 275,
+      "tp": 303,
+      "fp": 275,
+      "fn": 341,
+      "tn": 291,
       "precision": "52.4%",
-      "recall": "49.7%",
-      "decoyFalsePositives": 47,
-      "decoyShare": "16%",
+      "recall": "47.0%",
+      "decoyFalsePositives": 31,
+      "decoyShare": "11%",
       "nonDecoyFalsePositives": 244,
       "missedByCategory": {
-        "cmdi": 70,
-        "sqli": 83,
-        "xss": 171
+        "cmdi": 72,
+        "sqli": 91,
+        "xss": 178
       }
     },
     {
@@ -60,5 +60,5 @@
   ],
   "reconciles": true,
   "engineVersion": "0.5.0",
-  "measuredAt": "2026-09-18"
+  "measuredAt": "2026-09-19"
 }
