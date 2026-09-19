@@ -25,12 +25,14 @@ import {
   renderRuleMatrix,
   renderCounts,
   renderBenchmark,
+  renderLabelSplit,
   replaceBlock,
 } from '../dist/src/report/coverage-table.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const readmePath = join(root, 'README.md');
 const resultPath = join(root, 'docs/benchmark-result.json');
+const splitPath = join(root, 'docs/label-split-result.json');
 
 let markdown = readFileSync(readmePath, 'utf8');
 
@@ -47,5 +49,15 @@ if (existsSync(resultPath)) {
   console.warn('docs/benchmark-result.json missing - run `npm run benchmark` first.');
 }
 
+if (existsSync(splitPath)) {
+  markdown = replaceBlock(
+    markdown,
+    'label-split',
+    renderLabelSplit(JSON.parse(readFileSync(splitPath, 'utf8'))),
+  );
+} else {
+  console.warn('docs/label-split-result.json missing - run `npm run label-split` first.');
+}
+
 writeFileSync(readmePath, markdown);
-console.log('README.md derived blocks regenerated: rule-matrix, counts, benchmark');
+console.log('README.md derived blocks regenerated: rule-matrix, counts, benchmark, label-split');

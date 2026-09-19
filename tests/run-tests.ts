@@ -54,8 +54,10 @@ import {
   renderRuleMatrix,
   renderCounts,
   renderBenchmark,
+  renderLabelSplit,
   readBlock,
   type BenchmarkResult,
+  type LabelSplitResult,
 } from '../src/report/coverage-table.js';
 import { looksLikeSql, matchKnownSecret, isTestPath } from '../src/rules/lib/strings.js';
 
@@ -1722,6 +1724,28 @@ async function main(): Promise<number> {
       }
     } catch {
       benchmarkNote = ' (docs/benchmark-result.json missing - run `npm run benchmark`)';
+    }
+
+    /*
+     * THE LABEL SPLIT IS GUARDED TOO.
+     *
+     * It was added as a derived block and left out of this list for exactly
+     * one commit, which is one commit longer than a figure should be able to
+     * drift unwatched. The block quotes the number the whole product rests on
+     * - what the green label is actually worth - so it is the last one that
+     * should be allowed to go quietly stale.
+     */
+    const splitPath = path.resolve(HERE, '../../docs/label-split-result.json');
+    try {
+      const split = JSON.parse(await readFile(splitPath, 'utf8')) as LabelSplitResult;
+      expected.push(['label-split', renderLabelSplit(split)]);
+      if (split.engineVersion !== ENGINE_CAPABILITIES.version) {
+        benchmarkNote +=
+          ` (label split measured on ${split.engineVersion}, engine is now ` +
+          `${ENGINE_CAPABILITIES.version} - re-run \`npm run label-split\`)`;
+      }
+    } catch {
+      benchmarkNote += ' (docs/label-split-result.json missing - run `npm run label-split`)';
     }
 
     const stale: string[] = [];

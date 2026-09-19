@@ -1,7 +1,23 @@
 # Defuse
 
-A static application security testing (SAST) tool that refuses to sound more
-certain than it is.
+**Static analysis that tells you which findings it proved and which it only
+guessed.**
+
+[![licence: AGPL-3.0](https://img.shields.io/badge/licence-AGPL--3.0-792cf7?style=flat-square)](LICENSE)
+[![no build step](https://img.shields.io/badge/install-npx,%20no%20toolchain-16c97c?style=flat-square)](#quick-start)
+[![runtime dependencies: 2](https://img.shields.io/badge/runtime%20deps-2-6f6f6f?style=flat-square)](#quick-start)
+
+```bash
+npx github:sikkuumi/Defuse scan .
+```
+
+<!--
+  DELIBERATELY FEW BADGES. A badge is a hand-kept copy of a fact the program
+  already knows, which is the exact failure `sync-readme.mjs` exists to stop.
+  Only figures that do not drift get one; the counts and the scores below are
+  generated from the registry and from the benchmark result, so they cannot go
+  stale without failing the build.
+-->
 
 Every finding is labelled **`signature-based`** or **`flow-verified`**, and the
 two mean precise, different things:
@@ -19,6 +35,26 @@ smoothed over.
 The tool also prints, on every run, a list of what it did **not** check. That is
 the product. The rules are table stakes; the labelling is the difference.
 
+### What the distinction is actually worth
+
+Measured, not asserted — and measured separately for each label, because one
+blended precision figure would be the same averaging this tool refuses to do
+inside a single finding.
+
+<!-- derived:label-split -->
+| tier | TP | FP | FN | precision | recall | FPs that are decoys |
+|---|--:|--:|--:|--:|--:|--:|
+| `flow-verified only` | 272 | 116 | 372 | **70.1%** | 42.2% | 113 (97%) |
+| `signature-only` | 303 | 275 | 341 | **52.4%** | 47.0% | 31 (11%) |
+| `combined (published)` | 575 | 391 | 69 | **59.5%** | 89.3% | 144 (37%) |
+
+460 `flow-verified`, 1891 `signature-based` findings, on engine 0.5.0 (2026-09-19).
+
+**The green label is worth 17.7 points.** `flow-verified` runs 70.1% against `signature-based` at 52.4%. The gap is the whole claim this tool makes; it is measured here rather than asserted.
+
+Of the 116 false positives still carrying the green label, **113 (97%)** are BenchmarkJava's constant-branch decoy - a path that genuinely exists inside a branch that cannot run - leaving **3** that are ordinary mistakes. Set the decoys aside and `flow-verified` precision is **98.9%**. Both figures are printed because neither alone is the truth: the first is contaminated by synthetic traps, the second requires excluding cases, and a reader deserves to see the size of that choice rather than inherit it.
+<!-- /derived -->
+
 <!-- derived:counts -->
 **10 rules** across **8 languages** (JavaScript, TypeScript, Python, Java, PHP, Go, C, C++).
 <!-- /derived -->
@@ -30,7 +66,7 @@ the product. The rules are table stakes; the labelling is the difference.
 **Run it without installing anything:**
 
 ```bash
-npx github:Sikkuumi/Defuse scan ./src
+npx github:sikkuumi/Defuse scan .
 ```
 
 > Installed straight from the repository rather than the npm registry, where the
@@ -95,7 +131,7 @@ ever from a tree whose other instruments you have just run and believed.
 > node dist/src/cli.js ast .\tests\fixtures\vulnerable\sqli.js
 > ```
 
-Installed globally (`npm i -g github:Sikkuumi/Defuse`), the command is `defuse`:
+Installed globally (`npm i -g github:sikkuumi/Defuse`), the command is `defuse`:
 
 ```bash
 defuse scan ./src
@@ -627,7 +663,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 286 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 291 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.
@@ -772,7 +808,7 @@ an exam with an answer key, so here is the exam result, unedited:
 |---|--:|--:|--:|--:|--:|--:|--:|
 | **overall** | **1210** | **575** | **391** | **69** | **175** | **59.5%** | **89.3%** |
 
-2740 files, 0 parse errors, 20.0 seconds, on engine 0.5.0 (2026-09-18).
+2740 files, 0 parse errors, 26.0 seconds, on engine 0.5.0 (2026-09-19).
 
 **Precision is the weaker side.** 391 false positives against 69 false negatives - 5.7x as many - so the cost of this engine is triage time, not missed bugs.
 

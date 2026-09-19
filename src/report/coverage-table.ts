@@ -182,6 +182,99 @@ export function renderBenchmark(result: BenchmarkResult): string {
 }
 
 /** Replace the contents of one `<!-- derived:name -->` block. */
+export interface LabelSplitTier {
+  readonly label: string;
+  readonly tp: number;
+  readonly fp: number;
+  readonly fn: number;
+  readonly precision: string;
+  readonly recall: string;
+  readonly decoyFalsePositives: number;
+  readonly decoyShare: string;
+  readonly nonDecoyFalsePositives: number;
+}
+
+export interface LabelSplitResult {
+  readonly scored: number;
+  readonly findingsByConfidence: Record<string, number>;
+  readonly tiers: readonly LabelSplitTier[];
+  readonly engineVersion: string;
+  readonly measuredAt: string;
+}
+
+/**
+ * THE BLOCK THAT SCORES THE LABELS SEPARATELY.
+ *
+ * `renderBenchmark` reports one precision figure covering both labels mixed
+ * together. That figure is an average across two populations this whole tool
+ * exists to keep apart - the same blending it refuses to do inside a single
+ * finding, done one level up in the report about itself.
+ *
+ * So this renders the split, and like the benchmark block it derives its own
+ * interpretation rather than leaving a hand-written sentence to go stale
+ * underneath it. Two sentences are computed:
+ *
+ *   - whether the green label is actually worth more than the amber one, and
+ *     by how much. If a change ever made them equal, this block would say so
+ *     in the README rather than waiting for someone to notice.
+ *
+ *   - how much of the green tier's error is BenchmarkJava's synthetic decoy
+ *     rather than a real mistake. Quoting the decoy-excluded figure alone
+ *     would be picking the flattering number; quoting only the blended one
+ *     hides that the benchmark's traps dominate what is left.
+ */
+export function renderLabelSplit(result: LabelSplitResult): string {
+  const pct = (s: string): number => Number.parseFloat(s);
+  const verified = result.tiers.find((t) => t.label.startsWith('flow-verified'));
+  const signature = result.tiers.find((t) => t.label.startsWith('signature-only'));
+
+  const rows = result.tiers.map(
+    (t) =>
+      `| \`${t.label}\` | ${t.tp} | ${t.fp} | ${t.fn} | **${t.precision}** | ${t.recall} | ` +
+      `${t.decoyFalsePositives} (${t.decoyShare}) |`,
+  );
+
+  const lines: string[] = [
+    '| tier | TP | FP | FN | precision | recall | FPs that are decoys |',
+    '|---|--:|--:|--:|--:|--:|--:|',
+    ...rows,
+    '',
+    `${Object.entries(result.findingsByConfidence)
+      .map(([k, v]) => `${v} \`${k}\``)
+      .join(', ')} findings, on engine ${result.engineVersion} (${result.measuredAt}).`,
+    '',
+  ];
+
+  if (verified && signature) {
+    const gap = pct(verified.precision) - pct(signature.precision);
+    lines.push(
+      gap > 0
+        ? `**The green label is worth ${gap.toFixed(1)} points.** \`flow-verified\` runs ` +
+          `${verified.precision} against \`signature-based\` at ${signature.precision}. The ` +
+          `gap is the whole claim this tool makes; it is measured here rather than asserted.`
+        : `**The labels are not separating.** \`flow-verified\` runs ${verified.precision} ` +
+          `against \`signature-based\` at ${signature.precision}, so the green label is ` +
+          `currently buying nothing. That is a defect, not a footnote.`,
+    );
+    lines.push('');
+
+    const real = verified.tp + verified.nonDecoyFalsePositives;
+    const excl = real === 0 ? 0 : (verified.tp / real) * 100;
+    lines.push(
+      `Of the ${verified.fp} false positives still carrying the green label, ` +
+        `**${verified.decoyFalsePositives} (${verified.decoyShare})** are BenchmarkJava's ` +
+        `constant-branch decoy - a path that genuinely exists inside a branch that cannot ` +
+        `run - leaving **${verified.nonDecoyFalsePositives}** that are ordinary mistakes. ` +
+        `Set the decoys aside and \`flow-verified\` precision is **${excl.toFixed(1)}%**. ` +
+        `Both figures are printed because neither alone is the truth: the first is ` +
+        `contaminated by synthetic traps, the second requires excluding cases, and a ` +
+        `reader deserves to see the size of that choice rather than inherit it.`,
+    );
+  }
+
+  return lines.join('\n');
+}
+
 export function replaceBlock(markdown: string, name: string, body: string): string {
   const start = BLOCK_START(name);
   const from = markdown.indexOf(start);

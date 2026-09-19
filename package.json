@@ -30,7 +30,8 @@
     "install-check": "node scripts/install-check.mjs",
     "git-install-check": "npm run build --silent && node scripts/git-install-check.mjs",
     "memory": "npm run build --silent && node scripts/memory.mjs",
-    "identity": "npm run build --silent && node scripts/identity.mjs"
+    "identity": "npm run build --silent && node scripts/identity.mjs",
+    "label-split": "npm run build --silent && node scripts/label-split.mjs"
   },
   "dependencies": {
     "tree-sitter-wasms": "0.1.13",
