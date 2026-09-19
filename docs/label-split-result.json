@@ -1,0 +1,64 @@
+{
+  "scored": 1210,
+  "findingsByConfidence": {
+    "flow-verified": 424,
+    "signature-based": 1927
+  },
+  "casesWithBothLabels": 8,
+  "tiers": [
+    {
+      "label": "flow-verified only",
+      "tp": 255,
+      "fp": 100,
+      "fn": 389,
+      "tn": 466,
+      "precision": "71.8%",
+      "recall": "39.6%",
+      "decoyFalsePositives": 97,
+      "decoyShare": "97%",
+      "nonDecoyFalsePositives": 3,
+      "missedByCategory": {
+        "sqli": 190,
+        "xss": 123,
+        "cmdi": 76
+      }
+    },
+    {
+      "label": "signature-only",
+      "tp": 320,
+      "fp": 291,
+      "fn": 324,
+      "tn": 275,
+      "precision": "52.4%",
+      "recall": "49.7%",
+      "decoyFalsePositives": 47,
+      "decoyShare": "16%",
+      "nonDecoyFalsePositives": 244,
+      "missedByCategory": {
+        "cmdi": 70,
+        "sqli": 83,
+        "xss": 171
+      }
+    },
+    {
+      "label": "combined (published)",
+      "tp": 575,
+      "fp": 391,
+      "fn": 69,
+      "tn": 175,
+      "precision": "59.5%",
+      "recall": "89.3%",
+      "decoyFalsePositives": 144,
+      "decoyShare": "37%",
+      "nonDecoyFalsePositives": 247,
+      "missedByCategory": {
+        "xss": 48,
+        "cmdi": 20,
+        "sqli": 1
+      }
+    }
+  ],
+  "reconciles": true,
+  "engineVersion": "0.5.0",
+  "measuredAt": "2026-09-18"
+}

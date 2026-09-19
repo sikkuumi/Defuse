@@ -501,6 +501,27 @@ export async function analyze(
       });
     }
 
+    /** Supersede the signature pass everywhere this flow touched. */
+    const recordFlowRanges = (
+      f: (typeof trace.flows)[number],
+      file: string,
+    ): void => {
+      flowRanges.push({
+        ruleId: f.ruleId,
+        file,
+        start: f.sinkNode.startPosition.row + 1,
+        end: f.sinkNode.endPosition.row + 1,
+      });
+      for (const hop of f.path) {
+        flowRanges.push({
+          ruleId: f.ruleId,
+          file: hop.location.file,
+          start: hop.location.startLine,
+          end: hop.location.endLine,
+        });
+      }
+    };
+
     for (const flow of trace.flows) {
       if (only && !only.has(flow.ruleId)) continue;
       const rule = getRule(flow.ruleId);
@@ -553,9 +574,22 @@ export async function analyze(
        * printed - a reader can check the branch themselves - and the reasoning
        * says which assumption it rests on.
        */
-      if (flow.branchAssumed) {
-        findings.push(
-          signatureFinding({
+      /*
+       * THE SECOND REASON A TRACE CANNOT CALL ITSELF PROVEN.
+       *
+       * branchAssumed is "we did not evaluate the branch". containerGuess is
+       * "we did not track which element". Both are the same failure in the same
+       * place - the engine wrote its own imprecision into the path and then
+       * labelled the result proven anyway - so both get the same treatment: the
+       * finding survives, the path is still printed, and the label tells the
+       * truth about what was and was not followed.
+       *
+       * Measured on OWASP BenchmarkJava: flow-verified paths that collect into a
+       * container scored 50.5% precision against 71.5% for paths that do not.
+       * Half the bucket was a coin flip wearing a certificate.
+       */
+      if (flow.branchAssumed || flow.containerGuess) {
+        const downgraded = signatureFinding({
             ruleId: rule.id,
             ruleName: rule.name,
             cwe: rule.cwe,
@@ -563,16 +597,42 @@ export async function analyze(
             severity: rule.severity,
             message: `Possibly attacker-controlled data from \`${flow.origin}\` reaches ${flow.sinkDescription}`,
             location,
-            reasoning:
-              `A value from \`${flow.origin}\` can reach ${flow.sinkDescription}, but the ` +
+            reasoning: flow.branchAssumed
+              ? `A value from \`${flow.origin}\` can reach ${flow.sinkDescription}, but the ` +
               `path depends on a BRANCH THIS ENGINE DOES NOT EVALUATE: somewhere along it a ` +
               `clean assignment sits inside an if/else, and we keep the taint rather than ` +
               `assume the clean write always happens. That is the cautious reading, not a ` +
               `proven one - if the two writes are in mutually exclusive branches, this path ` +
-              `cannot actually run. Check the branch before acting on it.`,
+              `cannot actually run. Check the branch before acting on it.`
+              : `A value from \`${flow.origin}\` can reach ${flow.sinkDescription}, but the ` +
+                `path runs through a COLLECTION THAT TOOK MORE THAN ONE ELEMENT. We taint a ` +
+                `container as a whole and do not model which index or key comes back out, so ` +
+                `the value printed here may be one of the clean ones that went in. The dirty ` +
+                `value really is in that container - this is worth checking - but the trace ` +
+                `does not prove it is the one that arrives.`,
             limitations: rule.limitations,
-          }),
-        );
+          });
+        const key = dedupeKey(downgraded);
+        if (!seenFlows.has(key)) {
+          seenFlows.add(key);
+          flowFindings.push(downgraded);
+          /*
+           * RECORD THE RANGES EVEN THOUGH NOTHING WAS PROVEN.
+           *
+           * A downgraded flow and the signature rule that fired on the same
+           * line are ONE bug described twice, exactly as in the verified case,
+           * and before this the downgraded branch skipped straight past the
+           * bookkeeping - so branch-assumed.py has been reporting line 46
+           * twice, once from the rule and once from the tracer, for as long as
+           * branchAssumed has existed. It was invisible because so few lines hit
+           * both paths; containerGuess routes 183 more BenchmarkJava cases
+           * through here and would have made it loud.
+           *
+           * The tracer's version wins because it carries the path: same
+           * confidence, strictly more for a reader to check.
+           */
+          recordFlowRanges(flow, flowFile);
+        }
         continue;
       }
 

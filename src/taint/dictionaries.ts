@@ -26,6 +26,9 @@ import type { CallSinkSpec, SourceSpec, TaintDictionary } from './types.js';
 
 const JS_DICTIONARY: TaintDictionary = {
   mutators: ['push', 'unshift', 'splice', 'add', 'set', 'append', 'write', 'writeln'],
+  // Separable items only. `append` is left out: in JS it is DOM appendChild,
+  // which takes a node rather than filing one string among many.
+  elementMutators: ['push', 'unshift', 'splice', 'add', 'set'],
 
   sources: [
     {
@@ -275,6 +278,9 @@ const JS_DICTIONARY: TaintDictionary = {
 
 const PYTHON_DICTIONARY: TaintDictionary = {
   mutators: ['append', 'add', 'insert', 'extend', 'update', 'setdefault', 'write', 'writelines'],
+  // Python's `append` is a LIST element - the OPPOSITE classification to Java's
+  // StringBuilder append, and the reason this list cannot be shared.
+  elementMutators: ['append', 'add', 'insert', 'extend', 'update', 'setdefault'],
 
   // Flask and Django views return the response body directly - there is no
   // res.send() to match on. See htmlReturnIsSink in types.ts for why this is
@@ -469,6 +475,10 @@ const JAVA_DICTIONARY: TaintDictionary = {
   // StringBuilder/StringBuffer, the Collections API, and servlet response
   // writers - the three ways Java code carries a value without assigning it.
   mutators: ['append', 'insert', 'add', 'addAll', 'put', 'putAll', 'push', 'offer', 'write', 'print', 'println', 'setAttribute', 'addHeader', 'setHeader', 'command', 'directory', 'environment'],
+  // `append` and `insert` are StringBuilder concatenation - the builder IS its
+  // contents, so they keep their proof however many times they run. `command`
+  // sets the whole list at once rather than filing one item among many.
+  elementMutators: ['add', 'addAll', 'put', 'putAll', 'push', 'offer'],
   // A servlet request is not its attribute map, and a response is not its
   // header map. See safe/keyed-container.java - Jenkins was reported for
   // `req.getContextPath()` because a setAttribute() elsewhere in the method had
@@ -829,6 +839,9 @@ const GO_DICTIONARY: TaintDictionary = {
  */
 const PHP_DICTIONARY: TaintDictionary = {
   mutators: ['push', 'append', 'add', 'write', 'bindValue', 'bindParam'],
+  // bindValue/bindParam stay out: a bound parameter is not read back out of the
+  // statement as one of several items.
+  elementMutators: ['push', 'append', 'add'],
 
   sources: [
     {

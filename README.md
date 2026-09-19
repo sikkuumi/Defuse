@@ -627,7 +627,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 282 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 286 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.
@@ -772,7 +772,7 @@ an exam with an answer key, so here is the exam result, unedited:
 |---|--:|--:|--:|--:|--:|--:|--:|
 | **overall** | **1210** | **575** | **391** | **69** | **175** | **59.5%** | **89.3%** |
 
-2740 files, 0 parse errors, 20.3 seconds, on engine 0.5.0 (2026-09-17).
+2740 files, 0 parse errors, 20.0 seconds, on engine 0.5.0 (2026-09-18).
 
 **Precision is the weaker side.** 391 false positives against 69 false negatives - 5.7x as many - so the cost of this engine is triage time, not missed bugs.
 

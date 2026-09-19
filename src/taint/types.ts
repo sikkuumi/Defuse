@@ -327,6 +327,33 @@ export interface TaintDictionary {
    */
   readonly keyedMutators?: readonly string[];
   /**
+   * ELEMENT mutators - the subset of `mutators` that add one SEPARABLE ITEM to
+   * a collection, as opposed to accumulating into a single value.
+   *
+   *     list.add(dirty)        one element among several. A later read picks
+   *                            ONE of them, and we do not model which.
+   *     sb.append(dirty)       not separable. Every appended piece is in the
+   *                            result, so any read of `sb` reads the dirty one.
+   *
+   * This list exists only to decide a CONFIDENCE LABEL, never to drop taint.
+   * When a collection took more than one element write, a read of it might be
+   * any of them, so the tracer marks the flow a guess and the finding is
+   * emitted signature-based. One write means the value read is the value
+   * written, and the proof stands.
+   *
+   * Measured on OWASP BenchmarkJava, flow-verified findings only: paths
+   * collecting via `add()` scored 49.1% precision and via `put()` 53.2%, next
+   * to 71.5% for paths with no collect step at all. A coin flip cannot call
+   * itself a proven trace.
+   *
+   * THE NAMES ARE NOT PORTABLE, which is the whole reason this is per-language
+   * rather than one shared list. Java's `append` is StringBuilder concatenation
+   * and must stay OUT; Python's `append` is a list element and must be IN. A
+   * copied list would silently downgrade real findings in one language and
+   * overclaim in another.
+   */
+  readonly elementMutators?: readonly string[];
+  /**
    * The methods that legitimately read a keyed store back out. Only consulted
    * for taint that arrived via `keyedMutators`; every other method on such an
    * object is treated as untouched by the write.

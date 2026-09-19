@@ -110,6 +110,36 @@ interface Taint {
    * is what it is.
    */
   readonly branchAssumed?: boolean | undefined;
+  /**
+   * Set when this taint passed through a write into a COLLECTION THAT TOOK MORE
+   * THAN ONE ELEMENT.
+   *
+   *     values.add("safe");
+   *     values.add(dirty);
+   *     values.add("alsosafe");
+   *     out.println(values.get(2));     // which one is this?
+   *
+   * The tracer taints the container whole and says so in the path - "collected
+   * into `values` via `add()`" - and then labelled the finding flow-verified
+   * anyway. The admission and the claim contradicted each other inside one
+   * report.
+   *
+   * Same treatment as branchAssumed, for the same reason: the taint still
+   * travels, the finding is still reported, and only the LABEL changes. One
+   * write leaves this unset, because then the value read is the value written
+   * and the proof is real. Accumulators never set it - see elementMutators.
+   */
+  readonly containerGuess?: boolean | undefined;
+  /**
+   * The container this taint IS took more than one element write. On its own
+   * that changes nothing - see ReceiverState.java, where `argList` takes three
+   * adds and is then handed WHOLE to ProcessBuilder. Every element reaches the
+   * process, so there is no ambiguity and the proof stands.
+   *
+   * The ambiguity only appears when something reads ONE element back out. So
+   * this marks the container, and `containerGuess` is set later, at the read.
+   */
+  readonly collectedMany?: boolean | undefined;
 }
 
 /**
@@ -144,6 +174,12 @@ export interface FlowResult {
    * because a branch was assumed rather than followed. See branchAssumed.
    */
   readonly branchAssumed?: boolean;
+  /**
+   * The value reached this sink out of a collection that took several elements,
+   * so which one came back is a guess. Reported, not certified. See
+   * containerGuess.
+   */
+  readonly containerGuess?: boolean;
   /** The file the sink is in - may not be the file being scanned. */
   readonly filePath: string;
 }
@@ -1108,6 +1144,8 @@ export function traceFile(
     unknownHops: taint.unknownHops,
     compartment: taint.compartment,
     branchAssumed: taint.branchAssumed,
+    containerGuess: taint.containerGuess,
+    collectedMany: taint.collectedMany,
   });
 
   /**
@@ -1400,13 +1438,20 @@ export function traceFile(
     // then the arguments (`String(dirty)`, `",".join(dirty)`).
     if (dictionary.propagators.names.includes(name)) {
       let taint = evaluate(receiver, scope, depth + 1);
+      // A propagator reached through the RECEIVER of a multi-element container
+      // is an element read - `map.get(k)`, `list.get(i)` - and `get` is in the
+      // propagator list, which is why the unmodelled-call path never sees it.
+      // Same rule, second doorway: reading one of several is a guess.
+      const fromContainer = taint?.collectedMany ?? false;
       if (!taint) {
         for (const arg of args) {
           taint = evaluate(arg, scope, depth + 1);
           if (taint) break;
         }
       }
-      return taint ? addStep(taint, node, `passed through \`${name}()\``) : null;
+      if (!taint) return null;
+      const carried = addStep(taint, node, `passed through \`${name}()\``);
+      return fromContainer ? { ...carried, containerGuess: true } : carried;
     }
 
     /* A function we can actually read - in this file or, since cross-file
@@ -1484,6 +1529,17 @@ export function traceFile(
       origin: carried.origin,
       unknownHops: [...carried.unknownHops, name],
       compartment,
+      collectedMany: carried.collectedMany,
+      /*
+       * THE READ IS WHERE THE AMBIGUITY IS BORN, not the write.
+       *
+       * `argList.add(a); argList.add(b); pb.command(argList)` hands the whole
+       * list over - every element arrives, nothing is guessed, and the trace
+       * stays proven. `map.put(k1,clean); map.put(k2,dirty); map.get(k1)` pulls
+       * ONE element out of several and this engine does not model which. Same
+       * container, same write count; only the read tells them apart.
+       */
+      containerGuess: carried.containerGuess ?? (fromReceiver && carried.collectedMany ? true : undefined),
     };
   };
 
@@ -1625,6 +1681,7 @@ export function traceFile(
       sinkDescription: description,
       unknownHops: taint.unknownHops,
       branchAssumed: taint.branchAssumed ?? false,
+      containerGuess: taint.containerGuess ?? false,
       filePath: toDisplay(currentPath),
     });
   };
@@ -1737,6 +1794,32 @@ export function traceFile(
     }
   };
 
+  /**
+   * HOW MANY THINGS WENT INTO THE BOX?
+   *
+   * Counts element writes to `receiverName` inside the function the write sits
+   * in. One means the value later read out is the value written, and the trace
+   * is sound. More than one means a read picks one of several and this engine
+   * does not model which - so the finding keeps travelling but loses its claim
+   * to proof.
+   *
+   * DELIBERATELY TEXTUAL, and the limitation is real: it counts writes that
+   * appear anywhere in the enclosing function, including ones AFTER the read.
+   * That over-counts, which costs confidence rather than findings - the error
+   * lands on the side of claiming less. A precise version would need ordering
+   * and reachability, which is the modelling this file has repeatedly decided
+   * not to guess at.
+   */
+  const countElementWrites = (node: Node, receiverName: string): number => {
+    const names = dictionary.elementMutators;
+    if (!names || names.length === 0) return 0;
+    let scopeNode: Node | null = node;
+    while (scopeNode && !functionTypes.has(scopeNode.type)) scopeNode = scopeNode.parent;
+    const escaped = receiverName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`\\b${escaped}\\s*\\.\\s*(?:${names.join('|')})\\s*\\(`, 'g');
+    return (text(scopeNode ?? node).match(pattern) ?? []).length;
+  };
+
   const checkMutation = (node: Node, scope: Scope): void => {
     const mutators = dictionary.mutators;
     if (!mutators || mutators.length === 0) return;
@@ -1756,6 +1839,14 @@ export function traceFile(
     const keyed = dictionary.keyedMutators?.includes(method) ?? false;
     const readers = dictionary.keyedReaders;
 
+    // An element write into a collection that took several elements makes any
+    // later read of it a guess about WHICH element. The taint is unchanged; only
+    // the confidence label is. Accumulators are not in `elementMutators`, so
+    // sb.append() keeps its proof however many times it runs.
+    const manyElements =
+      (dictionary.elementMutators?.includes(method) ?? false) &&
+      countElementWrites(node, receiverName) > 1;
+
     for (const arg of argumentsOf(node)) {
       const taint = evaluate(arg, scope);
       if (!taint) continue;
@@ -1767,9 +1858,10 @@ export function traceFile(
             `store are tainted, other methods on \`${receiverName}\` are not`
           : `collected into \`${receiverName}\` via \`${method}()\``,
       );
+      const marked = manyElements ? { ...stored, collectedMany: true } : stored;
       scope.env.set(
         receiverName,
-        keyed && readers ? { ...stored, compartment: readers } : stored,
+        keyed && readers ? { ...marked, compartment: readers } : marked,
       );
       return;
     }
@@ -1915,6 +2007,7 @@ export function traceFile(
           sinkDescription: sink.description,
           unknownHops: taint.unknownHops,
           branchAssumed: taint.branchAssumed ?? false,
+          containerGuess: taint.containerGuess ?? false,
           filePath: toDisplay(currentPath),
         });
       }
@@ -1946,6 +2039,7 @@ export function traceFile(
         sinkDescription: sink.description,
         unknownHops: taint.unknownHops,
         branchAssumed: taint.branchAssumed ?? false,
+        containerGuess: taint.containerGuess ?? false,
         filePath: toDisplay(currentPath),
       });
     }
