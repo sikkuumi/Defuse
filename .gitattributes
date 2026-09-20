@@ -1,0 +1,37 @@
+# LINE ENDINGS ARE PINNED TO LF IN THE WORKING TREE, ON EVERY PLATFORM.
+#
+# This is not a style preference, and it is not about tidiness. Two checks in
+# `npm test` compare a file on disk against a string this program generates,
+# byte for byte:
+#
+#     docs/index.html   vs  renderSite(...)        `onDisk === expected`
+#     README.md blocks  vs  the derived renderers
+#
+# Those strings are built from template literals, so every newline in them is
+# `\n`. Git on Windows defaults to core.autocrlf=true, which rewrites LF to
+# CRLF when it puts a file into the working tree. Nothing about the page would
+# be wrong - every figure would still be correct - but every line would differ
+# by one invisible byte and the comparison would fail.
+#
+# The failure would also lie about its cause. The message reads:
+#
+#     docs/index.html is stale - a figure on the landing page disagrees
+#     with docs/*.json
+#     fix: npm run build:site
+#
+# which would send someone hunting through precision figures for a wrong
+# number that is not wrong, and `npm run build:site` would not fix it, because
+# the regenerated file gets converted on the next checkout too.
+#
+# This has not bitten yet only because the files currently on disk were written
+# there directly rather than checked out. A fresh clone, a `git checkout`, a
+# second machine or the first outside contributor would all trigger it.
+#
+# `eol=lf` makes the working tree match the repository on every platform, so
+# the generated file and the generator can never disagree over a newline.
+* text=auto eol=lf
+
+# The mark is binary. Never let any conversion near it.
+*.png binary
+*.woff2 binary
+*.wasm binary
