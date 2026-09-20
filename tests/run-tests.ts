@@ -59,6 +59,7 @@ import {
   type BenchmarkResult,
   type LabelSplitResult,
 } from '../src/report/coverage-table.js';
+import { renderSite } from '../src/report/site.js';
 import { looksLikeSql, matchKnownSecret, isTestPath } from '../src/rules/lib/strings.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1791,6 +1792,51 @@ async function main(): Promise<number> {
    * if a dictionary has a sink of kind K for language L, the rule that kind maps
    * to must admit it covers L.
    * ------------------------------------------------------------------ */
+  /*
+   * THE LANDING PAGE IS A DERIVED ARTEFACT TOO.
+   *
+   * docs/index.html quotes precision, recall and the coverage gap. A marketing
+   * page is the likeliest thing in any project to keep a figure the code moved
+   * past, and this one belongs to a tool whose entire claim is that it does not
+   * say more than it knows. So it is generated from the same measurement files
+   * the README reads, and regenerated here for comparison.
+   *
+   * The fix when this fails is `npm run build:site`.
+   */
+  console.log(`\n${color.bold('  Generated site')}`);
+  {
+    const sitePath = path.resolve(HERE, '../../docs/index.html');
+    try {
+      const [onDisk, benchmark, split] = await Promise.all([
+        readFile(sitePath, 'utf8'),
+        readFile(path.resolve(HERE, '../../docs/benchmark-result.json'), 'utf8'),
+        readFile(path.resolve(HERE, '../../docs/label-split-result.json'), 'utf8'),
+      ]);
+      const expected = renderSite(
+        JSON.parse(benchmark) as BenchmarkResult,
+        JSON.parse(split) as LabelSplitResult,
+      );
+      if (onDisk === expected) {
+        passed++;
+        console.log(
+          `    ${color.green(g('tick'))} docs/index.html matches the recorded measurements`,
+        );
+      } else {
+        failed++;
+        console.log(
+          `    ${color.red(g('cross'))} docs/index.html is stale - a figure on the landing ` +
+            `page disagrees with docs/*.json`,
+        );
+        console.log(`      ${color.dim('fix: npm run build:site')}`);
+      }
+    } catch {
+      skipped++;
+      console.log(
+        `    ${color.dim('·')} SKIPPED: docs/index.html not built yet - run \`npm run build:site\`.`,
+      );
+    }
+  }
+
   console.log(`\n${color.bold('  Coverage matrix vs engine')}`);
   {
     const contradictions: string[] = [];
