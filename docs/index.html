@@ -58,12 +58,41 @@
 
   /* ---------- motion ---------- */
   @keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
-  @keyframes grow{0%{transform:scaleY(0);opacity:0}8%{opacity:1}54%{transform:scaleY(1)}92%{transform:scaleY(1);opacity:1}100%{transform:scaleY(1);opacity:0}}
-  @keyframes node{0%,8%{opacity:.18;transform:scale(.74)}20%{opacity:1;transform:scale(1)}92%{opacity:1;transform:scale(1)}100%{opacity:.18;transform:scale(.74)}}
+  /*
+   * THE TRACE RUNS ON ONE CLOCK.
+   *
+   * It used to run on four. Each node shared a single "node" keyframe set and
+   * was staggered with animation-delay: 0s, 1.4s, 2.8s. That is not a stagger,
+   * and measuring it showed two separate faults.
+   *
+   * An animation-delay delays the START of the loop. Until it elapses the
+   * element renders in its ordinary un-animated state - fully opaque - so on
+   * load nodes 2 and 3 sat at opacity 1 while node 1 was still dark, then
+   * snapped down to the 0% keyframe when their delay ran out. The dots went
+   * OUT in sequence instead of lighting UP in sequence, which is the exact
+   * opposite of the thing this animation exists to show.
+   *
+   * And because a delay shifts the whole loop, each element restarted at a
+   * different moment: sampled at 7.3s the spine had reset to nothing while
+   * nodes 2 and 3 were still lit from the previous pass. After one cycle the
+   * four elements were permanently incoherent.
+   *
+   * Now the stagger lives in the keyframes and every element runs the same 7s
+   * period with no delay, so they reset together and the order holds forever.
+   * The percentages are the choreography: node 1 lights at 10%, the spine
+   * grows from 8% to 46%, and node 3 lights at 46% - the line arrives exactly
+   * as the sink does, rather than finishing 0.4s early as it used to.
+   */
+  @keyframes grow{0%{transform:scaleY(0);opacity:0}8%{transform:scaleY(0);opacity:1}46%,90%{transform:scaleY(1);opacity:1}100%{transform:scaleY(1);opacity:0}}
+  @keyframes n1{0%,3%{opacity:.18;transform:scale(.74)}10%,90%{opacity:1;transform:scale(1)}100%{opacity:.18;transform:scale(.74)}}
+  @keyframes n2{0%,20%{opacity:.18;transform:scale(.74)}28%,90%{opacity:1;transform:scale(1)}100%{opacity:.18;transform:scale(.74)}}
+  @keyframes n3{0%,38%{opacity:.18;transform:scale(.74)}46%,90%{opacity:1;transform:scale(1)}100%{opacity:.18;transform:scale(.74)}}
   @keyframes barIn{from{transform:scaleX(0)}to{transform:scaleX(1)}}
   .rise{animation:rise 780ms cubic-bezier(.22,.9,.24,1) both}
   .spine{transform-origin:top center;animation:grow 7s cubic-bezier(.5,0,.2,1) infinite}
-  .n{animation:node 7s cubic-bezier(.4,0,.2,1) infinite}
+  .n1{animation:n1 7s cubic-bezier(.4,0,.2,1) infinite}
+  .n2{animation:n2 7s cubic-bezier(.4,0,.2,1) infinite}
+  .n3{animation:n3 7s cubic-bezier(.4,0,.2,1) infinite}
   .barfill{transform-origin:left center;animation:barIn 1400ms cubic-bezier(.22,.9,.24,1) both}
 
   /* ---------- the ambient field ---------- */
@@ -108,6 +137,7 @@
   @media (prefers-reduced-motion: reduce){
     html{scroll-behavior:auto}
     .rise,.spine,.n,.barfill{animation:none!important;opacity:1!important;transform:none!important}
+    .card{transition:none!important}
     /* The field stays - it is colour, not motion - but it stops moving. */
     .orb{animation:none!important}
   }
@@ -162,12 +192,30 @@
 
   .two{display:grid;grid-template-columns:1fr;gap:20px;margin-top:44px}
   @media(min-width:880px){.two{grid-template-columns:1fr 1fr;gap:24px}}
-  .card{padding:34px 32px 30px;border-radius:16px}
+  /* The cards are buttons, so everything the browser puts on a button has to be
+     turned off before the card looks like a card again. */
+  .card{display:block;width:100%;text-align:left;font:inherit;color:inherit;cursor:pointer;
+    -webkit-appearance:none;appearance:none;padding:34px 32px 30px;border-radius:16px;
+    transition:transform 420ms cubic-bezier(.22,.9,.24,1),opacity 420ms ease,
+               border-color 420ms ease,box-shadow 420ms ease}
   .card.proven{background:var(--panel);background:linear-gradient(180deg,var(--glass),rgba(245,245,245,.012)),var(--panel);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);border:1px solid var(--line)}
   .card.guessed{background:transparent;border:1px dashed rgba(245,245,245,.14)}
-  .quote{font-size:clamp(21px,2.6vw,27px);font-weight:500;letter-spacing:-.6px;line-height:1.24;color:var(--white);margin:22px 0 0}
+  .card .row{display:flex;align-items:center;gap:12px}
+  .card .body{display:block;margin-top:16px;font-size:15px;color:var(--mute)}
+  .quote{display:block;font-size:clamp(21px,2.6vw,27px);font-weight:500;letter-spacing:-.6px;line-height:1.24;color:var(--white);margin:22px 0 0}
   .card.guessed .quote{color:var(--mute)}
-  .meta{border-top:1px solid var(--hair);margin-top:24px;padding-top:18px;font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--faint);line-height:1.9}
+  .meta{display:block;border-top:1px solid var(--hair);margin-top:24px;padding-top:18px;font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--faint);line-height:1.9}
+
+  /* Hover only hints; the commitment is the click. */
+  @media(hover:hover){.card:hover{border-color:rgba(145,83,247,.45)}}
+  .card:focus-visible{outline:2px solid var(--brand-soft);outline-offset:3px}
+  /* Held: lifted, edged in the brand, with the light coming off it. */
+  .card.pop{transform:scale(1.022);border-color:var(--brand-lift);border-style:solid;
+    box-shadow:0 0 0 1px rgba(121,44,247,.3),0 22px 60px -26px rgba(121,44,247,.62)}
+  /* Let go: pushed back, never hidden. .42 keeps the text legible for anyone who
+     reads it anyway, since this is a de-emphasis the reader chose and can undo. */
+  .card.dim{opacity:.42;transform:scale(.99)}
+  .hint{margin-top:16px;font-size:13.5px;color:var(--faint)}
 
   /* ---------- proof ---------- */
   .proof{display:grid;grid-template-columns:1fr;gap:24px;margin-top:44px}
@@ -292,15 +340,15 @@
         <div class="hops">
         <div class="spine"></div>
         <div class="hop">
-          <span class="n on"></span>
+          <span class="n on n1"></span>
           <div><div class="mono" style="font-size:14.5px;color:var(--white)">argv[1]</div><div style="margin-top:5px;font-size:14px;color:var(--mute)">a command-line argument — the source</div></div>
         </div>
         <div class="hop">
-          <span class="n" style="animation-delay:1.4s"></span>
+          <span class="n on n2"></span>
           <div><div class="mono" style="font-size:14.5px;color:var(--white)">sprintf(cmd, …)</div><div style="margin-top:5px;font-size:14px;color:var(--mute)">written into <code style="font-size:13px">cmd</code>, unescaped</div></div>
         </div>
         <div class="hop">
-          <span class="n on" style="animation-delay:2.8s"></span>
+          <span class="n on n3"></span>
           <div><div class="mono" style="font-size:14.5px;color:var(--white)">system(cmd)</div><div style="margin-top:5px;font-size:14px;color:var(--mute)">arrives at the shell — the sink</div></div>
         </div>
         </div>
@@ -320,22 +368,30 @@
       The word they hide behind is <em style="font-style:italic;color:var(--white)">possible</em> — and it
       covers both a traced data path and a lucky-looking regex.</p>
 
-    <div class="two">
-      <div class="card proven">
-        <div style="display:flex;align-items:center;gap:12px"><span class="dot" style="width:11px;height:11px"></span><span class="mono" style="font-size:16px;color:var(--white)">flow-verified</span></div>
-        <p class="quote">“Attacker data actually reaches here.”</p>
-        <p style="margin-top:16px;font-size:15px">Traced hop by hop, across functions and across files, with
-          the whole path printed beside the finding — including the steps where its knowledge ran out.</p>
-        <div class="meta">evidence &nbsp;·&nbsp; a printed source&rarr;sink path<br>claim &nbsp;&nbsp;&nbsp;&nbsp;·&nbsp; check it yourself</div>
-      </div>
-      <div class="card guessed">
-        <div style="display:flex;align-items:center;gap:12px"><span class="ring" style="width:11px;height:11px"></span><span class="mono" style="font-size:16px;color:var(--mute)">signature-based</span></div>
-        <p class="quote">“This code has the shape of a bug.”</p>
-        <p style="margin-top:16px;font-size:15px">A pattern matched in the syntax tree. Data flow was not
-          traced. It is a lead worth opening, not a fact — and the report says exactly that, every time.</p>
-        <div class="meta">evidence &nbsp;·&nbsp; one matched pattern<br>claim &nbsp;&nbsp;&nbsp;&nbsp;·&nbsp; worth your attention</div>
-      </div>
+    <!--
+      Real <button>s, not divs wearing role="button". That buys keyboard
+      operation, focus, and the pressed state from the platform instead of from
+      script. The price is that a button may only contain phrasing content, so
+      every <p> and <div> inside became a <span style="display:block"> - same
+      rendering, valid markup.
+    -->
+    <div class="two" id="labelcards">
+      <button type="button" class="card proven" aria-pressed="false">
+        <span class="row"><span class="dot" style="width:11px;height:11px"></span><span class="mono" style="font-size:16px;color:var(--white)">flow-verified</span></span>
+        <span class="quote">“Attacker data actually reaches here.”</span>
+        <span class="body">Traced hop by hop, across functions and across files, with
+          the whole path printed beside the finding — including the steps where its knowledge ran out.</span>
+        <span class="meta">evidence &nbsp;·&nbsp; a printed source&rarr;sink path<br>claim &nbsp;&nbsp;&nbsp;&nbsp;·&nbsp; check it yourself</span>
+      </button>
+      <button type="button" class="card guessed" aria-pressed="false">
+        <span class="row"><span class="ring" style="width:11px;height:11px"></span><span class="mono" style="font-size:16px;color:var(--mute)">signature-based</span></span>
+        <span class="quote">“This code has the shape of a bug.”</span>
+        <span class="body">A pattern matched in the syntax tree. Data flow was not
+          traced. It is a lead worth opening, not a fact — and the report says exactly that, every time.</span>
+        <span class="meta">evidence &nbsp;·&nbsp; one matched pattern<br>claim &nbsp;&nbsp;&nbsp;&nbsp;·&nbsp; worth your attention</span>
+      </button>
     </div>
+    <p class="hint" hidden>Pick one to hold it. Pick it again to let both go.</p>
 
     <div style="display:flex;gap:16px;align-items:flex-start;margin-top:40px">
       <svg viewBox="0 0 24 24" style="width:20px;height:20px;flex-shrink:0;margin-top:3px" aria-hidden="true"><path d="M12 3l7 3.5v5c0 4.2-2.9 7.8-7 9-4.1-1.2-7-4.8-7-9v-5z" fill="none" stroke="#9153F7" stroke-width="1.5" stroke-linejoin="round"></path></svg>
@@ -480,6 +536,36 @@
         btn.classList.remove('ok');
         if (live) live.textContent = '';
       }, 1800);
+    });
+  });
+})();
+
+/* Hold one label, push the other back.
+   The hint stays hidden until this runs, so a reader with no JavaScript is
+   never told to click something that will not respond. The cards are real
+   buttons, so Enter and Space already work and aria-pressed carries the state
+   to a screen reader - all this adds is the two classes. */
+(function () {
+  var wrap = document.getElementById('labelcards');
+  if (!wrap) return;
+  var cards = Array.prototype.slice.call(wrap.querySelectorAll('.card'));
+  if (cards.length < 2) return;
+  var hint = document.querySelector('.hint');
+  if (hint) hint.hidden = false;
+
+  cards.forEach(function (card) {
+    card.addEventListener('click', function () {
+      var alreadyHeld = card.classList.contains('pop');
+      cards.forEach(function (c) {
+        c.classList.remove('pop', 'dim');
+        c.setAttribute('aria-pressed', 'false');
+      });
+      if (alreadyHeld) return; // a second click on the held card releases both
+      card.classList.add('pop');
+      card.setAttribute('aria-pressed', 'true');
+      cards.forEach(function (c) {
+        if (c !== card) c.classList.add('dim');
+      });
     });
   });
 })();
