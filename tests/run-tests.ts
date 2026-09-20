@@ -1837,6 +1837,60 @@ async function main(): Promise<number> {
     }
   }
 
+  /*
+   * THE LANDING PAGE MUST NOT CALL ANYBODY.
+   *
+   * It used to load its typefaces from fonts.googleapis.com, which meant the
+   * homepage of a security tool handed a third party every visitor's IP address
+   * and user agent before it had drawn a pixel. The fonts are served from this
+   * origin now, and this check is here so nobody can quietly put that back by
+   * pasting in an analytics snippet or a CDN link.
+   *
+   * Only things the browser fetches BY ITSELF count. An <a href> to GitHub is a
+   * link a person chooses to follow, not a request the page makes, so anchors
+   * are removed before looking.
+   */
+  console.log(`\n${color.bold('  Landing page network calls')}`);
+  {
+    try {
+      const html = await readFile(path.resolve(HERE, '../../docs/index.html'), 'utf8');
+      const withoutAnchors = html.replace(/<a\b[^>]*>/gi, '<a>');
+      const auto: string[] = [];
+      const patterns = [
+        /<link\b[^>]*\bhref\s*=\s*["']([^"']+)["']/gi,
+        /\bsrc\s*=\s*["']([^"']+)["']/gi,
+        /url\(\s*["']?([^"')]+)["']?\s*\)/gi,
+        /@import\s+["']([^"']+)["']/gi,
+      ];
+      for (const pattern of patterns) {
+        for (const match of withoutAnchors.matchAll(pattern)) {
+          const url = (match[1] ?? '').trim();
+          if (/^(https?:)?\/\//i.test(url)) auto.push(url);
+        }
+      }
+      if (auto.length === 0) {
+        passed++;
+        console.log(
+          `    ${color.green(g('tick'))} docs/index.html fetches nothing from another origin`,
+        );
+      } else {
+        failed++;
+        console.log(
+          `    ${color.red(g('cross'))} docs/index.html would call ${auto.length} external ` +
+            `resource(s) on load: ${[...new Set(auto)].join(', ')}`,
+        );
+        console.log(
+          `      ${color.dim('a visitor should not be announced to a third party by our own homepage')}`,
+        );
+      }
+    } catch {
+      skipped++;
+      console.log(
+        `    ${color.dim('·')} SKIPPED: docs/index.html not built yet - run \`npm run build:site\`.`,
+      );
+    }
+  }
+
   console.log(`\n${color.bold('  Coverage matrix vs engine')}`);
   {
     const contradictions: string[] = [];

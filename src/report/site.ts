@@ -119,10 +119,32 @@ export function renderSite(benchmark: BenchmarkResult, split: LabelSplitResult):
 <meta property="og:type" content="website">
 <meta name="theme-color" content="#262626">
 <link rel="icon" href="defuse-mark.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
+  /*
+   * THE FONTS ARE SERVED FROM THIS ORIGIN. THE PAGE CALLS NOBODY.
+   *
+   * This used to be a stylesheet link to fonts.googleapis.com, which meant the
+   * homepage of a security tool made a request to a third party before it had
+   * drawn anything - handing that third party the visitor's IP address and
+   * user agent on the way. The people most likely to open devtools on this
+   * page are exactly the people who would notice, and they would be right to.
+   *
+   * Six files, about 100KB, latin subsets only. Both families are SIL Open
+   * Font License 1.1, which permits redistribution and requires the licence to
+   * travel with the files - hence docs/fonts/LICENSE-*.txt, which are served
+   * alongside rather than being a gesture.
+   *
+   * font-display:swap draws the text immediately in the fallback and repaints
+   * when the real face arrives. The alternative, block, hides the heading until
+   * the font loads, and a blank hero is a worse failure than a brief reflow.
+   */
+  @font-face{font-family:"Space Grotesk";src:url("fonts/space-grotesk-latin-300-normal.woff2") format("woff2");font-weight:300;font-style:normal;font-display:swap}
+  @font-face{font-family:"Space Grotesk";src:url("fonts/space-grotesk-latin-400-normal.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+  @font-face{font-family:"Space Grotesk";src:url("fonts/space-grotesk-latin-500-normal.woff2") format("woff2");font-weight:500;font-style:normal;font-display:swap}
+  @font-face{font-family:"Space Grotesk";src:url("fonts/space-grotesk-latin-700-normal.woff2") format("woff2");font-weight:700;font-style:normal;font-display:swap}
+  @font-face{font-family:"IBM Plex Mono";src:url("fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+  @font-face{font-family:"IBM Plex Mono";src:url("fonts/ibm-plex-mono-latin-500-normal.woff2") format("woff2");font-weight:500;font-style:normal;font-display:swap}
+
   :root{
     /* Ground and surfaces, sampled from the Instagram carousel. */
     --bg:#262626; --panel:#2C2C2C; --raised:#2F2F2F;
