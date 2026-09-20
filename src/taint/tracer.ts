@@ -2386,10 +2386,45 @@ export function traceFile(
           }
         }
 
+        /*
+         * `s += x` EXTENDS s. It does not replace it.
+         *
+         * Every node type in ASSIGNMENT_NODES was being applied as "the target
+         * now holds the right-hand side", which is right for `=` and wrong for
+         * `+=`. A clean right-hand side therefore deleted the target's taint,
+         * and this is the shape it broke:
+         *
+         *     String sql = "SELECT * FROM t WHERE x = '";
+         *     sql += request.getParameter("x");   // sql is dirty
+         *     sql += "'";                         // sql was wiped clean here
+         *     stmt.execute(sql);                  // reported nothing at all
+         *
+         * That is the canonical injection, written the way people write it.
+         * Found in C++ and assumed to be a C++ problem; rewriting it in four
+         * other languages showed JavaScript, Python and Java all lost the value
+         * identically, and only PHP survived. It was never about C++.
+         *
+         * Only `+=` and `.=` qualify. The other compound operators keep the old
+         * value too, but `s -= x` and `s *= x` produce a number, and a number
+         * cannot be a shell command - the same reason BINARY_CARRIERS holds
+         * only the operators that can still carry an attacker's shape.
+         *
+         * Measured per language rather than assumed: C++, Java and Go spell
+         * this `assignment_expression`/`assignment_statement` with a `+=`
+         * operator, while JS, Python and PHP use a distinct augmented node. All
+         * six expose the same `operator` field, so the operator decides and the
+         * node type does not have to.
+         */
+        const operator = node.childForFieldName('operator')?.text ?? '';
+        const extendsTarget = operator === '+=' || operator === '.=';
+
         for (const targetName of targetNames) {
           if (!/^[A-Za-z_$][\w$]*$/.test(targetName)) continue;
           if (taint) {
             scope.env.set(targetName, addStep(taint, parts.target, `stored in \`${targetName}\``));
+          } else if (extendsTarget) {
+            // Appending something clean to a dirty value leaves it dirty.
+            continue;
           } else if (scope.env.has(targetName) && underCondition(node, scope.body)) {
             /*
              * A clean write we cannot prove happens. Keep the dirt - but record

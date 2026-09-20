@@ -1291,6 +1291,34 @@ const C_DICTIONARY: TaintDictionary = {
 const CPP_DICTIONARY: TaintDictionary = {
   ...C_DICTIONARY,
 
+  /*
+   * C HAS NO METHODS, SO IT DECLARES NO MUTATORS. C++ INHERITED THAT EMPTY
+   * LIST AND SHOULD NOT HAVE.
+   *
+   * Every other language here declares mutators - the methods that dirty the
+   * object they are called ON, rather than returning a dirty value. C++ had
+   * none, so this was silent:
+   *
+   *     std::string cmd = "gzip ";
+   *     cmd.append(argv[1]);     // nothing recorded cmd as dirty
+   *     std::system(cmd.c_str());
+   *
+   * `append` was already a PROPAGATOR, which is a different direction: it
+   * carries taint from the receiver out to the result, so `dirty.append(" -v")`
+   * traced and `clean.append(dirty)` did not. Being listed in one direction
+   * looked from the outside like being handled.
+   *
+   * STRING METHODS ONLY, AND DELIBERATELY SO. push_back, emplace_back and the
+   * container form of insert are missing on purpose: they write ELEMENTS, and
+   * an element write needs a matching `elementMutators` entry or the
+   * containerGuess rule cannot do its job - a container written many times and
+   * read back once would come out claiming a proof it has not got. Modelling
+   * C++ containers means modelling both lists together, and that is its own
+   * piece of work rather than a line added here. Until then, taint into a
+   * std::vector is a documented miss and not a quiet one.
+   */
+  mutators: ['append', 'assign', 'replace'],
+
   sources: [
     ...C_SOURCES,
     {
@@ -1355,5 +1383,5 @@ export const TAINT_COVERAGE_NOTES: Record<LanguageId, string> = {
     'IMPLEMENTED: Servlet request getters (getParameter, getParameterValues, getHeader, getQueryString, getCookies and friends), JDBC/JPA query sinks, Runtime.exec and ProcessBuilder, and response writers - print/println/write/printf/format/append are sinks when the RECEIVER is a servlet writer, which is what separates response.getWriter().format(fmt, dirty) from String.format(fmt, dirty). Array initialisers carry taint, so Object[] a = {"x", dirty} stays dirty. Spring (@RequestParam, @PathVariable, @RequestBody and friends) and JAX-RS (@QueryParam, @PathParam and friends) annotated parameters are sources. A keyed write - req.setAttribute(name, dirty), resp.setHeader(name, dirty) - dirties that named store and NOT the rest of the object, so req.getContextPath() stays clean; reads out of the store are key-INSENSITIVE, so getAttribute() under any name comes back tainted. NOT covered: a writer stored under an unrecognised variable name is missed because the receiver is matched by its text, and the keyed-store rule is Java-only - a JS Map.set() or a Python dict update still dirties the whole container.',
   php:
     'IMPLEMENTED: $_GET/$_POST/$_REQUEST/$_COOKIE/$_FILES superglobals, request-derived $_SERVER entries, PDO and mysqli query sinks, shell functions, and echo. Follows values across functions WITHIN one file. NOT covered: cross-file tracing is off for PHP entirely - require/include are statements and Composer autoloading resolves classes with no import line to read, so a call into another file ends the trace. Blade and Twig templates are not parsed. A value checked by a VALIDATION GUARD - is_numeric, ctype_digit, ctype_alnum and siblings - is treated as safe inside the branch that check guards, and only there; guards that prove nothing about the character set (strlen, isset, empty, preg_match) are not counted.',
-  go: 'IMPLEMENTED: net/http request values, gorilla/mux and Gin params, database/sql sinks, template.HTML escape hatches. NOT covered: multi-value assignments (a, b := f()) bind only when the two sides line up, and a package imported under an alias is matched by the alias, not the real package.',
+  go: 'IMPLEMENTED: net/http request values, gorilla/mux and Gin params, database/sql sinks, template.HTML escape hatches. NOT covered: multi-value assignments (a, b := f()) bind only when the two sides line up, multi-value assignments (a, b := f()) bind EVERY name on the left to the same taint, so the engine over-claims which of the returned names is dirty rather than losing the value. Aliased imports were previously listed here as a general miss and that was too broad: the taint sinks match on the method name, so `sh "os/exec"` and `runner "os/exec"` are both traced. The alias limitation is real only where a rule matches on the receiver PACKAGE text - weak-hash - and that rule states it itself.',
 };

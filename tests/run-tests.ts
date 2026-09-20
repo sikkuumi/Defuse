@@ -41,7 +41,7 @@ import { fileURLToPath } from 'node:url';
 import { scan } from '../src/engine/scan.js';
 import { color, g } from '../src/report/colors.js';
 import { ALL_RULES } from '../src/rules/registry.js';
-import { LANGUAGES } from '../src/parse/languages.js';
+import { LANGUAGES, detectLanguage } from '../src/parse/languages.js';
 import { TAINT_COVERAGE_NOTES, TAINT_DICTIONARIES } from '../src/taint/dictionaries.js';
 import { SINK_KIND_RULE } from '../src/taint/types.js';
 import { ENGINE_CAPABILITIES, type Finding } from '../src/core/finding.js';
@@ -1662,6 +1662,69 @@ async function main(): Promise<number> {
   } else {
     failed++;
     console.log(`    ${color.red(g('cross'))} no fixture exercised: ${missing.join(', ')}`);
+  }
+
+  /*
+   * EVERY LANGUAGE THAT CLAIMS DATA FLOW MUST PROVE IT, AND MUST ALSO PROVE
+   * IT CAN STAY QUIET.
+   *
+   * This check exists because the same hole was found twice in two days.
+   *
+   * TypeScript had six fixture findings and every one was signature-based, so
+   * not a single TypeScript value had ever been traced from a source to a sink
+   * - while the coverage note said data flow was "identical to JavaScript".
+   * When it was finally tested, one construct had been broken since the day
+   * the language was added.
+   *
+   * C++ had the mirror image: five flow-verified findings and no safe fixture
+   * at all, so nothing asserted the engine stays quiet on correct C++. A rule
+   * that fires on everything passes every positive test ever written.
+   *
+   * Both were invisible because the suite counted checks, not coverage. One
+   * check per language, so a gap names the language it is in rather than
+   * hiding inside a total.
+   *
+   * A language needs BOTH halves. A proven finding shows the tracer reaches
+   * the end; a silent file shows it knows when to stop. Either alone is half a
+   * language's evidence.
+   */
+  console.log(`\n${color.bold('  Per-language evidence')}`);
+  {
+    const taintLanguages = Object.keys(TAINT_DICTIONARIES).sort();
+    const provenIn = new Map<string, string>();
+    for (const finding of findings) {
+      if (finding.confidence !== 'flow-verified') continue;
+      const match = detectLanguage(finding.location.file);
+      if (match && !provenIn.has(match.spec.id)) {
+        provenIn.set(match.spec.id, path.basename(finding.location.file));
+      }
+    }
+    const silentIn = new Map<string, string>();
+    for (const expectation of safe) {
+      if (!expectation.expectNone) continue;
+      const match = detectLanguage(expectation.file);
+      if (match && !silentIn.has(match.spec.id)) {
+        silentIn.set(match.spec.id, path.basename(expectation.file));
+      }
+    }
+
+    for (const language of taintLanguages) {
+      const proven = provenIn.get(language);
+      const silent = silentIn.get(language);
+      if (proven && silent) {
+        passed++;
+        console.log(
+          `    ${color.green(g('tick'))} ${language.padEnd(11)} proven in ${proven}, ` +
+            `silent in ${silent}`,
+        );
+      } else {
+        failed++;
+        const lacks = !proven
+          ? 'no fixture ever produces a FLOW-VERIFIED finding here - the tracer is unproven in this language'
+          : 'no safe fixture - nothing asserts the engine stays quiet on correct code';
+        console.log(`    ${color.red(g('cross'))} ${language.padEnd(11)} ${lacks}`);
+      }
+    }
   }
 
   /*
