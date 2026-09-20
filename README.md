@@ -48,7 +48,7 @@ inside a single finding.
 | `signature-only` | 303 | 275 | 341 | **52.4%** | 47.0% | 31 (11%) |
 | `combined (published)` | 575 | 391 | 69 | **59.5%** | 89.3% | 144 (37%) |
 
-460 `flow-verified`, 1891 `signature-based` findings, on engine 0.5.0 (2026-09-19).
+460 `flow-verified`, 1891 `signature-based` findings, on engine 0.5.0 (2026-09-20).
 
 **The green label is worth 17.7 points.** `flow-verified` runs 70.1% against `signature-based` at 52.4%. The gap is the whole claim this tool makes; it is measured here rather than asserted.
 
@@ -663,7 +663,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 292 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 309 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.
@@ -808,7 +808,7 @@ an exam with an answer key, so here is the exam result, unedited:
 |---|--:|--:|--:|--:|--:|--:|--:|
 | **overall** | **1210** | **575** | **391** | **69** | **175** | **59.5%** | **89.3%** |
 
-2740 files, 0 parse errors, 26.0 seconds, on engine 0.5.0 (2026-09-19).
+2740 files, 0 parse errors, 25.7 seconds, on engine 0.5.0 (2026-09-20).
 
 **Precision is the weaker side.** 391 false positives against 69 false negatives - 5.7x as many - so the cost of this engine is triage time, not missed bugs.
 

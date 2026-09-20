@@ -310,6 +310,49 @@ const UNWRAP_NODES = new Set([
   'cast_expression', // Java, C-style casts
 ]);
 
+/**
+ * Wrappers whose FIRST named child is the type and whose LAST is the value.
+ *
+ * Everything else in UNWRAP_NODES puts the value first, which is why grabbing
+ * child 0 worked for years before a Java cast walked in. This is the third
+ * time the same shape has turned up wearing different clothes:
+ *
+ *     (String) map.get("k")        cast_expression   [type, value]
+ *     <string>req.query.path       type_assertion    [type, value]
+ *     req.query.path as string     as_expression     [value, type]   <- NOT here
+ *
+ * The first two look nothing alike and parse identically. The third looks
+ * almost the same as the second and parses backwards, so it must stay on the
+ * first-child path - which is the whole reason this is a set of node types
+ * and not a guess about which spelling means a cast.
+ *
+ * `type_assertion` was in UNWRAP_NODES from the beginning and still did not
+ * work, because being listed as a wrapper only says the node should be seen
+ * through; it says nothing about which side the value is on. The tracer
+ * solemnly evaluated the word `string` and reported the value clean. Found by
+ * ts-only-syntax.ts, which was written to falsify the claim that TypeScript
+ * behaves "identically to JavaScript" - and did, on the first run.
+ */
+const TYPE_FIRST_WRAPPERS = new Set(['cast_expression', 'type_assertion']);
+
+/**
+ * Binary operators whose result can still be attacker-chosen.
+ *
+ * Deliberately a short list. Every operator NOT here - `==`, `<`, `instanceof`,
+ * `-`, `*` - produces a value whose shape the attacker no longer controls, and
+ * carrying taint across those would manufacture flows that do not exist.
+ * Arithmetic is the clearest case: whatever `dirty - 1` is, it is a number, and
+ * a number cannot be a shell command.
+ */
+const BINARY_CARRIERS = new Set([
+  '+', // concatenation in every language here, and addition
+  '%', // Python's old-style format string
+  '.', // PHP concatenation
+  '??', // JS/TS nullish coalescing
+  '||', // returns the left operand when it is truthy
+  '&&', // returns the left operand when it is falsy
+]);
+
 const MEMBER_NODES = new Set([
   'member_expression', // JS/TS   a.b
   'attribute', // Python  a.b
@@ -1170,7 +1213,7 @@ export function traceFile(
        */
       const inner =
         node.childForFieldName('value') ??
-        (node.type === 'cast_expression'
+        (TYPE_FIRST_WRAPPERS.has(node.type)
           ? node.namedChildren.filter((c): c is Node => c !== null).pop() ?? null
           : node.namedChildren.find((c): c is Node => c !== null) ?? null);
       return evaluate(inner, scope, depth + 1);
@@ -1204,9 +1247,36 @@ export function traceFile(
 
     if (node.type === 'binary_expression' || node.type === 'binary_operator') {
       const operator = node.childForFieldName('operator')?.text ?? '';
-      // `.` is PHP's concatenation operator. Every other language here uses
-      // `+`, and `%` is Python's old-style format.
-      if (operator !== '+' && operator !== '%' && operator !== '.') return null;
+      /*
+       * Two different reasons an operator is on this list.
+       *
+       * COMPOSITION - `+`, `%`, `.` - builds a new value that CONTAINS the
+       * operands. `.` is PHP's concatenation operator; every other language
+       * here uses `+`, and `%` is Python's old-style format.
+       *
+       * SELECTION - `??`, `||`, `&&` - builds nothing and RETURNS one of the
+       * operands unchanged. `dirty ?? "fallback"` is `dirty` on every run
+       * where `dirty` exists, which is every run an attacker cares about.
+       *
+       * Selection was missing, and the cost was quiet: the tracer returned
+       * null, the finding fell back to signature-based, and the report said a
+       * pattern had been matched when a path was in fact walkable. Nothing was
+       * hidden - the finding still appeared - but a provable claim was being
+       * reported as a guess, which is the honesty contract failing in the
+       * cautious direction rather than the loud one. Worth fixing for the same
+       * reason the loud direction is: the label is supposed to mean something.
+       *
+       * This is yesterday's Java argument - a null default is not a sanitiser -
+       * arriving in the languages that spell it with an operator instead of an
+       * `if`. It went unnoticed there because JavaScript's version has no
+       * statement to look at.
+       *
+       * The merge below is already right for both kinds. Composition needs the
+       * union of what is dirty and the intersection of what was washed;
+       * selection needs the same answer for a different reason, because either
+       * operand could be the one that comes out.
+       */
+      if (!BINARY_CARRIERS.has(operator)) return null;
       const left = evaluate(node.childForFieldName('left'), scope, depth + 1);
       const right = evaluate(node.childForFieldName('right'), scope, depth + 1);
       const taint = left ?? right;
