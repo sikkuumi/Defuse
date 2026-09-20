@@ -1,60 +1,59 @@
 {
   "scored": 1210,
   "findingsByConfidence": {
-    "flow-verified": 460,
-    "signature-based": 1891
+    "flow-verified": 408,
+    "signature-based": 1961
   },
-  "casesWithBothLabels": 5,
+  "casesWithBothLabels": 6,
   "tiers": [
     {
       "label": "flow-verified only",
-      "tp": 272,
-      "fp": 116,
-      "fn": 372,
-      "tn": 450,
-      "precision": "70.1%",
-      "recall": "42.2%",
-      "decoyFalsePositives": 113,
-      "decoyShare": "97%",
+      "tp": 346,
+      "fp": 3,
+      "fn": 298,
+      "tn": 563,
+      "precision": "99.1%",
+      "recall": "53.7%",
+      "decoyFalsePositives": 0,
+      "decoyShare": "0%",
       "nonDecoyFalsePositives": 3,
       "missedByCategory": {
-        "sqli": 182,
-        "xss": 116,
-        "cmdi": 74
+        "sqli": 149,
+        "cmdi": 61,
+        "xss": 88
       }
     },
     {
       "label": "signature-only",
-      "tp": 303,
-      "fp": 275,
-      "fn": 341,
-      "tn": 291,
-      "precision": "52.4%",
-      "recall": "47.0%",
-      "decoyFalsePositives": 31,
-      "decoyShare": "11%",
-      "nonDecoyFalsePositives": 244,
+      "tp": 260,
+      "fp": 329,
+      "fn": 384,
+      "tn": 237,
+      "precision": "44.1%",
+      "recall": "40.4%",
+      "decoyFalsePositives": 82,
+      "decoyShare": "25%",
+      "nonDecoyFalsePositives": 247,
       "missedByCategory": {
-        "cmdi": 72,
-        "sqli": 91,
-        "xss": 178
+        "cmdi": 76,
+        "sqli": 123,
+        "xss": 185
       }
     },
     {
       "label": "combined (published)",
-      "tp": 575,
-      "fp": 391,
-      "fn": 69,
-      "tn": 175,
-      "precision": "59.5%",
-      "recall": "89.3%",
-      "decoyFalsePositives": 144,
-      "decoyShare": "37%",
-      "nonDecoyFalsePositives": 247,
+      "tp": 606,
+      "fp": 332,
+      "fn": 38,
+      "tn": 234,
+      "precision": "64.6%",
+      "recall": "94.1%",
+      "decoyFalsePositives": 82,
+      "decoyShare": "25%",
+      "nonDecoyFalsePositives": 250,
       "missedByCategory": {
-        "xss": 48,
-        "cmdi": 20,
-        "sqli": 1
+        "xss": 27,
+        "cmdi": 11
       }
     }
   ],

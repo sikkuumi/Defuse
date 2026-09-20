@@ -1,21 +1,20 @@
 {
   "scored": 1210,
-  "tp": 575,
-  "fp": 391,
-  "fn": 69,
-  "tn": 175,
-  "precision": "59.5%",
-  "recall": "89.3%",
+  "tp": 606,
+  "fp": 332,
+  "fn": 38,
+  "tn": 234,
+  "precision": "64.6%",
+  "recall": "94.1%",
   "missedByCategory": {
-    "xss": 48,
-    "cmdi": 20,
-    "sqli": 1
+    "xss": 27,
+    "cmdi": 11
   },
-  "filesParsed": 2740,
+  "filesParsed": 2766,
   "parseErrors": 0,
-  "durationMs": 20243,
-  "decoyFalsePositives": 144,
-  "decoyShare": "37%",
+  "durationMs": 23506,
+  "decoyFalsePositives": 82,
+  "decoyShare": "25%",
   "engineVersion": "0.5.0",
   "measuredAt": "2026-09-20"
 }

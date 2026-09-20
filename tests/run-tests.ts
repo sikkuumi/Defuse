@@ -35,7 +35,8 @@
  * RUN IT WITH:  npm test
  */
 
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scan } from '../src/engine/scan.js';
@@ -1951,6 +1952,164 @@ async function main(): Promise<number> {
       console.log(
         `    ${color.dim('·')} SKIPPED: docs/index.html not built yet - run \`npm run build:site\`.`,
       );
+    }
+  }
+
+
+  /*
+   * A FULLY-QUALIFIED JAVA REFERENCE IS AN EDGE TOO.
+   *
+   * This cannot be a fixture. The fixture directories are flat, and two Java
+   * files in one directory are same-package, which resolves without an import
+   * and so cannot express the bug at all. It needs two packages, so it needs a
+   * tree, so it gets a temporary one.
+   *
+   * What it guards: `new a.b.C(x)` names another file as precisely as an import
+   * does and used to produce no edge, so the call was never followed. That was
+   * every one of the 69 cases the OWASP benchmark scored as a complete miss.
+   * Fixing it took recall from 89.3% to 94.1% with the real false positives
+   * unchanged at three.
+   *
+   * The benchmark would catch a regression here, but only when somebody runs
+   * it against a 2,740-file corpus. This runs in milliseconds, on every commit.
+   */
+  console.log(`\n${color.bold('  Cross-file by qualified name')}`);
+  {
+    const tree = await mkdtemp(path.join(os.tmpdir(), 'defuse-qualified-'));
+    try {
+      await mkdir(path.join(tree, 'app', 'helpers'), { recursive: true });
+      await mkdir(path.join(tree, 'app', 'web'), { recursive: true });
+      await writeFile(
+        path.join(tree, 'app', 'helpers', 'RequestWrapper.java'),
+        [
+          'package app.helpers;',
+          'import javax.servlet.http.HttpServletRequest;',
+          'public class RequestWrapper {',
+          '    private HttpServletRequest request;',
+          '    public RequestWrapper(HttpServletRequest request) { this.request = request; }',
+          '    public String getTheParameter(String p) { return request.getParameter(p); }',
+          '}',
+        ].join('\n'),
+      );
+      // No import line anywhere - the class is named in full, inline.
+      await writeFile(
+        path.join(tree, 'app', 'web', 'Echo.java'),
+        [
+          'package app.web;',
+          'import javax.servlet.http.*;',
+          'public class Echo extends HttpServlet {',
+          '    public void doPost(HttpServletRequest request, HttpServletResponse response)',
+          '            throws Exception {',
+          '        app.helpers.RequestWrapper w = new app.helpers.RequestWrapper(request);',
+          '        String bar = w.getTheParameter("x");',
+          '        response.getWriter().print(bar);',
+          '    }',
+          '}',
+        ].join('\n'),
+      );
+      const crossFile = await scan(tree, {});
+      const traced = crossFile.findings.filter(
+        (f) => f.ruleId === 'xss' && f.confidence === 'flow-verified',
+      );
+      if (traced.length > 0) {
+        passed++;
+        console.log(
+          `    ${color.green(g('tick'))} taint followed into a class named by its full ` +
+            `package path, with no import statement`,
+        );
+      } else {
+        failed++;
+        console.log(
+          `    ${color.red(g('cross'))} a class referenced as \`a.b.C\` built no cross-file ` +
+            `edge - the call was not followed, so the flow is invisible`,
+        );
+      }
+    } finally {
+      await rm(tree, { recursive: true, force: true });
+    }
+  }
+
+  /*
+   * THE CONSTANT FOLDER MUST TERMINATE, AND THE SUITE COULD NOT SAY SO.
+   *
+   * Resolving a name folds whatever it was assigned; folding that can hit
+   * another name. `a = b + 1; b = a + 1` is a loop, and the recursion had
+   * nothing to stop it - the depth cap reset to zero on every hop through a
+   * name, so it could never be reached.
+   *
+   * It survived a green suite, a 1,210-case benchmark and 175 generated
+   * programs, and then fell over on a 10KB file: DVWA ships a packed sha256 as
+   * one 10,417-character line with hundreds of one-letter names assigned from
+   * each other. 1.1MB of source, 7GB of free memory, out of memory anyway.
+   *
+   * WHY NOTHING CAUGHT IT. Fixtures are small and readable on purpose, and
+   * BenchmarkJava's generated cases are about forty lines each - neither
+   * corpus contains code written by a minifier, and a blow-up that needs
+   * hundreds of mutually-defined names in one scope cannot happen in either.
+   * The corpus check found it, which is what a corpus check is for, but a
+   * corpus that has to be cloned first is not a thing CI runs on every commit.
+   *
+   * So the shape comes in here, small enough to keep and nasty enough to hang.
+   * A BUDGET RATHER THAN AN ASSERTION, because the failure is non-termination:
+   * an assertion about the answer never gets to run. If this ever stops
+   * finishing quickly, the answer stopped mattering.
+   */
+  console.log(`\n${color.bold('  Constant folder terminates')}`);
+  {
+    const names = Array.from({ length: 60 }, (_unused, index) => `n${index}`);
+    // Every name defined from the next one, and the last from the first.
+    const cycle = names.map(
+      (name, index) => `  var ${name} = ${names[(index + 1) % names.length]} + 1;`,
+    );
+    const source = [
+      "const db = require('./db');",
+      'function packed(req) {',
+      ...cycle,
+      `  var bar = ${names[0]} > 3 ? 'constant' : req.query.p;`,
+      '  db.query("SELECT * FROM t WHERE x = \'" + bar + "\'");',
+      '}',
+    ].join('\n');
+
+    const tree = await mkdtemp(path.join(os.tmpdir(), 'defuse-folder-'));
+    try {
+      await writeFile(path.join(tree, 'packed.js'), source);
+      const budgetMs = 10_000;
+      const started = Date.now();
+      /*
+       * Caught, because the first thing this failure does is take the runner
+       * down with it. Removing both guards and running this check produced
+       * "Maximum call stack size exceeded" and no result line at all - a
+       * crashed suite rather than a failed check, which reports the wrong
+       * thing in CI and buries which check was running when it happened.
+       */
+      let crashed: string | null = null;
+      try {
+        await scan(tree, {});
+      } catch (error) {
+        crashed = error instanceof Error ? error.message : String(error);
+      }
+      const took = Date.now() - started;
+      if (crashed !== null) {
+        failed++;
+        console.log(
+          `    ${color.red(g('cross'))} ${names.length} mutually-defined names crashed the ` +
+            `scan: ${crashed} - the folder is recursing through the cycle`,
+        );
+      } else if (took < budgetMs) {
+        passed++;
+        console.log(
+          `    ${color.green(g('tick'))} ${names.length} mutually-defined names folded in ` +
+            `${took}ms - a cycle costs nothing, rather than everything`,
+        );
+      } else {
+        failed++;
+        console.log(
+          `    ${color.red(g('cross'))} took ${took}ms for ${names.length} names - the ` +
+            `resolution depth is resetting again, or the cycle guard is not holding`,
+        );
+      }
+    } finally {
+      await rm(tree, { recursive: true, force: true });
     }
   }
 

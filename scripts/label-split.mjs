@@ -31,6 +31,25 @@
  * the label, and reporting it is the point.
  *
  * Usage:  node scripts/label-split.mjs
+ *
+ * SCAN SCOPE: THE WHOLE APPLICATION, NOT JUST testcode/.
+ *
+ * This used to point at src/main/java/org/owasp/benchmark/testcode, and that
+ * was a flaw in this harness rather than a property of the corpus. The test
+ * cases depend on helper classes in a sibling directory - a request wrapped in
+ * `helpers/SeparateClassRequest` is the most common shape in the whole corpus -
+ * and scanning only testcode/ hands the engine a call whose definition it was
+ * never given. No scanner can follow an edge into a file that is not in the
+ * scan, and nobody points a SAST tool at one package of an application.
+ *
+ * Measured both ways on the same engine, so the size of the correction is on
+ * the record rather than folded in quietly:
+ *
+ *     testcode/ only   TP 575  FP 391  FN 69   precision 59.5%  recall 89.3%
+ *     whole tree       TP 606  FP 401  FN 38   precision 60.2%  recall 94.1%
+ *
+ * Both figures moved in the same direction, which is the reassuring case: a
+ * wider scan that had only raised recall would be worth suspecting.
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -60,7 +79,7 @@ let raw;
 try {
   raw = execFileSync(
     'node',
-    [join(root, 'dist/src/cli.js'), 'scan', join(benchmark, 'src/main/java/org/owasp/benchmark/testcode'), '--json'],
+    [join(root, 'dist/src/cli.js'), 'scan', join(benchmark, 'src/main/java/org/owasp/benchmark'), '--json'],
     { encoding: 'utf8', maxBuffer: 1024 * 1024 * 512, stdio: ['ignore', 'pipe', 'ignore'] },
   );
 } catch (error) {

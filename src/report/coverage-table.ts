@@ -260,16 +260,46 @@ export function renderLabelSplit(result: LabelSplitResult): string {
 
     const real = verified.tp + verified.nonDecoyFalsePositives;
     const excl = real === 0 ? 0 : (verified.tp / real) * 100;
-    lines.push(
-      `Of the ${verified.fp} false positives still carrying the green label, ` +
-        `**${verified.decoyFalsePositives} (${verified.decoyShare})** are BenchmarkJava's ` +
-        `constant-branch decoy - a path that genuinely exists inside a branch that cannot ` +
-        `run - leaving **${verified.nonDecoyFalsePositives}** that are ordinary mistakes. ` +
-        `Set the decoys aside and \`flow-verified\` precision is **${excl.toFixed(1)}%**. ` +
-        `Both figures are printed because neither alone is the truth: the first is ` +
-        `contaminated by synthetic traps, the second requires excluding cases, and a ` +
-        `reader deserves to see the size of that choice rather than inherit it.`,
-    );
+
+    /*
+     * TWO SENTENCES, AND WHICH ONE IS TRUE IS NOT OURS TO CHOOSE.
+     *
+     * For a long time the green label carried a large pile of the benchmark's
+     * constant-branch decoys, so the honest thing was to print the headline AND
+     * the decoy-excluded figure, and to say plainly that neither alone was the
+     * truth.
+     *
+     * Then constant-condition evaluation landed and the decoys went to zero.
+     * Keeping the old paragraph would have had the page arguing for a
+     * distinction between two numbers that are now identical - drift caused by
+     * an improvement, which is the sneakiest kind, because nothing failed and
+     * the prose simply stopped being about anything.
+     *
+     * So the branch is derived from the measurement, like every other sentence
+     * in this file. If decoys ever come back, so does the caveat.
+     */
+    if (verified.decoyFalsePositives === 0) {
+      lines.push(
+        `**There is no footnote any more.** Not one of the ${verified.fp} false positives ` +
+          `still carrying the green label is a constant-branch decoy. Until constant ` +
+          `conditions were evaluated, that pile was most of them, and this paragraph had to ` +
+          `print two precision figures and explain why neither alone was the truth. ` +
+          `\`flow-verified\` now reads **${excl.toFixed(1)}%** with nothing set aside and ` +
+          `nothing excluded - ${verified.nonDecoyFalsePositives} ordinary mistakes out of ` +
+          `${verified.tp + verified.fp} claims.`,
+      );
+    } else {
+      lines.push(
+        `Of the ${verified.fp} false positives still carrying the green label, ` +
+          `**${verified.decoyFalsePositives} (${verified.decoyShare})** are BenchmarkJava's ` +
+          `constant-branch decoy - a path that genuinely exists inside a branch that cannot ` +
+          `run - leaving **${verified.nonDecoyFalsePositives}** that are ordinary mistakes. ` +
+          `Set the decoys aside and \`flow-verified\` precision is **${excl.toFixed(1)}%**. ` +
+          `Both figures are printed because neither alone is the truth: the first is ` +
+          `contaminated by synthetic traps, the second requires excluding cases, and a ` +
+          `reader deserves to see the size of that choice rather than inherit it.`,
+      );
+    }
   }
 
   return lines.join('\n');

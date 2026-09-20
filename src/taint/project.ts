@@ -163,7 +163,26 @@ const IMPORT_NODES: Record<LanguageId, readonly string[]> = {
   javascript: ['import_statement', 'call_expression'],
   typescript: ['import_statement', 'call_expression'],
   python: ['import_statement', 'import_from_statement'],
-  java: ['import_declaration'],
+  /*
+   * `scoped_type_identifier` is here because an import statement is not the
+   * only way Java names another file.
+   *
+   *     new org.owasp.benchmark.helpers.SeparateClassRequest(request)
+   *
+   * names a class as precisely as any import does and produces no
+   * import_declaration at all, so the edge was never built and the call was
+   * never followed.
+   *
+   * This was not a corner. It was EVERY ONE of the 69 cases the OWASP
+   * benchmark scored as a complete miss - 48 xss, 20 cmdi, 1 sqli, all of them
+   * a request wrapped in a helper class referenced by its full name. Proven by
+   * adding a single import line to one test case and changing nothing else,
+   * which turned a silent file into a finding.
+   *
+   * A complete miss is the only failure mode that gets somebody hacked, and
+   * this one was a hundred percent of ours.
+   */
+  java: ['import_declaration', 'scoped_type_identifier'],
   go: [],
   // PHP's require/include are function-like statements, and Composer autoloading
   // resolves classes with no import line at all. Cross-file tracing in PHP is
@@ -199,11 +218,39 @@ export function importSpecifiers(root: Node, language: LanguageId): string[] {
   if (wanted.size === 0) return [];
   const specifiers: string[] = [];
 
+  /*
+   * Six levels is enough for every language whose edges are declarations at
+   * the top of the file. Java's are not: a fully-qualified type reference sits
+   * inside a method body, which is twenty-odd levels down, so the walk stopped
+   * short of the very thing it needed to see.
+   *
+   * 48 is past any hand-written nesting and still far under the tracer's own
+   * MAX_AST_DEPTH of 400, and it applies only to Java - nothing else pays for
+   * it.
+   */
+  const maxDepth = language === 'java' ? 48 : 6;
+
   const visit = (node: Node, depth: number): void => {
-    if (depth > 6) return; // imports live near the top; no need to walk bodies
+    if (depth > maxDepth) return;
 
     if (wanted.has(node.type)) {
-      if (node.type === 'call_expression') {
+      if (node.type === 'scoped_type_identifier') {
+        /*
+         * `a.b.C` parses as scoped_type_identifier nested inside
+         * scoped_type_identifier: the whole name, then `a.b`, then `a`. Only
+         * the outermost is the class being named; the inner ones are package
+         * fragments and would each try to resolve as a class of their own.
+         *
+         * The resolver below already requires exactly one file to match the
+         * final segment, so a fragment that matches nothing is harmless and a
+         * name that matches two files is declined rather than guessed. This
+         * check is about not asking the question, rather than about surviving
+         * the answer.
+         */
+        if (node.parent?.type !== 'scoped_type_identifier') {
+          specifiers.push((node.text ?? '').trim());
+        }
+      } else if (node.type === 'call_expression') {
         // require('./db') - only when the callee really is `require`.
         const callee = node.childForFieldName('function');
         if (callee?.text === 'require') {
