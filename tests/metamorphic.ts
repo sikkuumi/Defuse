@@ -30,8 +30,17 @@
  *   WRONG-KIND        must STILL be flow-verified. An HTML escaper does not make
  *                     a value safe for SQL, and a scanner that thinks otherwise
  *                     is the dangerous kind of wrong.
- *   PAST DEPTH LIMIT  must NOT be flow-verified. The limit is documented; this
- *                     checks the documentation is true.
+ *   PAST DEPTH LIMIT  must be flow-verified WITH THE STOP NAMED in its path, and
+ *                     a chain inside the limit must name no stop. The limit is
+ *                     documented; this checks it is real and that it is visible.
+ *
+ *                     This relation used to say "must NOT be flow-verified", and
+ *                     that was the bug, written down as a requirement. Not
+ *                     following a call is not evidence the value was cleaned -
+ *                     treating it as such is what cost BenchmarkJava 38 real
+ *                     vulnerabilities. The stop now carries the value on as a
+ *                     named assumption, the same way a call into a function we
+ *                     cannot read always has.
  *
  * Run with: npm run metamorphic
  */
@@ -48,6 +57,8 @@ interface Case {
   readonly files: readonly { path: string; source: string }[];
   readonly expect: 'flow-verified' | 'retracted' | 'not-verified';
   readonly kind: Kind;
+  /** Depth cases only: must the flow's path say it was cut at the depth limit? */
+  readonly expectDepthStop?: boolean;
 }
 
 /* ------------------------------------------------------------------ python */
@@ -148,8 +159,10 @@ function jsCase(kind: Kind, steps: number, guard: Guard): Case {
 
 /**
  * Genuinely NESTED calls, not a sequence of them. `MAX_CALL_DEPTH` is 4, and the
- * capability block says chains deeper than that are not followed - so at depth 6
- * the flow must NOT come back verified. If it does, the limit is a fiction.
+ * capability block says chains deeper than that are not followed - so past it
+ * the path must SAY the chain was cut, and inside it the path must not. If a deep
+ * chain names no cut, the limit is a fiction; if a shallow one does, it fires
+ * too early. Either way the value itself must arrive: a cut is not a sanitiser.
  */
 function depthCase(depth: number): Case {
   const lines = ['import sqlite3', 'from flask import request', ''];
@@ -161,8 +174,9 @@ function depthCase(depth: number): Case {
   return {
     name: `py/depth=${depth}`,
     files: [{ path: `gen_depth_${depth}.py`, source: lines.join('\n') + '\n' }],
-    expect: depth <= 4 ? 'flow-verified' : 'not-verified',
+    expect: 'flow-verified',
     kind: 'sql',
+    expectDepthStop: depth > 4,
   };
 }
 
@@ -201,8 +215,20 @@ async function main(): Promise<number> {
     );
     const retracted = result.verifiedClean.some((c) => c.ruleId === rule);
 
-    const got = verified ? 'flow-verified' : retracted ? 'retracted' : 'not-verified';
-    const ok = got === testCase.expect;
+    const base = verified ? 'flow-verified' : retracted ? 'retracted' : 'not-verified';
+    let got: string = base;
+    let want: string = testCase.expect;
+    if (testCase.expectDepthStop !== undefined) {
+      const stopNamed = result.findings.some(
+        (f) =>
+          f.ruleId === rule &&
+          f.confidence === 'flow-verified' &&
+          (f.flowPath ?? []).some((step) => /reached its depth limit/.test(step.description)),
+      );
+      if (verified) got = stopNamed ? 'flow-verified, cut named' : 'flow-verified, no cut named';
+      want = testCase.expectDepthStop ? 'flow-verified, cut named' : 'flow-verified, no cut named';
+    }
+    const ok = got === want;
 
     const relation = testCase.name.includes('depth=')
       ? 'depth limit'
@@ -211,7 +237,7 @@ async function main(): Promise<number> {
     tally[ok ? 'pass' : 'fail'] += 1;
     byRelation.set(relation, tally);
 
-    if (!ok) failures.push({ name: testCase.name, want: testCase.expect, got });
+    if (!ok) failures.push({ name: testCase.name, want, got });
   }
 
   for (const [relation, tally] of [...byRelation.entries()].sort()) {

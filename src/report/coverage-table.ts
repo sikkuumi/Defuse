@@ -145,13 +145,33 @@ export function renderBenchmark(result: BenchmarkResult): string {
   const precisionIsWeaker = result.fp > result.fn;
   const ratio = (Math.max(result.fp, result.fn) / Math.max(1, Math.min(result.fp, result.fn)))
     .toFixed(1);
-  const headline = precisionIsWeaker
-    ? `**Precision is the weaker side.** ${result.fp} false positives against ` +
-      `${result.fn} false negatives - ${ratio}x as many - so the cost of this engine ` +
-      `is triage time, not missed bugs.`
-    : `**Recall is the weaker side.** ${result.fn} false negatives against ` +
-      `${result.fp} false positives - ${ratio}x as many - so the cost of this engine ` +
-      `is missed bugs, not triage time.`;
+  /*
+   * A ZERO IS NOT A RATIO. When the hunt for BenchmarkJava's 38 misses took
+   * false negatives to 0, this sentence printed "271 false positives against 0
+   * false negatives - 271.0x as many": arithmetic on a divide-by-one guard,
+   * dressed up as a measurement. A zero is said in words, and so is its limit:
+   * no misses HERE is a fact about these 1,210 test cases, not about your code.
+   */
+  const scope =
+    'That is a statement about these scored test cases, not about code in general - ' +
+    'the limitations list is where the misses this benchmark cannot show are written down.';
+  const headline =
+    result.fn === 0 && result.fp > 0
+      ? `**Precision is the weak side.** ${result.fp} false positives and no false ` +
+        `negatives, so on this benchmark the cost of this engine is triage time, not ` +
+        `missed bugs. ${scope}`
+      : result.fp === 0 && result.fn > 0
+        ? `**Recall is the weak side.** ${result.fn} false negatives and no false ` +
+          `positives, so on this benchmark the cost of this engine is missed bugs, not ` +
+          `triage time. ${scope}`
+        : precisionIsWeaker
+          ? `**Precision is the weaker side.** ${result.fp} false positives against ` +
+            `${result.fn} false negatives - ${ratio}x as many - so the cost of this engine ` +
+            `is triage time, not missed bugs.`
+          : `**Recall is the weaker side.** ${result.fn} false negatives against ` +
+            `${result.fp} false positives - ${ratio}x as many - so the cost of this engine ` +
+            `is missed bugs, not triage time.`;
+  const missed = Object.entries(result.missedByCategory);
 
   return [
     '| | cases | TP | FP | FN | TN | precision | recall |',
@@ -165,11 +185,10 @@ export function renderBenchmark(result: BenchmarkResult): string {
     '',
     headline,
     '',
-    `Missed by category: ` +
-      Object.entries(result.missedByCategory)
-        .map(([k, v]) => `${k} ${v}`)
-        .join(', ') +
-      `. Of the ${result.fp} false positives, **${result.decoyFalsePositives} ` +
+    (missed.length > 0
+      ? `Missed by category: ${missed.map(([k, v]) => `${k} ${v}`).join(', ')}. `
+      : 'Nothing was missed in the scored categories. ') +
+      `Of the ${result.fp} false positives, **${result.decoyFalsePositives} ` +
       `(${result.decoyShare})** carry BenchmarkJava's constant-branch decoy - the ` +
       `\`if ((7 * 42) - num > 200)\` shape that needs constant folding plus branch ` +
       `feasibility to see through, which the limitations list says this engine does ` +

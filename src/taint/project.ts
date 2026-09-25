@@ -64,6 +64,9 @@ import { collectFunctions, type CrossFileResolver } from './tracer.js';
 export interface IndexedFunction {
   readonly name: string;
   readonly params: readonly string[];
+  /** The argument range the function accepts - see LocalFunction.minArgs. */
+  readonly minArgs?: number | undefined;
+  readonly maxArgs?: number | undefined;
   readonly bodyStart: number;
   readonly bodyEnd: number;
   readonly bodyType: string;
@@ -92,6 +95,8 @@ export function indexFunctions(
     indexed.set(name, {
       name: fn.name,
       params: fn.params,
+      minArgs: fn.minArgs,
+      maxArgs: fn.maxArgs,
       bodyStart: fn.body.startIndex,
       bodyEnd: fn.body.endIndex,
       bodyType: fn.body.type,
@@ -480,7 +485,10 @@ export function buildProjectIndex(
       }
 
       resolved++;
-      return { path: winner.path, fn: { name: indexed.name, params: indexed.params, body } };
+      return {
+        path: winner.path,
+        fn: { name: indexed.name, params: indexed.params, minArgs: indexed.minArgs, maxArgs: indexed.maxArgs, body },
+      };
     },
 
     noteAmbiguous() {

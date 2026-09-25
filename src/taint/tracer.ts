@@ -20,7 +20,10 @@
  *      functions in another file when a relative import resolves to it. What
  *      still ends a trace: a call into a third-party package, a dynamic or
  *      aliased import, a name several modules define (we decline rather than
- *      guess), and any chain deeper than four calls.
+ *      guess), and any chain deeper than four calls. A cut at that depth, or at
+ *      a call that looks recursive, does NOT end the value: it is carried past
+ *      the unread call exactly as in 3 below, with the reason for the stop
+ *      written into the path.
  *
  *   2. STATEMENT ORDER, NOT BRANCH LOGIC. We read lines in order and ignore
  *      whether an `if` is true. So a value cleaned only inside `if (isAdmin)`
@@ -896,9 +899,126 @@ export interface LocalFunction {
   readonly name: string;
   readonly params: readonly string[];
   readonly body: Node;
+  /**
+   * How many arguments a call to this function may pass: fewer than minArgs or
+   * more than maxArgs and it cannot be this function. Recorded at indexing
+   * time, while the tree is hot - a cross-file target's tree may be evicted by
+   * the time a call to it is resolved. See ARITY_ENFORCED.
+   */
+  readonly minArgs?: number | undefined;
+  readonly maxArgs?: number | undefined;
 }
 
+/*
+ * A parameter that makes the argument count flexible: a default value, or a
+ * variadic tail. Matched on node type across the grammars, because each spells
+ * both differently - spread_parameter (Java), variadic_parameter_declaration
+ * (Go), variadic_parameter / optional_parameter_declaration (C, C++),
+ * default_parameter / list_splat_pattern (Python), rest_pattern /
+ * assignment_pattern / optional_parameter (JS, TS).
+ */
+const VARIADIC_PARAMETER = /spread|variadic|splat|rest_pattern|rest_parameter/;
+const DEFAULTED_PARAMETER = /default|optional|assignment_pattern/;
+
+function argumentRange(fnNode: Node): { minArgs: number; maxArgs: number } {
+  const list = parameterListOf(fnNode);
+  if (!list) return { minArgs: 0, maxArgs: Infinity };
+  const params = list.namedChildren.filter((c): c is Node => c !== null && c.type !== 'comment');
+  // C's `f(void)` is a list holding one parameter that means "none".
+  if (params.length === 1 && (params[0]?.text ?? '').trim() === 'void') return { minArgs: 0, maxArgs: 0 };
+  let min = 0;
+  let max = 0;
+  for (const p of params) {
+    if (VARIADIC_PARAMETER.test(p.type) || (p.text ?? '').includes('...')) return { minArgs: min, maxArgs: Infinity };
+    max++;
+    if (!DEFAULTED_PARAMETER.test(p.type)) min++;
+  }
+  return { minArgs: min, maxArgs: max };
+}
+
+/*
+ * A declaration with no body is not somewhere a value can go.
+ *
+ * An interface method, an abstract method, a signature: the tracer indexed them
+ * like functions, and the index keeps the FIRST definition of a name. So when a
+ * Java interface sat above its implementation - the normal way round - calls
+ * resolved to `String clean(String s);`, found nothing inside, and the value
+ * vanished. Swap the two declarations and the same call was flow-verified.
+ * DeclarationOrder.java is that case.
+ */
+const BODYLESS_DECLARATION = /declaration|definition|signature/;
+
 const FUNCTION_TYPES_BY_LANGUAGE = FUNCTION_NODES;
+
+/** Languages where calling with the wrong number of arguments cannot compile. */
+const ARITY_ENFORCED = new Set<LanguageId>(['java', 'go', 'c', 'cpp']);
+
+/** `org.acme.Thing<String>[]` -> `Thing`. */
+function simpleTypeName(raw: string): string {
+  return raw.replace(/<[^>]*>/g, '').replace(/\[\]/g, '').trim().split('.').pop() ?? '';
+}
+
+/**
+ * The declared type of a Java call's receiver, when it is written down nearby:
+ * `new X(...).m()`, or a local variable / parameter / field declared in the
+ * enclosing method or class. Anything else - `this`, a chain, a static class
+ * reference, `var` - returns null, and the call is resolved exactly as before.
+ */
+function javaReceiverType(call: Node): string | null {
+  if (call.type !== 'method_invocation') return null;
+  const receiver = call.childForFieldName('object');
+  if (!receiver) return null;
+  if (receiver.type === 'object_creation_expression') {
+    return simpleTypeName(receiver.childForFieldName('type')?.text ?? '') || null;
+  }
+  if (receiver.type !== 'identifier') return null;
+  const name = receiver.text ?? '';
+
+  const types = new Set<string>();
+  const collect = (scope: Node | null, stopAtNested: boolean): void => {
+    if (!scope) return;
+    const visit = (n: Node): void => {
+      if (n.type === 'formal_parameter' && n.childForFieldName('name')?.text === name) {
+        types.add(simpleTypeName(n.childForFieldName('type')?.text ?? ''));
+      }
+      if (n.type === 'local_variable_declaration' || n.type === 'field_declaration') {
+        for (const d of n.namedChildren) {
+          if (d?.type === 'variable_declarator' && d.childForFieldName('name')?.text === name) {
+            types.add(simpleTypeName(n.childForFieldName('type')?.text ?? ''));
+          }
+        }
+      }
+      for (const child of n.namedChildren) {
+        if (!child) continue;
+        if (stopAtNested && /^(method|constructor)_declaration$|^class_body$/.test(child.type)) continue;
+        visit(child);
+      }
+    };
+    visit(scope);
+  };
+
+  let method: Node | null = call.parent;
+  while (method && !/^(method|constructor)_declaration$|^lambda_expression$/.test(method.type)) {
+    method = method.parent;
+  }
+  collect(method, false);
+  if (types.size === 0) {
+    // A field of the enclosing class: search the class body, not other methods.
+    let klass: Node | null = method?.parent ?? null;
+    while (klass && klass.type !== 'class_body') klass = klass.parent;
+    collect(klass, true);
+  }
+  types.delete('');
+  if (types.size !== 1 || types.has('var')) return null;
+  return [...types][0] ?? null;
+}
+
+/** The class, interface, enum or record a function body is declared in. */
+function declaringTypeOf(fn: LocalFunction): string | null {
+  let n: Node | null = fn.body.parent;
+  while (n && !/^(class|interface|enum|record)_declaration$/.test(n.type)) n = n.parent;
+  return n?.childForFieldName('name')?.text ?? null;
+}
 
 /**
  * Index every function in a tree by name. Exported because the cross-file
@@ -912,8 +1032,10 @@ export function collectFunctions(root: Node, language: LanguageId): Map<string, 
 
   const register = (name: string, fnNode: Node): void => {
     if (!name || found.has(name)) return;
-    const body = fnNode.childForFieldName('body') ?? fnNode;
-    found.set(name, { name, params: parameterNames(fnNode), body });
+    const bodyNode = fnNode.childForFieldName('body');
+    if (!bodyNode && BODYLESS_DECLARATION.test(fnNode.type)) return; // see BODYLESS_DECLARATION
+    const body = bodyNode ?? fnNode;
+    found.set(name, { name, params: parameterNames(fnNode), body, ...argumentRange(fnNode) });
   };
 
   const visit = (node: Node): void => {
@@ -1068,6 +1190,15 @@ export function traceFile(
   const seenDepth = new Set<string>();
   const seenRecursion = new Set<string>();
   const seenUnmodelled = new Set<string>();
+  /**
+   * A call's receiver type, per call site. Working it out means walking the
+   * enclosing method for the receiver's declaration, and the same call is
+   * evaluated once per taint shape that reaches it - done eagerly for every
+   * call, that walk made a BenchmarkJava scan 65% slower (40s to 67s). Keyed by
+   * file and span rather than node id, because a node id is a memory address
+   * and can be reused once a tree is evicted from the budget.
+   */
+  const receiverTypes = new Map<string, string | null>();
   /** Sites where the syntax tree was deeper than MAX_AST_DEPTH. */
   const seenDeepAst = new Set<string>();
   const siteOf = (n: Node, filePath: string) => `${filePath}#${n.id}`;
@@ -1150,7 +1281,10 @@ export function traceFile(
     node: Node,
     scope: Scope,
     depth: number,
-  ) => { handled: boolean; taint: Taint | null } = () => ({ handled: false, taint: null });
+  ) => { handled: boolean; taint: Taint | null; stopped?: 'depth' | 'recursion' } = () => ({
+    handled: false,
+    taint: null,
+  });
 
   const step = (
     kind: FlowStep['kind'],
@@ -1550,6 +1684,7 @@ export function traceFile(
      * reported as a vulnerability.                                          */
     const descended = descendIntoLocalCall(node, scope, depth);
     if (descended.handled) return descended.taint;
+    const stoppedAt = descended.stopped;
 
     /* ---- A function we do not model. The hardest judgement call here. ----
      *
@@ -1599,18 +1734,24 @@ export function traceFile(
       if (!compartment.includes(name)) return null;
       compartment = undefined;
     }
-    seenUnmodelled.add(siteOf(node, scope.filePath));
+    // A stop is already counted where it happened (depth / recursion).
+    if (!stoppedAt) seenUnmodelled.add(siteOf(node, scope.filePath));
+
+    const hopText =
+      stoppedAt === 'depth'
+        ? `passed through \`${name}()\`, which we did NOT follow: the call chain reached ` +
+          `its depth limit here. We assume it preserves the value; if it actually ` +
+          `sanitises, this trace is wrong`
+        : stoppedAt === 'recursion'
+          ? `passed through \`${name}()\`, which resolves by name to a function already ` +
+            `being followed on this path - a recursive call, or a same-named method on ` +
+            `another object. We did NOT follow it again and assume it preserves the value; ` +
+            `if it actually sanitises, this trace is wrong`
+          : `passed through \`${name}()\`, which is NOT in our dictionary - we assume it ` +
+            `preserves the value; if it actually sanitises, this trace is wrong`;
 
     return {
-      steps: [
-        ...carried.steps,
-        step(
-          'propagation',
-          node,
-          `passed through \`${name}()\`, which is NOT in our dictionary - we assume it ` +
-            `preserves the value; if it actually sanitises, this trace is wrong`,
-        ),
-      ],
+      steps: [...carried.steps, step('propagation', node, hopText)],
       sanitizedFor: carried.sanitizedFor,
       origin: carried.origin,
       unknownHops: [...carried.unknownHops, name],
@@ -2538,7 +2679,7 @@ export function traceFile(
     node: Node,
     scope: Scope,
     depth: number,
-  ): { handled: boolean; taint: Taint | null } => {
+  ): { handled: boolean; taint: Taint | null; stopped?: 'depth' | 'recursion' } => {
     const { text: calleeText } = calleeOf(node);
     const calleeName = lastSegment(calleeText);
 
@@ -2578,27 +2719,101 @@ export function traceFile(
      * three modules export `sanitize`, it says nothing and records that it
      * declined, which is printed in the report. Picking one at random would be
      * how a scanner ends up proving a path that does not exist.               */
+    /*
+     * A NAME IS NOT ENOUGH WHERE THE LANGUAGE COUNTS ARGUMENTS.
+     *
+     * Calls are resolved by name, and in BenchmarkJava that name was
+     * `doSomething` - which every test file declares. So a one-argument
+     * `thing.doSomething(param)` resolved to the file's own two-parameter
+     * `doSomething(request, param)`, the tainted value was bound to `request`,
+     * `param` arrived empty, and the flow vanished. In Java, Go and the C family
+     * a one-argument call cannot run a two-parameter function; the count rules
+     * it out. Python, JavaScript and PHP accept the wrong count, so there it
+     * proves nothing and is not used.
+     *
+     * A local function the call cannot reach is set aside and the project index
+     * asked instead, exactly as if the name had not been found here.
+     */
+    const argCount = argumentsOf(node).length;
+    // Only asked for when a same-named target actually exists - most calls
+    // (println, getParameter) have none, and never pay for the lookup.
+    const receiverTypeOfCall = (): string | null => {
+      const key = `${scope.filePath}\0${node.startIndex}:${node.endIndex}`;
+      if (!receiverTypes.has(key)) receiverTypes.set(key, javaReceiverType(node));
+      return receiverTypes.get(key) ?? null;
+    };
+    const reachable = (fn: LocalFunction): boolean => {
+      if (
+        ARITY_ENFORCED.has(language) &&
+        fn.minArgs !== undefined &&
+        (argCount < fn.minArgs || argCount > (fn.maxArgs ?? Infinity))
+      ) {
+        return false;
+      }
+      /*
+       * A CALL ON A `Fragment` CAN ONLY RUN A `Fragment` METHOD.
+       *
+       * Across files in one package, the index answers whenever exactly one
+       * file declares the name - so `f.renderFragment(param)`, with `f`
+       * declared as an interface, was followed into an unrelated class that
+       * shared the method name and returned a constant. The flow came back
+       * clean. ReceiverTypeCaller.java is that case; SameNameDelegate.java
+       * found it by accident, passing alone and failing beside a fixture that
+       * declared its own doSomething.
+       *
+       * Java writes the receiver's type down, so a target declared in some
+       * other type is ruled out. An interface-typed receiver therefore reaches
+       * no body at all - which is correct: which implementation runs is a
+       * runtime fact, and the value is carried with that assumption named.
+       */
+      if (language === 'java') {
+        const declaring = declaringTypeOf(fn);
+        const receiverType = declaring ? receiverTypeOfCall() : null;
+        if (declaring && receiverType && declaring !== receiverType) return false;
+      }
+      return true;
+    };
+
     let local = localFunctions.get(calleeName);
+    if (local && !reachable(local)) local = undefined;
     let targetPath = scope.filePath;
     if (!local && resolver) {
       const resolved = resolver.resolve(scope.filePath, calleeName);
-      if (resolved) {
+      if (resolved && reachable(resolved.fn)) {
         local = resolved.fn;
         targetPath = resolved.path;
       }
     }
     if (!local) return { handled: false, taint: null };
 
-    // Guards. Both are recorded as misses, never as invented answers.
-    // The key includes the file, because two modules may both define `handle`.
+    /*
+     * THE TWO STOPS, AND WHAT A STOP IS ALLOWED TO CONCLUDE.
+     *
+     * "Both are recorded as misses, never as invented answers" - that is what
+     * this comment used to say, above two lines that returned `taint: null`.
+     * No taint IS an answer: it is "this value is clean", and it is the
+     * dangerous one. Every flow that reached a stop was silently cut, and the
+     * only trace of it was a counter.
+     *
+     * It cost all 38 of BenchmarkJava's missed vulnerabilities (a helper named
+     * doSomething calling thing.doSomething, taken for a call to itself), and it
+     * costs every delegating method - `run` forwarding to `self.engine.run` -
+     * and every call chain deeper than MAX_CALL_DEPTH, in every language.
+     *
+     * A stop now hands the call back as NOT HANDLED, which sends it to the
+     * branch this file already has for a function it cannot read: the value
+     * keeps its taint, and the path says, at that hop, that the trace stopped
+     * following and why. The assumption is made in the open, where a reader can
+     * check it - which is what the old comment promised and the code did not do.
+     */
     const stackKey = `${targetPath}::${local.name}`;
     if (callStack.length >= MAX_CALL_DEPTH) {
       seenDepth.add(siteOf(node, scope.filePath));
-      return { handled: true, taint: null };
+      return { handled: false, taint: null, stopped: 'depth' };
     }
     if (callStack.includes(stackKey)) {
       seenRecursion.add(siteOf(node, scope.filePath));
-      return { handled: true, taint: null };
+      return { handled: false, taint: null, stopped: 'recursion' };
     }
 
     // Which arguments are dirty, and what is their history so far?

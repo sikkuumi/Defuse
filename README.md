@@ -44,15 +44,15 @@ inside a single finding.
 <!-- derived:label-split -->
 | tier | TP | FP | FN | precision | recall | FPs that are decoys |
 |---|--:|--:|--:|--:|--:|--:|
-| `flow-verified only` | 346 | 3 | 298 | **99.1%** | 53.7% | 0 (0%) |
-| `signature-only` | 260 | 268 | 384 | **49.2%** | 40.4% | 21 (8%) |
-| `combined (published)` | 606 | 271 | 38 | **69.1%** | 94.1% | 21 (8%) |
+| `flow-verified only` | 401 | 3 | 243 | **99.3%** | 62.3% | 0 (0%) |
+| `signature-only` | 243 | 268 | 401 | **47.6%** | 37.7% | 21 (8%) |
+| `combined (published)` | 644 | 271 | 0 | **70.4%** | 100.0% | 21 (8%) |
 
-408 `flow-verified`, 1900 `signature-based` findings, on engine 0.5.0 (2026-09-25).
+470 `flow-verified`, 1816 `signature-based` findings, on engine 0.5.0 (2026-09-25).
 
-**The green label is worth 49.9 points.** `flow-verified` runs 99.1% against `signature-based` at 49.2%. The gap is the whole claim this tool makes; it is measured here rather than asserted.
+**The green label is worth 51.7 points.** `flow-verified` runs 99.3% against `signature-based` at 47.6%. The gap is the whole claim this tool makes; it is measured here rather than asserted.
 
-**There is no footnote any more.** Not one of the 3 false positives still carrying the green label is a constant-branch decoy. Until constant conditions were evaluated, that pile was most of them, and this paragraph had to print two precision figures and explain why neither alone was the truth. `flow-verified` now reads **99.1%** with nothing set aside and nothing excluded - 3 ordinary mistakes out of 349 claims.
+**There is no footnote any more.** Not one of the 3 false positives still carrying the green label is a constant-branch decoy. Until constant conditions were evaluated, that pile was most of them, and this paragraph had to print two precision figures and explain why neither alone was the truth. `flow-verified` now reads **99.3%** with nothing set aside and nothing excluded - 3 ordinary mistakes out of 404 claims.
 <!-- /derived -->
 
 <!-- derived:counts -->
@@ -269,6 +269,16 @@ WHERE THIS SCAN STOPPED EARLY
 
 A comment in `tracer.ts` used to claim these were "recorded as misses". They were
 not — they returned `null` and vanished. Now the claim is true.
+
+**That last sentence was only half true, and is left here rather than deleted.**
+The stops were now *counted*, but at the stop the tracer still answered "no
+taint" — which is the answer "this value is clean". All 38 vulnerabilities
+Defuse missed on BenchmarkJava came from that one answer: a helper named
+`doSomething()` calling `thing.doSomething()` on a different object. Calls are
+resolved by name, so the tracer took it for recursion, stopped, and declared the
+value clean. A stop now carries the value on as a named assumption instead
+(`stopped-trace.py`, `SameNameDelegate.java`), and recall on BenchmarkJava went
+from 94.1% to 100% with no new false positives.
 
 ## Readable and operable
 
@@ -507,7 +517,10 @@ db.query("SELECT * FROM users WHERE name = '" + name + "'");   // flow-verified
 ```
 
 Three guards keep it terminating and honest: a depth limit of four calls, a
-cycle guard so recursion cannot loop, and a per-call-site cache. Imports are
+cycle guard so recursion cannot loop, and a per-call-site cache. When either of
+the first two stops the tracer, the value is carried past the unread call as a
+named assumption — it is never declared clean because the tracer stopped
+reading. Imports are
 *not* resolved at this level — a helper in another module still ends the trace.
 That is what the import graph in the next section is for.
 
@@ -663,7 +676,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 429 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 440 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.
@@ -806,13 +819,13 @@ an exam with an answer key, so here is the exam result, unedited:
 <!-- derived:benchmark -->
 | | cases | TP | FP | FN | TN | precision | recall |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| **overall** | **1210** | **606** | **271** | **38** | **295** | **69.1%** | **94.1%** |
+| **overall** | **1210** | **644** | **271** | **0** | **295** | **70.4%** | **100.0%** |
 
-2766 files, 0 parse errors, 38.8 seconds, on engine 0.5.0 (2026-09-25).
+2766 files, 0 parse errors, 39.0 seconds, on engine 0.5.0 (2026-09-25).
 
-**Precision is the weaker side.** 271 false positives against 38 false negatives - 7.1x as many - so the cost of this engine is triage time, not missed bugs.
+**Precision is the weak side.** 271 false positives and no false negatives, so on this benchmark the cost of this engine is triage time, not missed bugs. That is a statement about these scored test cases, not about code in general - the limitations list is where the misses this benchmark cannot show are written down.
 
-Missed by category: xss 27, cmdi 11. Of the 271 false positives, **21 (8%)** carry BenchmarkJava's constant-branch decoy - the `if ((7 * 42) - num > 200)` shape that needs constant folding plus branch feasibility to see through, which the limitations list says this engine does not do. The remainder are ours.
+Nothing was missed in the scored categories. Of the 271 false positives, **21 (8%)** carry BenchmarkJava's constant-branch decoy - the `if ((7 * 42) - num > 200)` shape that needs constant folding plus branch feasibility to see through, which the limitations list says this engine does not do. The remainder are ours.
 
 Every number above is generated by `npm run benchmark` into
 `docs/benchmark-result.json` - including the sentence naming the weaker side,
@@ -894,7 +907,11 @@ their correctly parameterised query was a critical vulnerability.
 Stated here, in the code, and in every scan report:
 
 - **Only files inside the scan.** A call into `node_modules`, a JAR or a
-  vendored package ends the trace. Call chains deeper than four also stop.
+  vendored package ends the trace. Call chains deeper than four are not
+  followed: the value is carried past the cut and the finding says so.
+- **Calls are resolved by name.** Java, Go, C and C++ also check the number of
+  arguments, and Java checks the receiver's declared type. Elsewhere, two
+  same-named functions can be confused.
 - **Ambiguous names are not guessed.** When several files in scope define the
   same function name, the trace stops and the decline is counted.
 - **Re-exports, dynamic imports and build-tool path aliases** (tsconfig `paths`,

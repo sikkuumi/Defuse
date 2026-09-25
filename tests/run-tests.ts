@@ -446,7 +446,16 @@ async function main(): Promise<number> {
   const mismatched = flowFindings.filter((f) => {
     const inPath = new Set(
       (f.flowPath ?? [])
-        .map((step) => /passed through `([^`]+)\(\)`, which is NOT in our dictionary/.exec(step.description)?.[1])
+        // Three wordings, one assumption: a function we cannot read, one the
+        // trace stopped following at the depth limit, and one it stopped
+        // re-entering. All three say "we assume it preserves the value", and all
+        // three must be on the finding as a field, not only in the prose.
+        .map(
+          (step) =>
+            /passed through `([^`]+)\(\)`, which (?:is NOT in our dictionary|we did NOT follow|resolves by name to a function already being followed)/.exec(
+              step.description,
+            )?.[1],
+        )
         .filter((name): name is string => Boolean(name)),
     );
     const declared = new Set(f.unmodelledHops);
