@@ -23,14 +23,14 @@ function ternaryAlwaysTrue(req) {
   const param = req.query.p;
   const num = 106;
   const bar = (7 * 18) + num > 200 ? 'constant' : param;
-  // EXPECT-SIGNATURE sql-injection
+  // EXPECT-CLEAN sql-injection
   db.query("SELECT * FROM t WHERE x = '" + bar + "'");
 }
 
 function ternaryAlwaysFalse(req) {
   const param = req.query.p;
   const bar = 1 > 2 ? param : 'constant';
-  // EXPECT-SIGNATURE sql-injection
+  // EXPECT-CLEAN sql-injection
   db.query("SELECT * FROM t WHERE x = '" + bar + "'");
 }
 
@@ -43,7 +43,7 @@ function ifElseDeadArm(req) {
   } else {
     bar = param;
   }
-  // EXPECT-SIGNATURE sql-injection
+  // EXPECT-CLEAN sql-injection
   db.query("SELECT * FROM t WHERE x = '" + bar + "'");
 }
 
@@ -52,7 +52,7 @@ function neverTaken(req) {
   if (false) {
     bar = req.query.p;
   }
-  // EXPECT-SIGNATURE sql-injection
+  // EXPECT-CLEAN sql-injection
   db.query("SELECT * FROM t WHERE x = '" + bar + "'");
 }
 

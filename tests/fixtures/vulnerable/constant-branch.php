@@ -29,14 +29,14 @@ function ternary_always_true($conn): void {
     $param = $_GET['p'];
     $num = 106;
     $bar = (7 * 18) + $num > 200 ? "constant" : $param;
-    // EXPECT-SIGNATURE sql-injection
+    // EXPECT-CLEAN sql-injection
     $conn->query("SELECT * FROM t WHERE x = '" . $bar . "'");
 }
 
 function ternary_always_false($conn): void {
     $param = $_GET['p'];
     $bar = 1 > 2 ? $param : "constant";
-    // EXPECT-SIGNATURE sql-injection
+    // EXPECT-CLEAN sql-injection
     $conn->query("SELECT * FROM t WHERE x = '" . $bar . "'");
 }
 
@@ -57,7 +57,7 @@ function ternary_always_false($conn): void {
 function ternary_always_true_no_variable($conn): void {
     $param = $_GET['p'];
     $bar = 1 < 2 ? "constant" : $param;
-    // EXPECT-SIGNATURE sql-injection
+    // EXPECT-CLEAN sql-injection
     $conn->query("SELECT * FROM t WHERE x = '" . $bar . "'");
 }
 
@@ -71,7 +71,7 @@ function if_else_dead_else($conn): void {
     } else {
         $bar = $param;
     }
-    // EXPECT-SIGNATURE sql-injection
+    // EXPECT-CLEAN sql-injection
     $conn->query("SELECT * FROM t WHERE x = '" . $bar . "'");
 }
 
@@ -84,7 +84,7 @@ function if_else_dead_then($conn): void {
     } else {
         $bar = "constant";
     }
-    // EXPECT-SIGNATURE sql-injection
+    // EXPECT-CLEAN sql-injection
     $conn->query("SELECT * FROM t WHERE x = '" . $bar . "'");
 }
 
@@ -94,7 +94,7 @@ function never_taken($conn): void {
     if (false) {
         $bar = $_GET['p'];
     }
-    // EXPECT-SIGNATURE sql-injection
+    // EXPECT-CLEAN sql-injection
     $conn->query("SELECT * FROM t WHERE x = '" . $bar . "'");
 }
 

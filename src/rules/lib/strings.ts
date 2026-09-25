@@ -33,6 +33,7 @@
 
 import type { Node } from 'web-tree-sitter';
 import type { LanguageId } from '../../parse/languages.js';
+import { createFolder } from '../../taint/fold.js';
 
 /** Node types that ARE a string literal, per language. */
 const STRING_LITERAL_TYPES: Record<LanguageId, readonly string[]> = {
@@ -1120,42 +1121,281 @@ function parameterNames(scope: Node): Set<string> {
   return names;
 }
 
-export function partsAreProvablyConstant(
+/** Why a string built from pieces is still provably fixed - or null when it is not. */
+export interface ConstantProof {
+  /**
+   * True when the proof needed control-flow reasoning - a branch that cannot
+   * run, a condition decided at compile time, a ternary whose every arm is a
+   * literal - rather than "every binding is a plain literal". Only reasoned
+   * proofs leave a receipt, because only reasoning can be wrong.
+   */
+  readonly reasoned: boolean;
+  /** One sentence per name, written so a reader can check it against the code. */
+  readonly reason: string;
+}
+
+const TERNARY_NODES = new Set(['ternary_expression', 'conditional_expression']);
+
+/*
+ * PROVABLY CONSTANT, NOW WITH THE FOLDER.
+ *
+ * This used to accept a name only if EVERY binding of it was a plain literal.
+ * That is sound, and it missed the single most common false positive left in
+ * BenchmarkJava - 65 of them:
+ *
+ *     String bar;
+ *     int num = 86;
+ *     if ((7 * 42) - num > 200) bar = "This_should_always_happen";
+ *     else bar = param;
+ *     String sql = "SELECT ... PASSWORD='" + bar + "'";
+ *
+ * Three bindings. `String bar;` binds no value at all. `bar = param` sits in an
+ * arm that cannot run, because 294 - 86 is 208. The only write that can reach
+ * the string is a literal - and the rule could not see any of that, because the
+ * only code that knew how to decide a condition was sealed inside the tracer.
+ * src/taint/fold.ts is that same code, moved out and shared.
+ *
+ * What changed, exactly:
+ *   - a declaration that binds no value is not a write, and is skipped;
+ *   - a write inside an arm the folder proves cannot run is set aside;
+ *   - a ternary contributes the side that runs when its condition is decided,
+ *     and BOTH sides when it is not - so `flag ? "asc" : "desc"` is constant;
+ *   - there must still be at least one live write, and every live value must
+ *     be a plain literal. A parameter is still disqualifying, full stop.
+ *
+ * Every doubt resolves toward reporting. An undecidable condition keeps both
+ * arms live; a value the folder cannot see into is not a literal; a name with
+ * no live write is not provable. ConstantProofFence.java is the list of shapes
+ * that look withdrawable and must not be withdrawn.
+ */
+export function constantProof(
   node: Node,
   dynamicParts: readonly string[],
   language: LanguageId,
-): boolean {
-  if (dynamicParts.length === 0) return false;
+): ConstantProof | null {
+  if (dynamicParts.length === 0) return null;
 
-  const scopes = enclosingScopes(node);
-  if (scopes.length === 0) return false;
+  // A fresh folder per question: its caches are keyed by source span, and a
+  // span is only meaningful inside one file.
+  const folder = createFolder(language);
 
-  for (const raw of dynamicParts) {
-    const part = raw.trim();
-    // Only a bare name can be resolved this cheaply. Anything with a call, an
-    // index or an attribute access is left alone.
-    if (!/^[A-Za-z_$][\w$]*$/.test(part)) return false;
+  const lineOf = (n: Node): number => n.startPosition.row + 1;
+  const contains = (outer: Node, inner: Node): boolean =>
+    inner.startIndex >= outer.startIndex && inner.endIndex <= outer.endIndex;
+  const sameSpan = (a: Node, b: Node): boolean =>
+    a.startIndex === b.startIndex && a.endIndex === b.endIndex;
 
-    let bindings = 0;
-    let allLiteral = true;
+  /** The arm of an enclosing `if` that cannot run, if `n` sits in one. */
+  const deadArmHolding = (n: Node, scope: Node, body: Node): Node | null => {
+    let current: Node | null = n.parent;
+    while (current && contains(scope, current)) {
+      if (current.type === 'if_statement') {
+        const dead = folder.deadBranchOf(current, body);
+        if (dead && contains(dead, n)) return current;
+      }
+      if (sameSpan(current, scope)) break;
+      current = current.parent;
+    }
+    return null;
+  };
+
+  /** Every value an expression can take, as nodes - or null if that cannot be bounded. */
+  const liveValues = (value: Node, body: Node, depth: number): { nodes: Node[]; note: string | null } | null => {
+    let v: Node = value;
+    /*
+     * Go wraps EVERY assigned value in an expression_list, even a single one,
+     * because `a, b := 1, 2` is legal. So `q := "x"` never looked like a literal
+     * to this check - not after the folder arrived, and not before it either:
+     * Go had no constant proof at all until constant-branch.go asked for one.
+     * A one-element list is unwrapped like parentheses; a real multi-value
+     * assignment is left alone, and reads as "not a literal", which is safe.
+     */
+    while (
+      (v.type === 'parenthesized_expression' || v.type === 'expression_list') &&
+      v.namedChildren.length === 1
+    ) {
+      v = v.namedChildren[0] ?? v;
+    }
+    if (!TERNARY_NODES.has(v.type) || depth > 4) return { nodes: [v], note: null };
+    const parts = folder.ternaryParts(v);
+    const truth = folder.conditionTruth(parts.condition, body);
+    if (truth !== undefined) {
+      const live = truth ? parts.consequence : parts.alternative;
+      if (!live) return null;
+      const inner = liveValues(live, body, depth + 1);
+      return inner && {
+        nodes: inner.nodes,
+        note: `the condition on line ${lineOf(v)} is fixed at compile time, and the side that runs is a literal`,
+      };
+    }
+    if (!parts.consequence || !parts.alternative) return null;
+    const a = liveValues(parts.consequence, body, depth + 1);
+    const b = liveValues(parts.alternative, body, depth + 1);
+    if (!a || !b) return null;
+    return { nodes: [...a.nodes, ...b.nodes], note: `both sides of the condition on line ${lineOf(v)} are literals` };
+  };
+
+  /*
+   * ONE LEVEL INTO A HELPER. See HelperConstantProof.java for the fence.
+   *
+   * 46 of BenchmarkJava's surviving SQL false positives had their decoy inside
+   * a helper: `String bar = new Test().doSomething(request, param)`. The tracer
+   * follows that call; this proof stopped at it. It now follows exactly one
+   * shape, chosen because the type that runs is not in doubt:
+   *
+   *   `new X(...).m(...)`, X declared in this file, X declaring ONE method m,
+   *   every `return` in m provable by the same rules as everything else here.
+   *
+   * Java only. A receiver that is a variable could be any subclass; an
+   * overload depends on argument types this proof does not read; a helper
+   * returning another helper is a second level, and there is no second level.
+   * Other languages' helpers are not followed yet, and the SQL rule's
+   * limitations say so rather than letting "constant" imply they are.
+   */
+  const helperReturnsConstant = (call: Node, depth: number): string[] | null => {
+    if (depth > 0 || language !== 'java' || call.type !== 'method_invocation') return null;
+    const receiver = call.childForFieldName('object');
+    const methodName = call.childForFieldName('name')?.text ?? '';
+    if (!methodName) return null;
+
+    const methodsNamed = (klass: Node): Node[] =>
+      (klass.childForFieldName('body')?.namedChildren ?? []).filter(
+        (m): m is Node => m !== null && m.type === 'method_declaration' && m.childForFieldName('name')?.text === methodName,
+      );
+
+    let method: Node | null = null;
+    let typeName = '';
+    if (receiver?.type === 'object_creation_expression') {
+      // `new X(...).m(...)`: the type is exact, so X's own m is the one that runs.
+      typeName = (receiver.childForFieldName('type')?.text ?? '').trim();
+      if (!/^[A-Za-z_$][\w$]*$/.test(typeName)) return null; // qualified or generic: not declared here
+      let root: Node = call;
+      while (root.parent) root = root.parent;
+      const classes: Node[] = [];
+      const findClasses = (n: Node): void => {
+        if (n.type === 'class_declaration' && n.childForFieldName('name')?.text === typeName) classes.push(n);
+        for (const child of n.namedChildren) if (child) findClasses(child);
+      };
+      findClasses(root);
+      if (classes.length !== 1) return null;
+      const candidates = methodsNamed(classes[0]!);
+      if (candidates.length !== 1) return null;
+      method = candidates[0]!;
+    } else if (!receiver) {
+      /*
+       * A bare call, `doSomething(request, param)`. It binds to this class's
+       * method only if no subclass can replace it - so only when that method
+       * is private, static or final. BenchmarkJava declares its helpers
+       * `private static`, and 27 of the survivors were exactly this shape.
+       */
+      let klass: Node | null = call.parent;
+      while (klass && klass.type !== 'class_declaration') klass = klass.parent;
+      if (!klass) return null;
+      typeName = klass.childForFieldName('name')?.text ?? '';
+      const candidates = methodsNamed(klass);
+      if (candidates.length !== 1) return null;
+      const modifiers = candidates[0]!.namedChildren.find((c): c is Node => c !== null && c.type === 'modifiers');
+      if (!/\b(private|static|final)\b/.test(modifiers?.text ?? '')) return null;
+      method = candidates[0]!;
+    }
+    if (!method) return null; // a receiver that is a variable: it could be any subclass
+
+    const returns: Node[] = [];
+    const findReturns = (n: Node): void => {
+      if (n.type === 'return_statement') returns.push(n);
+      // A return inside a nested class or lambda belongs to that, not to m.
+      if (n.type === 'class_body' || n.type === 'lambda_expression') return;
+      for (const child of n.namedChildren) if (child) findReturns(child);
+    };
+    const methodBody = method.childForFieldName('body');
+    if (!methodBody) return null;
+    findReturns(methodBody);
+    if (returns.length === 0) return null;
+
+    for (const ret of returns) {
+      const expr = ret.namedChildren.find((c): c is Node => c !== null) ?? null;
+      if (!expr) return null;
+      if (!valueIsConstant(expr, method, depth + 1)) return null;
+    }
+    return [`the helper ${typeName}.${methodName}() on line ${lineOf(method)} returns a fixed literal on every path`];
+  };
+
+  /** Is this one live value fixed? Returns the notes that justify it, or null. */
+  const valueIsConstant = (v: Node, body: Node, depth: number): string[] | null => {
+    const values = liveValues(v, body, 0);
+    if (!values) return null;
+    const notes: string[] = values.note ? [values.note] : [];
+    for (const each of values.nodes) {
+      if (isPlainLiteral(each, language)) continue;
+      if (/^[A-Za-z_$][\w$]*$/.test((each.text ?? '').trim()) && each.namedChildren.length === 0) {
+        const inner = nameIsConstant((each.text ?? '').trim(), each, depth);
+        if (!inner) return null;
+        notes.push(...inner);
+        continue;
+      }
+      const helper = helperReturnsConstant(each, depth);
+      if (!helper) return null;
+      notes.push(...helper);
+    }
+    return notes;
+  };
+
+  /*
+   * THE CYCLE GUARD, BECAUSE THIS PROJECT HAS ALREADY PAID FOR NOT HAVING ONE.
+   *
+   * A value can be another name - `bar = baz` - so resolving a name can land on
+   * a name, and `a = b; b = a` is a loop. The tracer's folder had exactly this
+   * shape with no guard, and DVWA's packed sha256 turned it into an
+   * out-of-memory on a 10KB file. A name already being resolved answers "not
+   * provable", which is the direction that keeps the finding.
+   */
+  const resolving = new Set<string>();
+
+  /** Is every live write to `part`, as seen from `anchor`, a fixed value? */
+  const nameIsConstant = (part: string, anchor: Node, depth: number): string[] | null => {
+    const scopes = enclosingScopes(anchor);
+    const body = scopes[0];
+    if (!body) return null;
+    const key = `${body.startIndex}:${body.endIndex}#${part}`;
+    if (resolving.has(key) || resolving.size > 24) return null;
+    resolving.add(key);
+    try {
+      return resolveName(part, scopes, body, depth);
+    } finally {
+      resolving.delete(key);
+    }
+  };
+
+  const resolveName = (part: string, scopes: Node[], body: Node, depth: number): string[] | null => {
+
+    let live = 0;
+    let fixed = true;
+    const notes: string[] = [];
 
     for (const scope of scopes) {
-      if (parameterNames(scope).has(part)) return false; // a parameter is input
+      if (parameterNames(scope).has(part)) return null; // a parameter is input
       const walk = (n: Node | null): void => {
-        if (!n) return;
+        if (!n || !fixed) return;
         // Do NOT descend into a nested scope. Searching the module body walked
         // straight into sibling functions, so an unrelated `t = request.args...`
         // three functions away made a genuinely constant `t` here look tainted.
-        // The check still worked in a one-function test file and silently did
-        // nothing in any real one - the direction of error was safe, but the fix
-        // was useless the moment a common name like `query` appeared twice.
         if (n !== scope && SCOPE_NODES.has(n.type)) return;
         const fields = BINDING_NODES[n.type];
         if (fields) {
           const target = n.childForFieldName(fields.name);
           if ((target?.text ?? '').trim() === part) {
-            bindings++;
-            if (!isPlainLiteral(n.childForFieldName(fields.value), language)) allLiteral = false;
+            const value = n.childForFieldName(fields.value);
+            if (value) {
+              const deadIf = deadArmHolding(n, scope, body);
+              if (deadIf) {
+                notes.push(`the write on line ${lineOf(n)} is in a branch that cannot run (line ${lineOf(deadIf)})`);
+              } else {
+                live++;
+                const why = valueIsConstant(value, body, depth);
+                if (!why) fixed = false;
+                else notes.push(...why);
+              }
+            }
           }
         }
         for (const child of n.namedChildren) walk(child ?? null);
@@ -1163,9 +1403,40 @@ export function partsAreProvablyConstant(
       walk(scope);
     }
 
-    // No binding found means we cannot see where it comes from - so we do not
-    // get to call it constant.
-    if (bindings === 0 || !allLiteral) return false;
+    // No live write means we cannot see where it comes from - so we do not get
+    // to call it constant.
+    if (live === 0 || !fixed) return null;
+    return notes;
+  };
+
+  let reasoned = false;
+  const reasons: string[] = [];
+  for (const raw of dynamicParts) {
+    const part = raw.trim();
+    // Only a bare name can be resolved this cheaply. Anything with a call, an
+    // index or an attribute access is left alone.
+    if (!/^[A-Za-z_$][\w$]*$/.test(part)) return null;
+    const notes = nameIsConstant(part, node, 0);
+    if (!notes) return null;
+    if (notes.length > 0) {
+      reasoned = true;
+      reasons.push(`\`${part}\`: ${[...new Set(notes)].join('; ')}`);
+    }
   }
-  return true;
+
+  return {
+    reasoned,
+    reason: reasoned
+      ? `Every value that can be spliced in is a fixed literal on every path that runs. ${reasons.join('. ')}.`
+      : 'Every value spliced in is bound only to plain literals.',
+  };
+}
+
+/** The boolean form, for callers that only need a yes or a no. */
+export function partsAreProvablyConstant(
+  node: Node,
+  dynamicParts: readonly string[],
+  language: LanguageId,
+): boolean {
+  return constantProof(node, dynamicParts, language) !== null;
 }

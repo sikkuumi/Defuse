@@ -31,6 +31,7 @@ import type { Node } from 'web-tree-sitter';
 import type { LanguageId } from '../parse/languages.js';
 import { asCall, type Rule, type RuleHit } from './contract.js';
 import { analyzeStringExpression } from './lib/strings.js';
+import { followLocalBuild } from './lib/local-build.js';
 import { partsAreGuarded } from './lib/guards.js';
 
 /** Calls that ALWAYS go through a shell. Dynamic argument = report it. */
@@ -122,14 +123,17 @@ export const commandInjectionRule: Rule = {
     'sentence, so no shell ever parses the input.',
   limitations:
     'UNVERIFIED (signature-based): we confirmed a shell-executing call receives a ' +
-    'dynamically built string. We did NOT confirm the spliced value is attacker-' +
-    'controlled, and for list-style APIs we judged shell usage from the visible text ' +
-    'of the call only - an options object built elsewhere is invisible to us.',
+    'dynamically built string - either built inside the call, or built in a local ' +
+    'variable earlier in the same function and followed back to it. We did NOT confirm ' +
+    'the spliced value is attacker-controlled. A command variable written inside an if, ' +
+    'a loop or a switch is not followed, and for list-style APIs we judged shell usage ' +
+    'from the visible text of the call only - an options object built elsewhere is ' +
+    'invisible to us.',
   shapes: ['call'],
   support: {
     javascript: {
       status: 'implemented',
-      note: 'child_process exec/execSync always reported; spawn/execFile reported only when `shell: true` appears in the call text. An options object assembled in another variable is missed, because we read the shell option from the visible text of the call.',
+      note: 'child_process exec/execSync always reported; spawn/execFile reported only when `shell: true` appears in the call text. A command built in a local variable before the call (`const cmd = "ls " + x; exec(cmd)`) is followed back to its build; one written inside a branch or loop, or passed in as a parameter, is not. An options object assembled in another variable is missed, because we read the shell option from the visible text of the call.',
     },
     typescript: {
       status: 'implemented',
@@ -137,15 +141,15 @@ export const commandInjectionRule: Rule = {
     },
     python: {
       status: 'implemented',
-      note: 'os.system/os.popen always reported; subprocess.* reported only when `shell=True` is visible in the call.',
+      note: 'os.system/os.popen always reported; subprocess.* reported only when `shell=True` is visible in the call. A command built in a local variable before the call is followed back to its build, including `+=` extensions after it; one written inside a branch or loop, or passed in as a parameter, is not.',
     },
     java: {
       status: 'partial',
-      note: 'PARTIAL: Runtime.exec(String) and ProcessBuilder are detected, but only when the command string is built at the call site. Java code commonly builds commands with StringBuilder across several statements; the signature pass cannot follow that, and the taint engine tracks variables rather than the interior of objects, so it does not either.',
+      note: 'PARTIAL: Runtime.exec(String) and ProcessBuilder are detected when the command string is built at the call site, or in a straight-line assignment earlier in the same method. Java code commonly builds commands with StringBuilder across several statements, or picks the shell per operating system inside an if/else; the signature pass follows neither, and the taint engine tracks variables rather than the interior of objects, so a StringBuilder is not followed there either.',
     },
     go: {
       status: 'partial',
-      note: 'PARTIAL: exec.Command is only reported when the call itself mentions a shell ("sh", "-c"). exec.Command("ping", host) is genuinely safe, so reporting every exec.Command would be noise - but that also means a shell wrapper built elsewhere is missed.',
+      note: 'PARTIAL: exec.Command is only reported when the call itself mentions a shell ("sh", "-c"). exec.Command("ping", host) is genuinely safe, so reporting every exec.Command would be noise - but that also means a shell wrapper built elsewhere is missed. The command string handed to `sh -c` is followed back to a local build (`c := "ls " + x`, fmt.Sprintf) when it was written in straight-line code.',
     },
     php: {
       status: 'implemented',
@@ -154,12 +158,12 @@ export const commandInjectionRule: Rule = {
     c: {
       status: 'implemented',
       note:
-        'system() and popen() hand the string to /bin/sh with no safe overload to be confused with, which makes this the least ambiguous sink list in the tool. exec* takes an argument VECTOR and is reported ONLY when the program being run is itself a shell - execv("/bin/ping", args) with a tainted argument is genuinely safe and stays quiet. The build-then-run idiom (sprintf into a buffer, then system) is followed through the buffer.',
+        'system() and popen() hand the string to /bin/sh with no safe overload to be confused with, which makes this the least ambiguous sink list in the tool. exec* takes an argument VECTOR and is reported ONLY when the program being run is itself a shell - execv("/bin/ping", args) with a tainted argument is genuinely safe and stays quiet. The build-then-run idiom is followed through the buffer at both levels. The tracer follows a recognised source into sprintf/strcat and out through system(). The signature pass - which until build-then-run.c saw only `system(buf)`, a bare name, and so reported NOTHING for any C command injection whose source it did not recognise - now reads how the buffer was filled: sprintf/snprintf (reading the format string, so %d is not a splice and %s is), strcpy then strcat, an initialised array then strcat. A buffer written inside an if, a loop or a switch is not followed, and says nothing.',
     },
     cpp: {
       status: 'implemented',
       note:
-        'Every C entry applies unchanged, since C++ inherits the whole libc surface and real code still uses it. Namespace-qualified calls (std::system) and method calls on objects are recognised in addition.',
+        'Every C entry applies unchanged, since C++ inherits the whole libc surface and real code still uses it. Namespace-qualified calls (std::system) and method calls on objects are recognised in addition. std::system() takes a const char*, so every C++ shell call ends in .c_str() or .data(); those are looked through, and a std::string built with +, += or append() before the call is followed back to its build - under the same straight-line-only condition as C.',
     },
   },
   check(shape, ctx): RuleHit | null {
@@ -211,10 +215,25 @@ export const commandInjectionRule: Rule = {
     if (conditional && !always && !SHELL_OPTION[language].test(wholeCall)) return null;
 
     for (const arg of call.args) {
-      const built = analyzeStringExpression(arg, language);
+      let built = analyzeStringExpression(arg, language);
+      let builtOnLine: number | null = null;
+      /*
+       * A bare variable tells us nothing about a command ON ITS OWN - "you
+       * passed a variable to exec" is not actionable, and the rule has always
+       * skipped it. What it never did was ask the next question: where was that
+       * variable built? `cmd = "ls " + name` one line earlier is the same
+       * finding as `exec("ls " + name)`, and in C - which cannot build a string
+       * inside a call's brackets at all - it is the ONLY form a command
+       * injection ever takes. lib/local-build.ts says what it follows and,
+       * more importantly, where it gives up.
+       */
+      if (built.mechanism === 'opaque' && built.literalText.length === 0) {
+        const followed = followLocalBuild(arg, language);
+        if (!followed) continue;
+        built = followed.expression;
+        builtOnLine = followed.line;
+      }
       if (!built.isDynamic) continue;
-      // A bare variable tells us nothing about a command; skip it rather than
-      // report "you passed a variable to exec", which is not actionable.
       if (built.mechanism === 'opaque' && built.literalText.length === 0) continue;
       /*
        * A VALIDATION GUARD. Inside `if (is_numeric($octet[0]) && ...)` the value
@@ -225,13 +244,15 @@ export const commandInjectionRule: Rule = {
        */
       if (partsAreGuarded(arg, built.dynamicParts, language)) continue;
 
+      const callLine = arg.startPosition.row + 1;
+      const where = builtOnLine === null || builtOnLine === callLine ? '' : ` on line ${builtOnLine}`;
       return {
         node: arg,
-        message: `Command passed to ${call.calleeText}() is built with ${built.mechanism}`,
+        message: `Command passed to ${call.calleeText}() is built with ${built.mechanism}${where}`,
         reasoning:
           `\`${call.calleeText}()\` executes its argument through a shell` +
           `${conditional && !always ? ' (a shell option is set in this call)' : ''}. ` +
-          `The command string is not fixed - it was assembled via ${built.mechanism}, ` +
+          `The command string is not fixed - it was assembled via ${built.mechanism}${where}, ` +
           `splicing in ${built.dynamicParts.slice(0, 3).map((p) => `\`${p}\``).join(', ') || 'a runtime value'}. ` +
           `Shell metacharacters (; | && \` $()) inside that value would be executed as ` +
           `separate commands.`,

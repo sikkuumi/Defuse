@@ -1,10 +1,10 @@
 {
   "scored": 1210,
   "tp": 606,
-  "fp": 332,
+  "fp": 271,
   "fn": 38,
-  "tn": 234,
-  "precision": "64.6%",
+  "tn": 295,
+  "precision": "69.1%",
   "recall": "94.1%",
   "missedByCategory": {
     "xss": 27,
@@ -12,9 +12,9 @@
   },
   "filesParsed": 2766,
   "parseErrors": 0,
-  "durationMs": 23506,
-  "decoyFalsePositives": 82,
-  "decoyShare": "25%",
+  "durationMs": 38826,
+  "decoyFalsePositives": 21,
+  "decoyShare": "8%",
   "engineVersion": "0.5.0",
-  "measuredAt": "2026-09-20"
+  "measuredAt": "2026-09-25"
 }

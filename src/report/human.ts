@@ -405,12 +405,20 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
       ),
     );
   }
-  if (result.stats.flowsVerified > 0 || result.stats.signaturesRetracted > 0) {
+  if (
+    result.stats.flowsVerified > 0 ||
+    result.stats.signaturesRetracted > 0 ||
+    result.stats.signaturesProvedConstant > 0
+  ) {
     out.push(
       color.dim(
         `  data flow: ${result.stats.flowsVerified} verified ${g('middot')} ` +
           `${result.stats.signaturesUpgraded} guess(es) superseded by a proof ${g('middot')} ` +
-          `${result.stats.signaturesRetracted} withdrawn as provably sanitised`,
+          `${result.stats.signaturesRetracted} withdrawn as provably sanitised` +
+          (result.stats.signaturesProvedConstant > 0
+            ? ` ${g('middot')} ${result.stats.signaturesProvedConstant} withdrawn as provably ` +
+              `constant (listed in --json under verifiedClean, with the reason)`
+            : ''),
       ),
     );
   }

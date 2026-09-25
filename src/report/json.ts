@@ -56,6 +56,14 @@ export function renderJson(result: ScanResult, pretty = true): string {
       flowVerifiedFindings: result.findings.filter((f) => f.confidence === 'flow-verified').length,
       signatureGuessesSupersededByProof: result.stats.signaturesUpgraded,
       signatureGuessesWithdrawnAsSanitised: result.stats.signaturesRetracted,
+      /*
+       * Withdrawn because every value spliced in is provably a fixed literal on
+       * every path that runs - a branch that cannot run, a condition decided at
+       * compile time, a same-file helper that only ever returns a literal. Each
+       * one is listed under diagnostics.verifiedClean with kind "constant" and
+       * the reason, so the reasoning can be checked line by line.
+       */
+      signatureGuessesWithdrawnAsConstant: result.stats.signaturesProvedConstant,
       meaningOfConfidence: result.coverage.engine.meaningOfConfidence,
       notImplemented: result.coverage.engine.notImplemented,
       dataFlowCoverageByLanguage: result.coverage.taint,

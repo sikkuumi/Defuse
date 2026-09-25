@@ -24,10 +24,10 @@
 # having and no test anywhere said a word about it. A blind spot that fails
 # safe is still a blind spot, and this file is what makes it say something.
 #
-# The dead cases assert EXPECT-SIGNATURE rather than silence, for the same
-# reason the Java file does: the signature pass flags SQL built by concatenation
-# whatever the tracer concluded, and on its own terms that is correct. What must
-# never happen is the green label on a branch that does not execute.
+# The dead cases assert EXPECT-CLEAN: no finding, and a proved-clean record.
+# They asserted EXPECT-SIGNATURE until the folder was shared with the signature
+# rules - see constant-branch-dead.java for why that assertion was right then
+# and is wrong now. The live cases are unchanged, and matter more.
 #
 # The live cases are the fence. The cheapest way to pass "drop taint on dead
 # branches" is to drop taint at every branch, which would score beautifully and
@@ -45,7 +45,7 @@ def ternary_always_true(cursor):
     param = sys.argv[1]
     num = 106
     bar = "constant" if (7 * 18) + num > 200 else param
-    # EXPECT-SIGNATURE sql-injection
+    # EXPECT-CLEAN sql-injection
     cursor.execute("SELECT * FROM t WHERE x = '" + bar + "'")
 
 
@@ -53,7 +53,7 @@ def ternary_always_true(cursor):
 def ternary_always_false(cursor):
     param = sys.argv[1]
     bar = param if 1 > 2 else "constant"
-    # EXPECT-SIGNATURE sql-injection
+    # EXPECT-CLEAN sql-injection
     cursor.execute("SELECT * FROM t WHERE x = '" + bar + "'")
 
 
@@ -65,7 +65,7 @@ def if_else_dead_arm(cursor):
         bar = "constant"
     else:
         bar = param
-    # EXPECT-SIGNATURE sql-injection
+    # EXPECT-CLEAN sql-injection
     cursor.execute("SELECT * FROM t WHERE x = '" + bar + "'")
 
 
@@ -76,7 +76,7 @@ def never_taken(cursor):
     bar = "constant"
     if False:
         bar = sys.argv[1]
-    # EXPECT-SIGNATURE sql-injection
+    # EXPECT-CLEAN sql-injection
     cursor.execute("SELECT * FROM t WHERE x = '" + bar + "'")
 
 
@@ -145,7 +145,7 @@ def not_operator_picks_the_alternative(cursor):
 def not_operator_dead_arm(cursor):
     param = sys.argv[1]
     bar = "constant" if not False else param
-    # EXPECT-SIGNATURE sql-injection
+    # EXPECT-CLEAN sql-injection
     cursor.execute("SELECT * FROM t WHERE x = '" + bar + "'")
 
 

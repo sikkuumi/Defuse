@@ -36,7 +36,7 @@ func ifElseDeadArm(db *sql.DB, r *http.Request) {
 	} else {
 		bar = param
 	}
-	// EXPECT-SIGNATURE sql-injection
+	// EXPECT-CLEAN sql-injection
 	db.Query("SELECT * FROM t WHERE x = '" + bar + "'")
 }
 
@@ -48,7 +48,7 @@ func deadThenArm(db *sql.DB, r *http.Request) {
 	} else {
 		bar = "constant"
 	}
-	// EXPECT-SIGNATURE sql-injection
+	// EXPECT-CLEAN sql-injection
 	db.Query("SELECT * FROM t WHERE x = '" + bar + "'")
 }
 
@@ -57,7 +57,7 @@ func neverTaken(db *sql.DB, r *http.Request) {
 	if false {
 		bar = r.URL.Query().Get("p")
 	}
-	// EXPECT-SIGNATURE sql-injection
+	// EXPECT-CLEAN sql-injection
 	db.Query("SELECT * FROM t WHERE x = '" + bar + "'")
 }
 

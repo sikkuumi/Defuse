@@ -89,6 +89,8 @@ export interface AnalysisStats {
   readonly flowsVerified: number;
   readonly signaturesUpgraded: number;
   readonly signaturesRetracted: number;
+  /** Signature guesses a rule withdrew because every spliced value is provably fixed. */
+  readonly signaturesProvedConstant: number;
   readonly durationMs: number;
 }
 
@@ -105,6 +107,12 @@ export interface VerifiedClean {
   readonly line: number;
   readonly ruleId: string;
   readonly kind: string;
+  /**
+   * Why the line is clean, when a signature rule withdrew its own guess on a
+   * reasoned proof (see RuleContext.noteClean). Absent for the tracer's
+   * sanitiser retractions, whose reason is the sanitiser step on the path.
+   */
+  readonly reason?: string;
 }
 
 /**
@@ -213,6 +221,8 @@ export async function analyze(
   const flowRanges: Array<{ ruleId: string; file: string; start: number; end: number }> = [];
   const cleanRanges: Array<{ ruleId: string; file: string; start: number; end: number }> = [];
   const verifiedClean: VerifiedClean[] = [];
+  /** One receipt per line per rule, however many shapes asked the same question. */
+  const provedConstantKeys = new Set<string>();
   /** Summed across every file, so the report can say where the trace ran out. */
   const traceLimits = {
     astTruncations: 0, depthTruncations: 0, recursionStops: 0, unmodelledHops: 0,
@@ -370,6 +380,13 @@ export async function analyze(
       file,
       language: file.language.id,
       text: (node: Node) => (node.text ?? '').replace(/\s+/g, ' ').trim(),
+      noteClean: (ruleId: string, node: Node, reason: string) => {
+        const line = node.startPosition.row + 1;
+        const key = `${displayPath}:${line}:${ruleId}`;
+        if (provedConstantKeys.has(key)) return;
+        provedConstantKeys.add(key);
+        verifiedClean.push({ file: displayPath, line, ruleId, kind: 'constant', reason });
+      },
     };
 
     const shapes = await extractShapes(file, file.language.id);
@@ -796,6 +813,7 @@ export async function analyze(
       flowsVerified: flowFindings.length,
       signaturesUpgraded,
       signaturesRetracted,
+      signaturesProvedConstant: provedConstantKeys.size,
       durationMs: Date.now() - started,
     },
     byLanguage,

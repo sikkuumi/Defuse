@@ -40,7 +40,7 @@ import {
   isStringBuildingExpression,
   looksLikeSql,
   expandsOnlyPlaceholders,
-  partsAreProvablyConstant,
+  constantProof,
 } from './lib/strings.js';
 import { partsAreGuarded } from './lib/guards.js';
 
@@ -135,7 +135,14 @@ export const sqlInjectionRule: Rule = {
     'written literally. We did NOT confirm that any part of it is attacker-controlled. ' +
     'If every spliced value is a hard-coded constant or an internal enum, this is safe ' +
     'and is a false positive. When the data-flow engine CAN confirm the source, the ' +
-    'finding is upgraded to flow-verified and this text is replaced by a traced path.',
+    'finding is upgraded to flow-verified and this text is replaced by a traced path. ' +
+    'When every spliced value is PROVABLY a fixed literal - including a write in a ' +
+    'branch that cannot run, a condition decided at compile time, or a same-file Java ' +
+    'helper reached through `new X().m()` or a private/static method - the guess is ' +
+    'withdrawn and listed as proved clean with the reason, rather than reported. That ' +
+    'proof stops at one helper level, does not follow helpers outside Java, and does not ' +
+    'model String or collection methods, so a value fixed by any of those is still ' +
+    'reported here.',
   shapes: ['call', 'assignment'],
   support: {
     javascript: {
@@ -193,8 +200,14 @@ export const sqlInjectionRule: Rule = {
         if (!built.isDynamic) continue;
         if (!looksLikeSql(built.literalText)) continue;
         // "Assembled" from values that are all fixed literals is not assembled
-        // in any way a reader cares about. See partsAreProvablyConstant.
-        if (partsAreProvablyConstant(arg, built.dynamicParts, language)) continue;
+        // in any way a reader cares about. When saying so took reasoning - a
+        // branch that cannot run, a condition fixed at compile time - the
+        // withdrawal leaves a receipt, because reasoning can be wrong.
+        const argProof = constantProof(arg, built.dynamicParts, language);
+        if (argProof) {
+          if (argProof.reasoned) ctx.noteClean?.('sql-injection', arg, argProof.reason);
+          continue;
+        }
         /*
          * A VALIDATION GUARD. `is_numeric($octet[0])` transforms nothing, so the
          * sanitiser model never saw it - but inside the branch it guards, the
@@ -240,7 +253,11 @@ export const sqlInjectionRule: Rule = {
       const built = analyzeStringExpression(assignment.value, language);
       if (!built.isDynamic) return null;
       if (!looksLikeSql(built.literalText)) return null;
-      if (partsAreProvablyConstant(assignment.value, built.dynamicParts, language)) return null;
+      const buildProof = constantProof(assignment.value, built.dynamicParts, language);
+      if (buildProof) {
+        if (buildProof.reasoned) ctx.noteClean?.('sql-injection', assignment.node, buildProof.reason);
+        return null;
+      }
       if (partsAreGuarded(assignment.value, built.dynamicParts, language)) return null;
       if (built.dynamicParts.every((part) => expandsOnlyPlaceholders(part))) return null;
 

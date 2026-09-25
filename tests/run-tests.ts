@@ -72,6 +72,8 @@ const FIXTURES = path.resolve(HERE, '../../tests/fixtures');
  * `// EXPECT-FLOW rule-id`       a finding must appear AND be flow-verified
  * `// EXPECT-SIGNATURE rule-id`  a finding must appear AND must NOT claim proof
  * `// EXPECT-NONE`               this whole file must produce nothing
+ * `// EXPECT-CLEAN rule-id`      NO finding here, AND the engine recorded a proof
+ *                                that the line is clean - silence is not enough
  *
  * EXPECT-SIGNATURE closes a hole in this vocabulary that existed for the whole
  * project. The honesty contract has exactly one distinction at its centre -
@@ -87,7 +89,7 @@ const FIXTURES = path.resolve(HERE, '../../tests/fixtures');
  * different kind of statement and a false one. Both facts are now assertable on
  * the same line.
  */
-const EXPECT = /(?:\/\/|#|\/\*|\*)\s*EXPECT(-NONE|-FLOW|-SIGNATURE)?\s*:?\s*([a-z0-9-]*)/i;
+const EXPECT = /(?:\/\/|#|\/\*|\*)\s*EXPECT(-NONE|-FLOW|-SIGNATURE|-CLEAN)?\s*:?\s*([a-z0-9-]*)/i;
 
 interface Expectation {
   readonly file: string;
@@ -97,6 +99,11 @@ interface Expectation {
   readonly requireFlow: boolean;
   /** EXPECT-SIGNATURE: the finding must NOT carry one. Overclaim is a failure. */
   readonly forbidFlow: boolean;
+  /**
+   * EXPECT-CLEAN: NO finding for this rule here, AND a positive proved-clean
+   * record for it. See the note on the vocabulary above main().
+   */
+  readonly requireClean: boolean;
 }
 
 interface FileExpectations {
@@ -132,6 +139,7 @@ async function readExpectations(dir: string): Promise<FileExpectations[]> {
           ruleId: match[2].toLowerCase(),
           requireFlow: modifier === '-FLOW',
           forbidFlow: modifier === '-SIGNATURE',
+          requireClean: modifier === '-CLEAN',
         });
       }
     });
@@ -190,6 +198,48 @@ async function main(): Promise<number> {
   for (const file of vulnerable) {
     const short = path.basename(file.file);
     for (const expectation of file.expectations) {
+      /*
+       * EXPECT-CLEAN, AND WHY SILENCE WAS NOT GOOD ENOUGH TO ASSERT.
+       *
+       * The constant folder lets the SQL rule withdraw a guess when every value
+       * spliced into the string is provably a literal on every path that runs.
+       * The obvious way to test that is "nothing is reported here" - and that
+       * assertion passes for a rule that crashed, a shape query that stopped
+       * matching, or a file that failed to parse. Silence has too many causes
+       * to be evidence of any one of them.
+       *
+       * So a withdrawal has to leave a receipt: a verifiedClean entry naming
+       * this rule on this line. The report prints those as "proved clean", and
+       * this is what stops that phrase from ever describing an accident.
+       */
+      if (expectation.requireClean) {
+        const stillReported = findingsNear(findings, short, expectation.line, expectation.ruleId, false);
+        const receipt = result.verifiedClean.find(
+          (c) =>
+            c.ruleId === expectation.ruleId &&
+            c.file.endsWith(short) &&
+            c.line > expectation.line &&
+            c.line <= expectation.line + WINDOW,
+        );
+        if (stillReported.length === 0 && receipt) {
+          passed++;
+          console.log(
+            `    ${color.green(g('tick'))} ${short.padEnd(14)} line ${String(expectation.line + 1).padStart(3)}  ` +
+              `${color.dim(expectation.ruleId.padEnd(20))} ${color.green('proved clean')}`,
+          );
+        } else {
+          failed++;
+          for (const hit of stillReported) claimed.add(hit);
+          console.log(
+            `    ${color.red(`${g('cross')} NOT CLEAN`)} ${short.padEnd(14)} line ${String(expectation.line + 1).padStart(3)}  ` +
+              `${color.red(expectation.ruleId)} ` +
+              (stillReported.length > 0
+                ? `is still reported (${stillReported[0]?.confidence}) - the guess was not withdrawn`
+                : 'is silent but left NO proved-clean record - silence is not a proof'),
+          );
+        }
+        continue;
+      }
       const hits = findingsNear(
         findings,
         short,
@@ -2061,12 +2111,24 @@ async function main(): Promise<number> {
     const cycle = names.map(
       (name, index) => `  var ${name} = ${names[(index + 1) % names.length]} + 1;`,
     );
+    /*
+     * The same cycle, spelled as STRINGS, for the signature rules' constant
+     * proof - which learned to follow `bar = baz` into another name, and so
+     * grew its own copy of exactly the loop this check exists for.
+     */
+    const stringCycle = names.map(
+      (name, index) => `  var s${name} = s${names[(index + 1) % names.length]};`,
+    );
     const source = [
       "const db = require('./db');",
       'function packed(req) {',
       ...cycle,
       `  var bar = ${names[0]} > 3 ? 'constant' : req.query.p;`,
       '  db.query("SELECT * FROM t WHERE x = \'" + bar + "\'");',
+      '}',
+      'function stringLoop() {',
+      ...stringCycle,
+      `  db.query("SELECT * FROM t WHERE x = '" + s${names[0]} + "'");`,
       '}',
     ].join('\n');
 
@@ -2083,12 +2145,33 @@ async function main(): Promise<number> {
        * thing in CI and buries which check was running when it happened.
        */
       let crashed: string | null = null;
+      let loopResult: Awaited<ReturnType<typeof scan>> | null = null;
       try {
-        await scan(tree, {});
+        loopResult = await scan(tree, {});
       } catch (error) {
         crashed = error instanceof Error ? error.message : String(error);
       }
       const took = Date.now() - started;
+      /*
+       * TIME ALONE DID NOT CATCH IT, AND THAT WAS MEASURED.
+       *
+       * With the constant proof's cycle guard deleted, the string loop did not
+       * hang - it overflowed the stack in a millisecond, analyze.ts caught the
+       * crashing rule, recorded it, and dropped the finding. The scan finished
+       * fast with NOTHING reported. A check that only timed it passed. So the
+       * loop must still be REPORTED, and no rule may have thrown to get there.
+       */
+      const ruleThrew = (loopResult?.parseProblems ?? []).flatMap((p) => p.issues).find((i) =>
+        /threw/.test(i.text),
+      );
+      const loopReported = (loopResult?.findings ?? []).some(
+        (f) => f.ruleId === 'sql-injection' && f.location.startLine > names.length + 5,
+      );
+      if (crashed === null && (ruleThrew || !loopReported)) {
+        crashed = ruleThrew
+          ? `a rule threw (${ruleThrew.text}) and its finding was dropped`
+          : 'the string loop was not reported - a rule crashed or gave up silently';
+      }
       if (crashed !== null) {
         failed++;
         console.log(

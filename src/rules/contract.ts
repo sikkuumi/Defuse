@@ -81,6 +81,20 @@ export interface RuleContext {
   readonly language: LanguageId;
   /** Convenience: source text of a node, whitespace-collapsed. */
   readonly text: (node: Node) => string;
+  /**
+   * Record that this rule examined a line and can PROVE it is not the bug the
+   * shape suggests - so the guess it would have made is withdrawn, not dropped.
+   *
+   * A rule that declines to report leaves no trace, and that was fine while
+   * declining meant "these are plain literals". Once a rule can decline because
+   * of REASONING - a branch that cannot run, a condition fixed at compile time -
+   * the reasoning has to be visible, because reasoning can be wrong. Receipts
+   * appear in --json as verifiedClean entries with the reason attached, are
+   * counted in the terminal summary, and show as "proved clean" in the UI.
+   *
+   * Optional so a caller that builds its own context is not broken by it.
+   */
+  readonly noteClean?: (ruleId: string, node: Node, reason: string) => void;
 }
 
 /**
