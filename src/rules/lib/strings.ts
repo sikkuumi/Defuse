@@ -34,6 +34,7 @@
 import type { Node } from 'web-tree-sitter';
 import type { LanguageId } from '../../parse/languages.js';
 import { SWITCH_NODES, createFolder } from '../../taint/fold.js';
+import { resolveContainerRead } from '../../taint/local-map.js';
 
 /** Node types that ARE a string literal, per language. */
 const STRING_LITERAL_TYPES: Record<LanguageId, readonly string[]> = {
@@ -1337,8 +1338,29 @@ export function constantProof(
     const values = liveValues(v, body, 0);
     if (!values) return null;
     const notes: string[] = values.note ? [values.note] : [];
-    for (const each of values.nodes) {
-      if (isPlainLiteral(each, language)) continue;
+    for (const raw of values.nodes) {
+      if (isPlainLiteral(raw, language)) continue;
+      /*
+       * `(String) map.get("keyA")` or `list.get(1)` - a read from a local map or
+       * list whose every write is on the page (taint/local-map.ts) is the value
+       * stored there. The cast is looked through first; it changes the type,
+       * not the value.
+       */
+      let each = raw;
+      while (each.type === 'cast_expression' || each.type === 'parenthesized_expression') {
+        each = each.childForFieldName('value') ?? each.namedChildren[each.namedChildren.length - 1] ?? each;
+        if (each === raw) break;
+      }
+      const read = resolveContainerRead(each, language);
+      if (read) {
+        if (!isPlainLiteral(read.value, language)) return null;
+        notes.push(
+          `\`${each.text.replace(/\s+/g, ' ')}\` on line ${lineOf(each)} returns the literal stored at ` +
+            `${read.selector} on line ${lineOf(read.write)} - the collection is local, handed to nothing, ` +
+            `and written only by straight-line statements`,
+        );
+        continue;
+      }
       if (/^[A-Za-z_$][\w$]*$/.test((each.text ?? '').trim()) && each.namedChildren.length === 0) {
         const inner = nameIsConstant((each.text ?? '').trim(), each, depth);
         if (!inner) return null;
@@ -1372,18 +1394,53 @@ export function constantProof(
     if (resolving.has(key) || resolving.size > 24) return null;
     resolving.add(key);
     try {
-      return resolveName(part, scopes, body, depth);
+      return resolveName(part, scopes, body, depth, anchor);
     } finally {
       resolving.delete(key);
     }
   };
 
-  const resolveName = (part: string, scopes: Node[], body: Node, depth: number): string[] | null => {
+  /** Node types that hold a plain sequence of statements, each run once, in order. */
+  const STATEMENT_LISTS = new Set([
+    'block', 'statement_block', 'compound_statement', 'constructor_body', 'statement_list',
+    'program', 'module', 'source_file',
+  ]);
+  /** Wrappers between a write and the statement that holds it. */
+  const STATEMENT_WRAPPERS = new Set([
+    'expression_statement', 'local_variable_declaration', 'lexical_declaration', 'variable_declaration',
+  ]);
+
+  /** The write that certainly decides the value at `anchor`, if one does. See resolveName. */
+  const certainLastWrite = (
+    writes: ReadonlyArray<{ node: Node; value: Node; scope: Node }>,
+    anchor: Node,
+  ): { node: Node; value: Node } | null => {
+    if (language === 'c' || language === 'cpp' || writes.length === 0) return null;
+    const innermost = enclosingScopes(anchor)[0];
+    if (!innermost || writes.some((w) => !sameSpan(w.scope, innermost))) return null;
+    const last = [...writes].sort((a, b) => a.node.startIndex - b.node.startIndex)[writes.length - 1];
+    if (!last || last.node.endIndex > anchor.startIndex) return null;
+    let statement: Node = last.node;
+    while (statement.parent && STATEMENT_WRAPPERS.has(statement.parent.type)) statement = statement.parent;
+    const holder = statement.parent;
+    if (!holder || !STATEMENT_LISTS.has(holder.type) || !contains(holder, anchor)) return null;
+    return last;
+  };
+
+  const resolveName = (
+    part: string,
+    scopes: Node[],
+    body: Node,
+    depth: number,
+    anchor: Node,
+  ): string[] | null => {
 
     let live = 0;
     let fixed = true;
     const notes: string[] = [];
 
+    /* Every plain write, in every scope, before any value is judged. */
+    const writes: Array<{ node: Node; value: Node; scope: Node }> = [];
     for (const scope of scopes) {
       if (parameterNames(scope).has(part)) return null; // a parameter is input
       /*
@@ -1393,6 +1450,58 @@ export function constantProof(
        * folder's survey sees every form of write; any irregular one ends this.
        */
       if (folder.writtenOtherwise(part, scope)) return null;
+      const collect = (n: Node | null): void => {
+        if (!n) return;
+        if (n !== scope && SCOPE_NODES.has(n.type)) return;
+        const fields = BINDING_NODES[n.type];
+        if (fields && (n.childForFieldName(fields.name)?.text ?? '').trim() === part) {
+          const value = n.childForFieldName(fields.value);
+          if (value) writes.push({ node: n, value, scope });
+        }
+        for (const child of n.namedChildren) collect(child ?? null);
+      };
+      collect(scope);
+    }
+    /*
+     * A WRITE INSIDE A CLOSURE is a write this walk does not see - it stops at
+     * nested functions on purpose - and `let bar = "x"; const set = () => {
+     * bar = req.query.q; }; set();` would read as constant. The folder's survey
+     * walks nested functions too; if it counts more writes here than this walk
+     * did, one of them is hidden in a closure, and nothing is proved.
+     */
+    const innermost = scopes[0];
+    if (innermost && folder.plainWriteCount(part, innermost) > writes.filter((w) => w.scope === innermost).length) {
+      return null;
+    }
+
+    /*
+     * THE LAST CERTAIN WRITE.
+     *
+     *     bar = (String) map.get("keyB");   // the request parameter
+     *     bar = (String) map.get("keyA");   // a literal
+     *     sql = "... " + bar;
+     *
+     * Every write to `bar` used to have to be a literal, so the dirty one above
+     * - overwritten one line later - sank the proof. When one write is certain
+     * to run after all the others and before the read, it is the only one that
+     * matters. Certain means: it is a statement directly in a block that holds
+     * the read, it comes before the read, and NO write to the name comes after
+     * it anywhere in the function - so no loop can bring an earlier or later
+     * value round again. Not attempted in C or C++, where a declaration in an
+     * inner block can shadow the name without this walk seeing a write.
+     */
+    const last = certainLastWrite(writes, anchor);
+    if (last) {
+      const why = valueIsConstant(last.value, body, depth);
+      if (!why) return null;
+      return [
+        ...why,
+        `the value at line ${lineOf(anchor)} is the one written on line ${lineOf(last.node)}, which ` +
+          `overwrites every earlier write and is never overwritten itself`,
+      ];
+    }
+
+    for (const scope of scopes) {
       const walk = (n: Node | null): void => {
         if (!n || !fixed) return;
         // Do NOT descend into a nested scope. Searching the module body walked

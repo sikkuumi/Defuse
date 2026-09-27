@@ -93,6 +93,8 @@ export interface AnalysisStats {
   readonly signaturesProvedConstant: number;
   /** Branches and cases the tracer did not walk because they cannot run. */
   readonly regionsProvedUnreachable: number;
+  /** Reads from a local map or list answered by key or position rather than by the whole collection. */
+  readonly collectionReadsResolved: number;
   readonly durationMs: number;
 }
 
@@ -165,6 +167,8 @@ export interface AnalysisResult {
   readonly verifiedClean: readonly VerifiedClean[];
   /** Code the tracer did not walk, because a fixed condition means it cannot run. */
   readonly unreachableCode: readonly UnreachableCode[];
+  /** Map and list reads answered by key or position, each with the write that answers it. */
+  readonly collectionReadsResolved: readonly UnreachableCode[];
   /** Per-file participation, so "not listed" is never read as "clean". */
   readonly fileRoles: readonly FileRole[];
   /** Where the tracer ran out, counted for THIS scan rather than disclaimed. */
@@ -233,6 +237,7 @@ export async function analyze(
   const cleanRanges: Array<{ ruleId: string; file: string; start: number; end: number }> = [];
   const verifiedClean: VerifiedClean[] = [];
   const unreachableCode: UnreachableCode[] = [];
+  const collectionReadsResolved: UnreachableCode[] = [];
   /** One receipt per line per rule, however many shapes asked the same question. */
   const provedConstantKeys = new Set<string>();
   /** Summed across every file, so the report can say where the trace ran out. */
@@ -512,6 +517,13 @@ export async function analyze(
     traceLimits.unmodelledHops += trace.limits.unmodelledHops;
     traceLimits.sourcesFound += trace.limits.sourcesFound;
 
+    for (const read of trace.resolvedReads) {
+      collectionReadsResolved.push({
+        file: read.filePath || displayPath,
+        line: read.node.startPosition.row + 1,
+        why: read.why,
+      });
+    }
     for (const region of trace.unreachable) {
       unreachableCode.push({
         file: region.filePath || displayPath,
@@ -825,6 +837,7 @@ export async function analyze(
     findings: allFindings,
     verifiedClean,
     unreachableCode,
+    collectionReadsResolved,
     fileRoles,
     traceLimits,
     stats: {
@@ -836,6 +849,7 @@ export async function analyze(
       signaturesRetracted,
       signaturesProvedConstant: provedConstantKeys.size,
       regionsProvedUnreachable: unreachableCode.length,
+      collectionReadsResolved: collectionReadsResolved.length,
       durationMs: Date.now() - started,
     },
     byLanguage,

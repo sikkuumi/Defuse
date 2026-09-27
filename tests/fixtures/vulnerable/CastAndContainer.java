@@ -27,13 +27,22 @@ public class CastAndContainer extends HttpServlet {
   // unwrapped, the value is still traced through it, the finding still fires on
   // this line. Only the claim attached to it changed, and a rule that stopped
   // unwrapping casts would still break this test.
+  //
+  // PROMOTED BACK TO EXPECT-FLOW, for a reason the note above could not have.
+  // The engine now CAN compare the keys - not in general, and not on a
+  // request's attributes, where keyed-container.java's objection still stands -
+  // but for a map created here, handed to nothing, and written only by
+  // straight-line literal-key puts. Every write this map can receive is on the
+  // page, so which value comes out of `get("keyB")` is a fact rather than a
+  // guess (taint/local-map.ts, KeyedMapRead.java). The demotion was right for
+  // the engine it was written against; this is the proof it said was missing.
   public void cast(HttpServletRequest request, HttpServletResponse response) throws Exception {
     String param = request.getParameter("q");
     java.util.HashMap<String, Object> map = new java.util.HashMap<String, Object>();
     map.put("keyA", "a-Value");
     map.put("keyB", param);
     String bar = (String) map.get("keyB");
-    // EXPECT-SIGNATURE xss
+    // EXPECT-FLOW xss
     response.getWriter().println(bar);
   }
 

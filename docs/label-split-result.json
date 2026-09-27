@@ -1,60 +1,60 @@
 {
   "scored": 1210,
   "findingsByConfidence": {
-    "flow-verified": 520,
-    "signature-based": 1548
+    "flow-verified": 640,
+    "signature-based": 1290
   },
-  "casesWithBothLabels": 1,
+  "casesWithBothLabels": 2,
   "tiers": [
     {
       "label": "flow-verified only",
-      "tp": 456,
+      "tp": 562,
       "fp": 0,
-      "fn": 188,
+      "fn": 82,
       "tn": 566,
       "precision": "100.0%",
-      "recall": "70.8%",
+      "recall": "87.3%",
       "decoyFalsePositives": 0,
       "decoyShare": "0%",
       "nonDecoyFalsePositives": 0,
       "missedByCategory": {
-        "sqli": 107,
-        "xss": 47,
-        "cmdi": 34
+        "sqli": 62,
+        "xss": 14,
+        "cmdi": 6
       }
     },
     {
       "label": "signature-only",
-      "tp": 188,
-      "fp": 215,
-      "fn": 456,
-      "tn": 351,
-      "precision": "46.7%",
-      "recall": "29.2%",
+      "tp": 82,
+      "fp": 87,
+      "fn": 562,
+      "tn": 479,
+      "precision": "48.5%",
+      "recall": "12.7%",
       "decoyFalsePositives": 21,
-      "decoyShare": "10%",
-      "nonDecoyFalsePositives": 194,
+      "decoyShare": "24%",
+      "nonDecoyFalsePositives": 66,
       "missedByCategory": {
-        "cmdi": 92,
-        "sqli": 165,
-        "xss": 199
+        "cmdi": 120,
+        "sqli": 210,
+        "xss": 232
       }
     },
     {
       "label": "combined (published)",
       "tp": 644,
-      "fp": 215,
+      "fp": 87,
       "fn": 0,
-      "tn": 351,
-      "precision": "75.0%",
+      "tn": 479,
+      "precision": "88.1%",
       "recall": "100.0%",
       "decoyFalsePositives": 21,
-      "decoyShare": "10%",
-      "nonDecoyFalsePositives": 194,
+      "decoyShare": "24%",
+      "nonDecoyFalsePositives": 66,
       "missedByCategory": {}
     }
   ],
   "reconciles": true,
   "engineVersion": "0.5.0",
-  "measuredAt": "2026-09-26"
+  "measuredAt": "2026-09-27"
 }

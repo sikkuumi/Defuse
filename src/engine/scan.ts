@@ -45,6 +45,8 @@ export interface ScanResult {
   readonly verifiedClean: AnalysisResult['verifiedClean'];
   /** Branches and cases not followed because they cannot run, with the reason. */
   readonly unreachableCode: AnalysisResult['unreachableCode'];
+  /** Map and list reads answered by key or position, with the write that answers each. */
+  readonly collectionReadsResolved: AnalysisResult['collectionReadsResolved'];
   /** Per-file participation, so a file a flow passes through is never "clean". */
   readonly fileRoles: AnalysisResult['fileRoles'];
   /** Where the tracer ran out, counted for this scan. */
@@ -123,6 +125,7 @@ export async function scan(target: string, options: ScanOptions = {}): Promise<S
     findings: result.findings,
     verifiedClean: result.verifiedClean,
     unreachableCode: result.unreachableCode,
+    collectionReadsResolved: result.collectionReadsResolved,
     fileRoles: result.fileRoles,
     traceLimits: result.traceLimits,
     stats: {

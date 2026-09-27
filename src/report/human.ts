@@ -409,7 +409,8 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
     result.stats.flowsVerified > 0 ||
     result.stats.signaturesRetracted > 0 ||
     result.stats.signaturesProvedConstant > 0 ||
-    result.stats.regionsProvedUnreachable > 0
+    result.stats.regionsProvedUnreachable > 0 ||
+    result.stats.collectionReadsResolved > 0
   ) {
     out.push(
       color.dim(
@@ -424,6 +425,10 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
             ? ` ${g('middot')} ${result.stats.regionsProvedUnreachable} branch(es) or case(s) not ` +
               `followed because a fixed condition means they cannot run (listed in --json under ` +
               `unreachableCodeSkipped)`
+            : '') +
+          (result.stats.collectionReadsResolved > 0
+            ? ` ${g('middot')} ${result.stats.collectionReadsResolved} collection read(s) answered by key or position ` +
+              `(listed in --json under collectionReadsResolved)`
             : ''),
       ),
     );

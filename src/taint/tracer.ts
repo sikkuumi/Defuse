@@ -62,6 +62,7 @@ import type { ParsedFile } from '../parse/parser.js';
 import { analyzeStringExpression, looksLikeHtml, looksLikeSql } from '../rules/lib/strings.js';
 import { TAINT_DICTIONARIES } from './dictionaries.js';
 import { ASSIGNMENT_NODES, SWITCH_NODES, assignmentParts, createFolder, type SwitchDecision } from './fold.js';
+import { declaredImmutable, enclosingMethod, resolveContainerRead, writtenBetween } from './local-map.js';
 import { SINK_KIND_RULE, type SinkKind, type TaintDictionary } from './types.js';
 
 /* -------------------------------------------------------------------------- *
@@ -572,6 +573,13 @@ const CONDITIONAL_NODES = new Set([
   'for_in_statement',
   'for_range_loop',
   'foreach_statement',
+]);
+
+/** Java literal node types: a map value of one of these is a constant. */
+const JAVA_LITERALS = new Set([
+  'string_literal', 'character_literal', 'decimal_integer_literal', 'hex_integer_literal',
+  'octal_integer_literal', 'binary_integer_literal', 'decimal_floating_point_literal',
+  'true', 'false', 'null_literal',
 ]);
 
 const CONTAINER_NODES = new Set([
@@ -1179,6 +1187,8 @@ export interface TraceOutcome {
   readonly flows: readonly FlowResult[];
   readonly sanitized: readonly SanitizedFlow[];
   readonly unreachable: readonly UnreachableRegion[];
+  /** Reads from a local map resolved to the one put that supplies them - see local-map.ts. */
+  readonly resolvedReads: readonly UnreachableRegion[];
   readonly limits: TraceLimits;
 }
 
@@ -1240,7 +1250,7 @@ export function traceFile(
     sourcesFound: seenSources.size,
   });
 
-  if (!dictionary) return { flows: [], sanitized: [], unreachable: [], limits: limits() };
+  if (!dictionary) return { flows: [], sanitized: [], unreachable: [], resolvedReads: [], limits: limits() };
 
   const functionTypes = new Set(FUNCTION_NODES[language] ?? []);
   const fileTypes = declaredTypes(file.root, language);
@@ -1257,6 +1267,19 @@ export function traceFile(
    */
   const unreachable: UnreachableRegion[] = [];
   const unreachableSeen = new Set<string>();
+  /*
+   * A map read answered by key rather than by "the whole collection is dirty".
+   * Recorded for the same reason as unreachable code: a finding that used to
+   * exist and now does not has to leave the decision behind it on the record.
+   */
+  const resolvedReads: UnreachableRegion[] = [];
+  const resolvedSeen = new Set<string>();
+  const noteResolvedRead = (node: Node, filePath: string, why: string): void => {
+    const key = `${filePath}\0${node.startIndex}:${node.endIndex}`;
+    if (resolvedSeen.has(key)) return;
+    resolvedSeen.add(key);
+    resolvedReads.push({ node, filePath: toDisplay(filePath), why });
+  };
   const noteUnreachable = (node: Node, filePath: string, why: string): void => {
     const key = `${filePath}\0${node.startIndex}:${node.endIndex}`;
     if (unreachableSeen.has(key)) return;
@@ -1613,6 +1636,46 @@ export function traceFile(
     // characters appear anywhere inside the expression.
     const asSource = sourceTaint(node, `${calleeText}(`);
     if (asSource) return asSource;
+
+    /*
+     * A READ FROM A LOCAL MAP WHOSE EVERY WRITE IS ON THE PAGE.
+     *
+     * The default answer to `map.get(k)` is the whole map's taint, labelled a
+     * guess about which element came out. When local-map.ts can show which put
+     * a read returns, the answer is that put's value instead - a literal is
+     * clean, and a variable is traced as itself, with no guess attached.
+     *
+     * A variable is only read at the `get` if nothing reassigns it between the
+     * put and the read - the map keeps the value it was given, and evaluating a
+     * reassigned name here would describe the new value, not the stored one -
+     * and if its declared type cannot change in place (declaredImmutable): a
+     * StringBuilder or an array in the map changes whenever an alias of it
+     * does. Anything else falls through to the whole-collection answer.
+     */
+    if (language === 'java' && name === 'get') {
+      const read = resolveContainerRead(node, language);
+      if (read) {
+        const line = read.write.startPosition.row + 1;
+        const where = `\`${read.container}.get(${read.selector.startsWith('index') ? read.selector.slice(6) : read.selector})\` returns what was stored at ${read.selector} on line ${line}`;
+        if (JAVA_LITERALS.has(read.value.type)) {
+          noteResolvedRead(node, scope.filePath, `${where}, a literal`);
+          return null;
+        }
+        const method = enclosingMethod(node);
+        if (
+          read.value.type === 'identifier' &&
+          method &&
+          declaredImmutable(method, read.value.text) &&
+          !writtenBetween(method, read.value.text, read.write.endIndex, node.startIndex)
+        ) {
+          noteResolvedRead(node, scope.filePath, `${where}, \`${read.value.text}\``);
+          const stored = evaluate(read.value, scope, depth + 1);
+          return stored
+            ? addStep(stored, node, `read back from \`${read.container}\` at ${read.selector} - the value stored there on line ${line}`)
+            : null;
+        }
+      }
+    }
 
     /*
      * A SANITISER PASSED AS A VALUE, NOT CALLED.
@@ -3046,7 +3109,7 @@ export function traceFile(
     }
   }
 
-  return { flows: results, sanitized, unreachable, limits: limits() };
+  return { flows: results, sanitized, unreachable, resolvedReads, limits: limits() };
 }
 
 export { type TaintDictionary };

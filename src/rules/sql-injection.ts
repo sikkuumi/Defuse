@@ -138,11 +138,14 @@ export const sqlInjectionRule: Rule = {
     'finding is upgraded to flow-verified and this text is replaced by a traced path. ' +
     'When every spliced value is PROVABLY a fixed literal - including a write in a ' +
     'branch that cannot run, a condition decided at compile time, or a same-file Java ' +
-    'helper reached through `new X().m()` or a private/static method - the guess is ' +
-    'withdrawn and listed as proved clean with the reason, rather than reported. That ' +
-    'proof stops at one helper level, does not follow helpers outside Java, and does not ' +
-    'model String or collection methods, so a value fixed by any of those is still ' +
-    'reported here.',
+    'helper reached through `new X().m()` or a private/static method, a read from a ' +
+    'local Java map or list that returns a literal stored under that key or at that ' +
+    'position, or a dirty write that is ' +
+    'certainly overwritten before the query - the guess is withdrawn and listed as ' +
+    'proved clean with the reason, rather than reported. That proof stops at one helper ' +
+    'level, does not follow helpers outside Java, does not use the last-write rule in C ' +
+    'or C++, and does not model String methods or any collection other than those local ' +
+    'maps and lists, so a value fixed by any of those is still reported here.',
   shapes: ['call', 'assignment'],
   support: {
     javascript: {

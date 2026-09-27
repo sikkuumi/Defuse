@@ -87,6 +87,8 @@ export interface Folder {
   readonly switchDecision: (node: Node, body: Node) => SwitchDecision | null;
   /** Whether a name receives any write that is not a plain `name = value`. */
   readonly writtenOtherwise: (name: string, body: Node) => boolean;
+  /** How many plain writes a name receives in a function, nested functions included. */
+  readonly plainWriteCount: (name: string, body: Node) => number;
 }
 
 export function createFolder(language: LanguageId): Folder {
@@ -545,6 +547,9 @@ export function createFolder(language: LanguageId): Folder {
 
   /** For the constant proof: does `name` receive any write that is not a plain `name = value`? */
   const writtenOtherwise = (name: string, body: Node): boolean => survey(bareName(name), body).otherWrite;
+
+  /** Every plain write to `name` in `body`, nested functions included. */
+  const plainWriteCount = (name: string, body: Node): number => survey(bareName(name), body).writes.length;
 
   /** Does the sole write certainly run before `use`, and govern it? */
   const writeReaches = (facts: WriteFacts, use: Node | null): boolean =>
@@ -1036,7 +1041,7 @@ export function createFolder(language: LanguageId): Folder {
     return { dead, certain, note };
   };
 
-  return { foldExpression, conditionTruth, ternaryParts, deadBranchOf, switchDecision, writtenOtherwise };
+  return { foldExpression, conditionTruth, ternaryParts, deadBranchOf, switchDecision, writtenOtherwise, plainWriteCount };
 }
 
 /** What a decided switch tells the tracer and the constant proof. */

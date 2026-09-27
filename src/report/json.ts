@@ -72,6 +72,13 @@ export function renderJson(result: ScanResult, pretty = true): string {
        * leaving a missing finding with no explanation.
        */
       regionsProvedUnreachable: result.stats.regionsProvedUnreachable,
+      /*
+       * Reads from a local map or list answered by the key or the position,
+       * because every write the collection could receive is visible (see
+       * taint/local-map.ts) - each listed under diagnostics.collectionReadsResolved
+       * with the write that answers it.
+       */
+      collectionReadsResolved: result.stats.collectionReadsResolved,
       meaningOfConfidence: result.coverage.engine.meaningOfConfidence,
       notImplemented: result.coverage.engine.notImplemented,
       dataFlowCoverageByLanguage: result.coverage.taint,
@@ -123,6 +130,7 @@ export function renderJson(result: ScanResult, pretty = true): string {
       suppressions: result.suppressions,
       verifiedClean: result.verifiedClean,
       unreachableCodeSkipped: result.unreachableCode,
+      collectionReadsResolved: result.collectionReadsResolved,
       oversizedFilesSkipped: result.oversizedFiles,
       excludedByUser: result.excluded,
       /**
