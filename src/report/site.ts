@@ -586,14 +586,34 @@ export function renderSite(benchmark: BenchmarkResult, split: LabelSplitResult):
       <div class="rule"></div>
       <div>
         <div class="mono" style="font-size:11px;letter-spacing:2.2px;text-transform:uppercase;color:var(--brand-soft)">The footnote, printed rather than buried</div>
-        <p style="margin-top:12px;font-size:15px;max-width:72ch">${verified.decoyFalsePositives} of the
+        ${
+          /*
+           * Three shapes, chosen by the measurement. This paragraph once read
+           * "0 of the 0 false positives (0%) are decoys. That leaves 0 ordinary
+           * mistakes" - a template filled with zeros is not a sentence.
+           */
+          verified.fp === 0
+            ? `<p style="margin-top:12px;font-size:15px;max-width:72ch">No false positive wears the filled
+          label on this benchmark: all <span style="color:var(--white)">${verified.tp}</span>
+          <code style="font-size:14px;color:var(--white)">flow-verified</code> claims are real
+          vulnerabilities. That is a fact about these ${benchmark.scored.toLocaleString('en-US')} test cases, not a
+          promise about your code — a proof means the path exists in the source, and the ways it can still be
+          wrong are in the limitations below, which a synthetic benchmark does not exercise.</p>`
+            : verified.decoyFalsePositives === 0
+              ? `<p style="margin-top:12px;font-size:15px;max-width:72ch">None of the ${verified.fp} false
+          positives still wearing the filled label is a constant-branch decoy. They are
+          <span style="color:var(--white)">${verified.nonDecoyFalsePositives}</span> ordinary mistakes, and
+          <code style="font-size:14px;color:var(--white)">flow-verified</code> precision is ${exclDecoy}% with
+          nothing set aside.</p>`
+              : `<p style="margin-top:12px;font-size:15px;max-width:72ch">${verified.decoyFalsePositives} of the
           ${verified.fp} false positives still wearing the filled label (${esc(verified.decoyShare)}) are the
           benchmark’s own constant-branch decoys — a data path that genuinely exists, inside a branch that can
           never run. That leaves <span style="color:var(--white)">${verified.nonDecoyFalsePositives}</span>
           ordinary mistakes, which would put <code style="font-size:14px;color:var(--white)">flow-verified</code>
           precision at ${exclDecoy}%. Both numbers are here because neither alone is the truth: the first is
           contaminated by synthetic traps, the second needs cases excluded, and you deserve to see the size of
-          that choice rather than inherit it.</p>
+          that choice rather than inherit it.</p>`
+        }
       </div>
     </div>
   </div>

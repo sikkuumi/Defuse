@@ -61,7 +61,7 @@ import { nodeLocation } from '../parse/location.js';
 import type { ParsedFile } from '../parse/parser.js';
 import { analyzeStringExpression, looksLikeHtml, looksLikeSql } from '../rules/lib/strings.js';
 import { TAINT_DICTIONARIES } from './dictionaries.js';
-import { ASSIGNMENT_NODES, assignmentParts, createFolder } from './fold.js';
+import { ASSIGNMENT_NODES, SWITCH_NODES, assignmentParts, createFolder, type SwitchDecision } from './fold.js';
 import { SINK_KIND_RULE, type SinkKind, type TaintDictionary } from './types.js';
 
 /* -------------------------------------------------------------------------- *
@@ -547,6 +547,18 @@ const CONDITIONAL_NODES = new Set([
   'switch_statement',
   'switch_block',
   'switch_expression',
+  /*
+   * GO'S SWITCHES WERE MISSING FROM THIS LIST, and it cost real findings.
+   *
+   * This set is how the tracer knows a write might not happen. Go spells its
+   * switch `expression_switch_statement`, not `switch_statement`, so a clean
+   * write in ANY case of a Go switch was treated as certain and erased the
+   * taint - `bar := input; switch len(bar) { case 1: bar = "safe" }` left `bar`
+   * clean. The same logic written as an `if` was reported. switch-constant.go.
+   */
+  'expression_switch_statement',
+  'type_switch_statement',
+  'select_statement',
   'ternary_expression',
   'conditional_expression',
   'case_statement',
@@ -1150,9 +1162,23 @@ export interface TraceLimits {
   readonly astTruncations: number;
 }
 
+/**
+ * Code the tracer did not walk because a condition fixed at compile time means
+ * it cannot run - the dead arm of an `if`, a case a decided switch cannot
+ * reach. Not a finding, and not a proof about any one line: a record of a
+ * decision, so that a flow which disappeared because of it did not disappear
+ * silently.
+ */
+export interface UnreachableRegion {
+  readonly node: Node;
+  readonly filePath: string;
+  readonly why: string;
+}
+
 export interface TraceOutcome {
   readonly flows: readonly FlowResult[];
   readonly sanitized: readonly SanitizedFlow[];
+  readonly unreachable: readonly UnreachableRegion[];
   readonly limits: TraceLimits;
 }
 
@@ -1214,7 +1240,7 @@ export function traceFile(
     sourcesFound: seenSources.size,
   });
 
-  if (!dictionary) return { flows: [], sanitized: [], limits: limits() };
+  if (!dictionary) return { flows: [], sanitized: [], unreachable: [], limits: limits() };
 
   const functionTypes = new Set(FUNCTION_NODES[language] ?? []);
   const fileTypes = declaredTypes(file.root, language);
@@ -1223,6 +1249,20 @@ export function traceFile(
   const fileAliases = sinkAliases(file.root, knownSinkNames);
   const results: FlowResult[] = [];
   const sanitized: SanitizedFlow[] = [];
+  /*
+   * Every region skipped as unreachable, once each. Before this list existed the
+   * dead arm of an `if` was skipped with no record at all - a flow inside it
+   * simply never existed, and nothing in the report could say why a line that
+   * reads a request parameter went unreported.
+   */
+  const unreachable: UnreachableRegion[] = [];
+  const unreachableSeen = new Set<string>();
+  const noteUnreachable = (node: Node, filePath: string, why: string): void => {
+    const key = `${filePath}\0${node.startIndex}:${node.endIndex}`;
+    if (unreachableSeen.has(key)) return;
+    unreachableSeen.add(key);
+    unreachable.push({ node, filePath: toDisplay(filePath), why });
+  };
 
   /**
    * The file we are standing in RIGHT NOW - not necessarily the file we were
@@ -2325,12 +2365,60 @@ export function traceFile(
   };
 
   // The constant folder lives in fold.ts now, shared with the signature rules.
-  const { conditionTruth, ternaryParts, deadBranchOf } = createFolder(language);
+  const { conditionTruth, ternaryParts, deadBranchOf, switchDecision } = createFolder(language);
 
-  const underCondition = (node: Node, body: Node): boolean => {
+  /*
+   * A switch is decided once per site, not once per statement inside it. Keyed
+   * by file and span: the tracer walks into other files' functions, and a span
+   * alone means nothing across files.
+   */
+  const switchDecisions = new Map<string, SwitchDecision | null>();
+  const decideSwitch = (node: Node, body: Node, filePath: string): SwitchDecision | null => {
+    const key = `${filePath}\0${node.startIndex}:${node.endIndex}`;
+    if (!switchDecisions.has(key)) switchDecisions.set(key, switchDecision(node, body));
+    return switchDecisions.get(key) ?? null;
+  };
+  /** Case groups of decided switches that cannot run. The walk never enters them. */
+  const deadCases = new Set<string>();
+  const spanKey = (filePath: string, node: Node): string => `${filePath}\0${node.startIndex}:${node.endIndex}`;
+
+  /*
+   * The switch a switch-internal conditional node belongs to, within two levels.
+   * Only a PART of a switch qualifies: an `if` inside a Go case is two levels
+   * below the switch too, and mistaking it for the switch would treat the body
+   * of that `if` as certain.
+   */
+  const SWITCH_PARTS = new Set([
+    'switch_block', 'switch_body', 'case_statement', 'default_statement',
+    'switch_case', 'switch_default', 'expression_case', 'default_case',
+  ]);
+  const owningSwitch = (current: Node): Node | null => {
+    if (SWITCH_NODES.has(current.type)) return current;
+    if (!SWITCH_PARTS.has(current.type)) return null;
+    const up = current.parent;
+    if (up && SWITCH_NODES.has(up.type)) return up;
+    const upper = up?.parent ?? null;
+    return upper && SWITCH_NODES.has(upper.type) ? upper : null;
+  };
+
+  const underCondition = (node: Node, body: Node, filePath: string): boolean => {
     let current: Node | null = node.parent;
     while (current && current !== body) {
       if (CONDITIONAL_NODES.has(current.type)) {
+        /*
+         * A case of a decided switch that runs EVERY time the switch does is no
+         * more conditional than the if-true below - see switchDecision in
+         * fold.ts for what "every time" has to survive.
+         */
+        const sw = owningSwitch(current);
+        if (sw) {
+          const decision = decideSwitch(sw, body, filePath);
+          if (decision?.certain(node)) {
+            current = sw.parent;
+            continue;
+          }
+          return true;
+        }
         /*
          * An `if` whose condition is decidably TRUE is not a condition at all -
          * the block runs every time. Without this the folder would silence the
@@ -2376,6 +2464,20 @@ export function traceFile(
       return;
     }
     /*
+     * A case that cannot run is not walked, exactly like the dead arm of an if
+     * below: a write in it never happened, so it is never recorded - neither a
+     * tainted write that would invent a flow, nor a clean one that would cost a
+     * real flow its proof. SwitchOnConstant.java.
+     */
+    if (deadCases.size > 0 && deadCases.has(spanKey(scope.filePath, node))) return;
+    if (SWITCH_NODES.has(node.type)) {
+      const decision = decideSwitch(node, scope.body, scope.filePath);
+      for (const dead of decision?.dead ?? []) {
+        deadCases.add(spanKey(scope.filePath, dead));
+        noteUnreachable(dead, scope.filePath, decision?.note ?? 'the switch is decided at compile time');
+      }
+    }
+    /*
      * Do not walk into a branch that cannot run.
      *
      * The ternary case above decides which VALUE comes out of an expression.
@@ -2389,6 +2491,12 @@ export function traceFile(
     if (node.type === 'if_statement') {
       const dead = deadBranchOf(node, scope.body);
       if (dead) {
+        const truth = conditionTruth(node.childForFieldName('condition'), scope.body);
+        noteUnreachable(
+          dead,
+          scope.filePath,
+          `the condition on line ${node.startPosition.row + 1} is always ${truth ? 'true' : 'false'}`,
+        );
         /*
          * Compared by source span, not by identity. The tree-sitter binding
          * hands back a fresh wrapper object each time a child is asked for, so
@@ -2582,7 +2690,7 @@ export function traceFile(
           } else if (extendsTarget) {
             // Appending something clean to a dirty value leaves it dirty.
             continue;
-          } else if (scope.env.has(targetName) && underCondition(node, scope.body)) {
+          } else if (scope.env.has(targetName) && underCondition(node, scope.body, scope.filePath)) {
             /*
              * A clean write we cannot prove happens. Keep the dirt - but record
              * that we ASSUMED rather than followed, so no proof is claimed on
@@ -2938,7 +3046,7 @@ export function traceFile(
     }
   }
 
-  return { flows: results, sanitized, limits: limits() };
+  return { flows: results, sanitized, unreachable, limits: limits() };
 }
 
 export { type TaintDictionary };

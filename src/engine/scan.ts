@@ -43,6 +43,8 @@ export interface ScanResult {
   readonly findings: readonly Finding[];
   /** Lines the tracer proved safe. Reported so "clean" can mean "checked". */
   readonly verifiedClean: AnalysisResult['verifiedClean'];
+  /** Branches and cases not followed because they cannot run, with the reason. */
+  readonly unreachableCode: AnalysisResult['unreachableCode'];
   /** Per-file participation, so a file a flow passes through is never "clean". */
   readonly fileRoles: AnalysisResult['fileRoles'];
   /** Where the tracer ran out, counted for this scan. */
@@ -120,6 +122,7 @@ export async function scan(target: string, options: ScanOptions = {}): Promise<S
     target,
     findings: result.findings,
     verifiedClean: result.verifiedClean,
+    unreachableCode: result.unreachableCode,
     fileRoles: result.fileRoles,
     traceLimits: result.traceLimits,
     stats: {

@@ -395,6 +395,67 @@ async function main(): Promise<number> {
     );
   }
 
+  /*
+   * NO FINDING MAY CALL AN HTML ESCAPER "UNESCAPED".
+   *
+   * 158 BenchmarkJava findings printed "no escaping is visible at this line"
+   * with a call to encodeForHTML in the list of offending values. The finding
+   * could still be right about the line; the sentence was wrong about the value,
+   * and it points the reader at the one part of the code that was correct.
+   * Checked on every fixture finding, and on one that must exist - a check
+   * that passes because nothing was looked at is not a check.
+   */
+  const unescapedNamed = (f: Finding): string[] => {
+    const match = /It splices in (.*?), and no HTML escaping is visible for/.exec(f.reasoning);
+    return match?.[1] ? [...match[1].matchAll(/`([^`]*)`/g)].map((m) => m[1] ?? '') : [];
+  };
+  const misnamed = findings.filter((f) =>
+    unescapedNamed(f).some((p) => /encodeForHTML|escapeHtml|htmlEscape|htmlspecialchars|htmlentities|esc_html|escape_html/i.test(p)),
+  );
+  const partial = findings.find((f) => f.location.file.endsWith('EscaperChainPartial.java') && f.ruleId === 'xss');
+  const partialNamesOnlySecond =
+    !!partial &&
+    unescapedNamed(partial).join(',') === 'second' &&
+    /encodeForHTML\(first\)`? does go through an escaper/.test(partial.reasoning);
+  if (misnamed.length === 0 && partialNamesOnlySecond) {
+    passed++;
+    console.log(
+      `    ${color.green(g('tick'))} no finding lists an HTML escaper call as an unescaped value, and ` +
+        `EscaperChainPartial.java names only \`second\``,
+    );
+  } else {
+    failed++;
+    for (const f of misnamed) {
+      console.log(`    ${color.red(g('cross'))} ${path.basename(f.location.file)}:${f.location.startLine} calls an escaper unescaped`);
+    }
+    if (!partialNamesOnlySecond) {
+      console.log(`    ${color.red(g('cross'))} EscaperChainPartial.java should blame \`second\` alone and credit the escaper`);
+    }
+  }
+
+  /*
+   * A FLOW REMOVED BY A DECIDED BRANCH MUST SAY SO.
+   *
+   * SwitchDeadHelper.java and switch-dead.c are silent because a case that reads
+   * the request cannot run. Silence is also what a crashed rule looks like, so
+   * each must leave a record naming the decision - the same reason EXPECT-CLEAN
+   * asks for a receipt rather than for nothing.
+   */
+  const skippedIn = (name: string): string[] =>
+    result.unreachableCode.filter((u) => u.file.endsWith(name)).map((u) => u.why);
+  const deadHelper = skippedIn('SwitchDeadHelper.java');
+  const deadC = skippedIn('switch-dead.c');
+  if (deadHelper.some((w) => /always takes `case 'B'`/.test(w)) && deadC.some((w) => /always takes `case 'B'`/.test(w))) {
+    passed++;
+    console.log(
+      `    ${color.green(g('tick'))} ${result.unreachableCode.length} unreachable branch(es) and case(s) ` +
+        `recorded with the decision behind them, including both switch-only safe fixtures`,
+    );
+  } else {
+    failed++;
+    console.log(`    ${color.red(g('cross'))} a case skipped as unreachable left no record of why`);
+  }
+
   /* ---- what the tracer actually achieved ---- */
   console.log(`\n${color.bold('  Data-flow engine')}`);
   console.log(
@@ -1699,15 +1760,34 @@ async function main(): Promise<number> {
 
   /* ---- parsing health across every language ---- */
   console.log(`\n${color.bold('  Parser health')}`);
-  if (result.parseProblems.length === 0) {
+  /*
+   * Two fixtures exist BECAUSE the grammar cannot read them - their subject is
+   * what the folder does with code it cannot parse. They are named here, each
+   * with its reason, and must still fail to parse: a grammar upgrade that fixes
+   * one should retire it knowingly, not leave a fixture that tests nothing.
+   */
+  const EXPECTED_PARSE_ERRORS: Record<string, string> = {
+    'FolderSoundnessUnparsed.java': 'the Java grammar cannot read `(n) = x;`',
+    'folder-soundness-gnu.c': "GNU's `case 1 ... 5:` is not C",
+  };
+  const unexpectedParse = result.parseProblems.filter((p) => !(path.basename(p.file) in EXPECTED_PARSE_ERRORS));
+  const expectedStillFailing = Object.keys(EXPECTED_PARSE_ERRORS).every((name) =>
+    result.parseProblems.some((p) => path.basename(p.file) === name),
+  );
+  if (unexpectedParse.length === 0 && expectedStillFailing) {
     passed++;
     console.log(
-      `    ${color.green(g('tick'))} ${result.stats.filesParsed} fixture files parsed with zero errors`,
+      `    ${color.green(g('tick'))} ${result.stats.filesParsed - result.parseProblems.length} fixture files ` +
+        `parsed with zero errors; the ${Object.keys(EXPECTED_PARSE_ERRORS).length} that exist to be ` +
+        `unparseable still are (${Object.values(EXPECTED_PARSE_ERRORS).join('; ')})`,
     );
   } else {
     failed++;
-    for (const problem of result.parseProblems) {
+    for (const problem of unexpectedParse) {
       console.log(`    ${color.red(g('cross'))} ${path.basename(problem.file)}: ${problem.issues[0]?.text}`);
+    }
+    if (!expectedStillFailing) {
+      console.log(`    ${color.red(g('cross'))} a fixture meant to be unparseable now parses - retire or rewrite it`);
     }
   }
   const languagesSeen = Object.keys(result.byLanguage).sort();

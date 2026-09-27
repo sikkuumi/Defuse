@@ -64,6 +64,14 @@ export function renderJson(result: ScanResult, pretty = true): string {
        * the reason, so the reasoning can be checked line by line.
        */
       signatureGuessesWithdrawnAsConstant: result.stats.signaturesProvedConstant,
+      /*
+       * Branches and cases the tracer did not follow because a condition fixed
+       * at compile time means they cannot run. A flow that lived only inside one
+       * of them is not reported - so each is listed under
+       * diagnostics.unreachableCodeSkipped, with the decision, rather than
+       * leaving a missing finding with no explanation.
+       */
+      regionsProvedUnreachable: result.stats.regionsProvedUnreachable,
       meaningOfConfidence: result.coverage.engine.meaningOfConfidence,
       notImplemented: result.coverage.engine.notImplemented,
       dataFlowCoverageByLanguage: result.coverage.taint,
@@ -114,6 +122,7 @@ export function renderJson(result: ScanResult, pretty = true): string {
       parseProblems: result.parseProblems,
       suppressions: result.suppressions,
       verifiedClean: result.verifiedClean,
+      unreachableCodeSkipped: result.unreachableCode,
       oversizedFilesSkipped: result.oversizedFiles,
       excludedByUser: result.excluded,
       /**

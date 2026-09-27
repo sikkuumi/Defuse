@@ -33,7 +33,7 @@
 
 import type { Node } from 'web-tree-sitter';
 import type { LanguageId } from '../../parse/languages.js';
-import { createFolder } from '../../taint/fold.js';
+import { SWITCH_NODES, createFolder } from '../../taint/fold.js';
 
 /** Node types that ARE a string literal, per language. */
 const STRING_LITERAL_TYPES: Record<LanguageId, readonly string[]> = {
@@ -1185,13 +1185,25 @@ export function constantProof(
   const sameSpan = (a: Node, b: Node): boolean =>
     a.startIndex === b.startIndex && a.endIndex === b.endIndex;
 
-  /** The arm of an enclosing `if` that cannot run, if `n` sits in one. */
-  const deadArmHolding = (n: Node, scope: Node, body: Node): Node | null => {
+  /*
+   * The arm of an enclosing `if`, or the case of an enclosing switch, that
+   * cannot run - if `n` sits in one. Returned with the sentence the receipt
+   * uses, so the reader is told which decision made the write irrelevant.
+   */
+  const deadArmHolding = (n: Node, scope: Node, body: Node): { at: Node; why: string } | null => {
     let current: Node | null = n.parent;
     while (current && contains(scope, current)) {
       if (current.type === 'if_statement') {
         const dead = folder.deadBranchOf(current, body);
-        if (dead && contains(dead, n)) return current;
+        if (dead && contains(dead, n)) {
+          return { at: current, why: `is in a branch that cannot run (line ${lineOf(current)})` };
+        }
+      }
+      if (SWITCH_NODES.has(current.type)) {
+        const decision = folder.switchDecision(current, body);
+        if (decision?.dead.some((group) => contains(group, n))) {
+          return { at: current, why: `is in a case that cannot run: ${decision.note}` };
+        }
       }
       if (sameSpan(current, scope)) break;
       current = current.parent;
@@ -1374,6 +1386,13 @@ export function constantProof(
 
     for (const scope of scopes) {
       if (parameterNames(scope).has(part)) return null; // a parameter is input
+      /*
+       * A write this walk does not recognise - `bar, err := f()`, `[bar] = x`,
+       * `bar += param` in Python, `for bar in ...` - would leave only the literal
+       * writes visible, and the proof would call a tainted value constant. The
+       * folder's survey sees every form of write; any irregular one ends this.
+       */
+      if (folder.writtenOtherwise(part, scope)) return null;
       const walk = (n: Node | null): void => {
         if (!n || !fixed) return;
         // Do NOT descend into a nested scope. Searching the module body walked
@@ -1388,7 +1407,7 @@ export function constantProof(
             if (value) {
               const deadIf = deadArmHolding(n, scope, body);
               if (deadIf) {
-                notes.push(`the write on line ${lineOf(n)} is in a branch that cannot run (line ${lineOf(deadIf)})`);
+                notes.push(`the write on line ${lineOf(n)} ${deadIf.why}`);
               } else {
                 live++;
                 const why = valueIsConstant(value, body, depth);

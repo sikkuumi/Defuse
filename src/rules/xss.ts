@@ -143,13 +143,29 @@ function judgeSafety(
  * rather than gesturing at the whole statement. On a 40-line template literal
  * that is the difference between a usable finding and a shrug.
  */
-function describeSafety(safety: HtmlSafety | null, dynamicParts: readonly string[]): string {
+function describeSafety(
+  safety: HtmlSafety | null,
+  dynamicParts: readonly string[],
+  language: LanguageId,
+): string {
   if (!safety) {
-    // No proof available for this language - fall back to naming what was spliced in.
-    return dynamicParts.length
-      ? `It splices in ${dynamicParts.slice(0, 3).map((p) => `\`${p}\``).join(', ')}, and no ` +
-          `escaping is visible at this line. `
-      : 'No escaping or sanitiser call is visible at this line. ';
+    /*
+     * No proof available for this language - fall back to naming what was
+     * spliced in. Only the parts that are NOT escaped are called unescaped: this
+     * used to list every part and say "no escaping is visible", which was false
+     * whenever one of them was the escaper.
+     */
+    const quote = (parts: readonly string[]): string => parts.slice(0, 3).map((p) => `\`${p}\``).join(', ');
+    const bare = dynamicParts.filter((p) => !readsAsEscaperCall(p, language));
+    const escaped = dynamicParts.filter((p) => readsAsEscaperCall(p, language));
+    if (bare.length === 0) return 'No escaping or sanitiser call is visible at this line. ';
+    return (
+      // "HTML escaping", not "escaping": URLEncoder.encode and escapeSql are
+      // escapers too, for another language, and wrong-domain-escape.java is why.
+      `It splices in ${quote(bare)}, and no HTML escaping is visible for ` +
+      `${bare.length === 1 ? 'it' : 'them'} at this line. ` +
+      (escaped.length ? `(${quote(escaped)} ${escaped.length === 1 ? 'does' : 'do'} go through an escaper.) ` : '')
+    );
   }
 
   const named = safety.unproven.slice(0, 3).map((p) => `\`${p}\``).join(', ');
@@ -208,9 +224,46 @@ const ESCAPER_SHAPE =
 const MARKUP_CONTEXT = /html|xml|markup|attribute|\battr\b|ecma|javascript|\bjs\b|entities|tag/i;
 
 export function looksLikeAnEscaperCall(text: string): boolean {
-  const match = ESCAPER_SHAPE.exec(text);
+  const match = ESCAPER_SHAPE.exec(flattenCallChain(text));
   if (!match?.[1]) return false;
   return MARKUP_CONTEXT.test(match[1]);
+}
+
+/*
+ * THE ESCAPER WAS RIGHT THERE, AND THE REPORT SAID NONE WAS VISIBLE.
+ *
+ * BenchmarkJava escapes with OWASP's ESAPI, and writes it the way Java style
+ * guides lay out a long chain:
+ *
+ *     org.owasp
+ *         .esapi
+ *         .ESAPI
+ *         .encoder()
+ *         .encodeForHTML(value)
+ *
+ * The name lists above allow a dotted prefix, `[\w.]*`, and nothing else - so
+ * neither the line breaks nor the `()` of `encoder()` could be crossed, even
+ * on one line. The escaper went unread, and the finding printed "no escaping is
+ * visible at this line" underneath a call to encodeForHTML. 158 BenchmarkJava
+ * findings said that, and decided no scored case, so the benchmark never
+ * noticed. Deciding switches made it visible: 26 of those guesses had been
+ * withdrawn only because the tracer carried a value through a case that cannot
+ * run and saw the escaper on the way, and they came back.
+ *
+ * A chain is flattened before it is read - spaces around dots dropped, and an
+ * EMPTY call in the receiver, `encoder().`, read as a step along the path. A
+ * call with arguments is left alone: `wrap(x).escapeHtml(y)` is not a chain
+ * this should look through. The escaper is still trusted by name, exactly as
+ * before - see the DELIBERATE GAP note on this rule.
+ */
+function flattenCallChain(part: string): string {
+  return part.replace(/\s*\.\s*/g, '.').replace(/\(\s*\)\./g, '.');
+}
+
+/** Does this spliced-in part read as a call to an escaper for HTML? */
+function readsAsEscaperCall(part: string, language: LanguageId): boolean {
+  const known = ESCAPER_CALLS[language];
+  return (!!known && known.test(flattenCallChain(part))) || looksLikeAnEscaperCall(part);
 }
 
 const ESCAPER_CALLS: Partial<Record<LanguageId, RegExp>> = {
@@ -315,12 +368,9 @@ export const xssRule: Rule = {
        * single biggest false-positive cluster this project has ever produced
        * sat on the one branch that had no proof step at all.
        */
-      const assignEscapers = ESCAPER_CALLS[language];
       if (
         built.dynamicParts.length > 0 &&
-        built.dynamicParts.every(
-          (part) => (assignEscapers?.test(part) ?? false) || looksLikeAnEscaperCall(part),
-        )
+        built.dynamicParts.every((part) => readsAsEscaperCall(part, language))
       ) {
         return null;
       }
@@ -372,14 +422,14 @@ export const xssRule: Rule = {
             `page is HTML the browser reads whatever it contains as markup. That is the whole ` +
             `of what we know. There is NO literal HTML at this line and NO attacker-controlled ` +
             `source was traced into it, so this is not evidence of a bug - it is the absence of ` +
-            `a proof of safety, ranked low to say so. ${describeSafety(safety, built.dynamicParts)}` +
+            `a proof of safety, ranked low to say so. ${describeSafety(safety, built.dynamicParts, language)}` +
             `If the value is text, wrap it in esc_html(). If it is meant to be markup, wp_kses() ` +
             `states which tags you intended. A finding on this line with a traced path would be ` +
             `reported separately and would rank far above it.`
           : `Assigning to \`${assignment.targetName}\` makes the browser parse the value as ` +
             `HTML, so any tags or event handlers inside it run. The value here is not a ` +
             `fixed string - it was built via ${built.mechanism}. ` +
-            describeSafety(safety, built.dynamicParts) +
+            describeSafety(safety, built.dynamicParts, language) +
             `\`textContent\` would render the same value harmlessly as text.`,
       };
     }
@@ -458,9 +508,7 @@ export const xssRule: Rule = {
          * then `template.HTML("<b>" + safe)`) is not recognised and still
          * reports. Under-claiming, which is the right direction to be wrong in.
          */
-        const escapers = ESCAPER_CALLS[language];
-        const isEscaped = (part: string): boolean =>
-          (!!escapers && escapers.test(part)) || looksLikeAnEscaperCall(part);
+        const isEscaped = (part: string): boolean => readsAsEscaperCall(part, language);
         const everyPartEscaped =
           built.dynamicParts.length > 0 && built.dynamicParts.every(isEscaped);
         if (everyPartEscaped) continue;
@@ -493,7 +541,7 @@ export const xssRule: Rule = {
             `\`${call.calleeText}()\` writes its argument into the response or the document. ` +
             `The argument contains literal HTML ("${built.literalText.replace(/\s+/g, ' ').trim().slice(0, 60)}") ` +
             `and was assembled via ${built.mechanism}. ` +
-            describeSafety(safety, built.dynamicParts) +
+            describeSafety(safety, built.dynamicParts, language) +
             `Markup inside an unescaped value reaches the browser as instructions.`,
         };
       }

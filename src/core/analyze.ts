@@ -91,6 +91,8 @@ export interface AnalysisStats {
   readonly signaturesRetracted: number;
   /** Signature guesses a rule withdrew because every spliced value is provably fixed. */
   readonly signaturesProvedConstant: number;
+  /** Branches and cases the tracer did not walk because they cannot run. */
+  readonly regionsProvedUnreachable: number;
   readonly durationMs: number;
 }
 
@@ -102,6 +104,13 @@ export interface AnalysisStats {
  * lets a reader see the difference between "we found nothing here" and "we
  * checked here and it is genuinely fine", which are very different facts.
  */
+/** A branch or case skipped as unreachable, and the decision that made it so. */
+export interface UnreachableCode {
+  readonly file: string;
+  readonly line: number;
+  readonly why: string;
+}
+
 export interface VerifiedClean {
   readonly file: string;
   readonly line: number;
@@ -154,6 +163,8 @@ export interface AnalysisResult {
   readonly findings: readonly Finding[];
   /** Lines proven safe by a sanitiser the tracer actually saw run. */
   readonly verifiedClean: readonly VerifiedClean[];
+  /** Code the tracer did not walk, because a fixed condition means it cannot run. */
+  readonly unreachableCode: readonly UnreachableCode[];
   /** Per-file participation, so "not listed" is never read as "clean". */
   readonly fileRoles: readonly FileRole[];
   /** Where the tracer ran out, counted for THIS scan rather than disclaimed. */
@@ -221,6 +232,7 @@ export async function analyze(
   const flowRanges: Array<{ ruleId: string; file: string; start: number; end: number }> = [];
   const cleanRanges: Array<{ ruleId: string; file: string; start: number; end: number }> = [];
   const verifiedClean: VerifiedClean[] = [];
+  const unreachableCode: UnreachableCode[] = [];
   /** One receipt per line per rule, however many shapes asked the same question. */
   const provedConstantKeys = new Set<string>();
   /** Summed across every file, so the report can say where the trace ran out. */
@@ -499,6 +511,14 @@ export async function analyze(
     traceLimits.recursionStops += trace.limits.recursionStops;
     traceLimits.unmodelledHops += trace.limits.unmodelledHops;
     traceLimits.sourcesFound += trace.limits.sourcesFound;
+
+    for (const region of trace.unreachable) {
+      unreachableCode.push({
+        file: region.filePath || displayPath,
+        line: region.node.startPosition.row + 1,
+        why: region.why,
+      });
+    }
 
     // Lines where a tainted value reached a sink but was properly sanitised.
     // The signature pass cannot see a sanitiser, so it guessed; the tracer can,
@@ -804,6 +824,7 @@ export async function analyze(
   return {
     findings: allFindings,
     verifiedClean,
+    unreachableCode,
     fileRoles,
     traceLimits,
     stats: {
@@ -814,6 +835,7 @@ export async function analyze(
       signaturesUpgraded,
       signaturesRetracted,
       signaturesProvedConstant: provedConstantKeys.size,
+      regionsProvedUnreachable: unreachableCode.length,
       durationMs: Date.now() - started,
     },
     byLanguage,

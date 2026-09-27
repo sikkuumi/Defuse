@@ -408,7 +408,8 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
   if (
     result.stats.flowsVerified > 0 ||
     result.stats.signaturesRetracted > 0 ||
-    result.stats.signaturesProvedConstant > 0
+    result.stats.signaturesProvedConstant > 0 ||
+    result.stats.regionsProvedUnreachable > 0
   ) {
     out.push(
       color.dim(
@@ -418,6 +419,11 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
           (result.stats.signaturesProvedConstant > 0
             ? ` ${g('middot')} ${result.stats.signaturesProvedConstant} withdrawn as provably ` +
               `constant (listed in --json under verifiedClean, with the reason)`
+            : '') +
+          (result.stats.regionsProvedUnreachable > 0
+            ? ` ${g('middot')} ${result.stats.regionsProvedUnreachable} branch(es) or case(s) not ` +
+              `followed because a fixed condition means they cannot run (listed in --json under ` +
+              `unreachableCodeSkipped)`
             : ''),
       ),
     );
