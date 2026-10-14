@@ -76,7 +76,8 @@ function declaringBlock(from: Node, name: string, type: RegExp = MAP_TYPE): { bl
         if (declarators.length !== 1) return null;
         const value = mine.childForFieldName('value');
         if (value?.type !== 'object_creation_expression') return null;
-        if (!type.test((value.childForFieldName('type')?.text ?? '').replace(/\s+/g, ''))) return null;
+        const typeText = (value.childForFieldName('type')?.text ?? '').replace(/\s+/g, '');
+        if (!type.test(typeText) || !isJavaUtil(typeText, current)) return null;
         if (named(value.childForFieldName('arguments')).length !== 0) return null;
         if (value.childForFieldName('body') ?? named(value).some((c) => c.type === 'class_body')) return null;
         return { block: current, declaration: statement };
@@ -85,6 +86,30 @@ function declaringBlock(from: Node, name: string, type: RegExp = MAP_TYPE): { bl
     current = current.parent;
   }
   return null;
+}
+
+/*
+ * `new HashMap<>()` is java.util's HashMap only when nothing closer has that
+ * name: a class in this file called HashMap - whose get() can return
+ * anything (tests/probes/j07) - or one in the same package, which outranks
+ * `import java.util.*`. So an unqualified name counts only with a
+ * single-type `import java.util.HashMap;` and no type of that name declared
+ * in the file. `new java.util.HashMap<>()` - BenchmarkJava's spelling - is
+ * exact as written.
+ */
+function isJavaUtil(typeText: string, inside: Node): boolean {
+  if (typeText.startsWith('java.util.')) return true;
+  const simple = typeText.replace(/<[\s\S]*$/, '');
+  let root: Node = inside;
+  while (root.parent) root = root.parent;
+  const imported = named(root).some(
+    (c) => c.type === 'import_declaration' && (c.text ?? '').replace(/\s+/g, '') === `importjava.util.${simple};`,
+  );
+  if (!imported) return false;
+  const declared = root.descendantsOfType([
+    'class_declaration', 'interface_declaration', 'enum_declaration', 'record_declaration',
+  ]);
+  return !declared.some((d) => d?.childForFieldName('name')?.text === simple);
 }
 
 /** The method or constructor a node sits in - the whole region any mention of the map could hide in. */

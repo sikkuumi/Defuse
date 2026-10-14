@@ -137,15 +137,30 @@ export const sqlInjectionRule: Rule = {
     'and is a false positive. When the data-flow engine CAN confirm the source, the ' +
     'finding is upgraded to flow-verified and this text is replaced by a traced path. ' +
     'When every spliced value is PROVABLY a fixed literal - including a write in a ' +
-    'branch that cannot run, a condition decided at compile time, or a same-file Java ' +
-    'helper reached through `new X().m()` or a private/static method, a read from a ' +
-    'local Java map or list that returns a literal stored under that key or at that ' +
-    'position, or a dirty write that is ' +
-    'certainly overwritten before the query - the guess is withdrawn and listed as ' +
-    'proved clean with the reason, rather than reported. That proof stops at one helper ' +
-    'level, does not follow helpers outside Java, does not use the last-write rule in C ' +
-    'or C++, and does not model String methods or any collection other than those local ' +
-    'maps and lists, so a value fixed by any of those is still reported here.',
+    'branch that cannot run, a condition decided at compile time, literals joined ' +
+    'with `+`, a Java helper reached through `new X().m()`, a private/static method, ' +
+    'or a static method named through its class (`Utils.m()`, in this file or another, ' +
+    'when exactly one class of that full name and one method of that name exist in ' +
+    'the scan) whose returns are built from literals and parameters passed fixed ' +
+    'values, a read from a local Java map or list that returns a literal stored under ' +
+    'that key or at that position, or a dirty write that is certainly overwritten ' +
+    'before the query - the guess is withdrawn and listed as proved clean with the ' +
+    'reason, rather than reported. That proof stops at one helper level, does not ' +
+    'follow helpers outside Java or choose between overloads, does not use the ' +
+    'last-write rule in C or C++, and does not model String methods or any collection ' +
+    'other than those local maps and lists, so a value fixed by any of those is still ' +
+    'reported here. A name must be declared where the read can see it (Java, JavaScript, ' +
+    'TypeScript, Go block scoping); one declared outside the reading function counts only ' +
+    'when no other function in its file writes it, and a Java field only when it is ' +
+    'private or final. What the proof does NOT see, and so can wrongly call fixed: a ' +
+    'write from ANOTHER file to a JavaScript or Python module-level name or a Go package ' +
+    'variable declared in this file; a member inherited from a superclass outside the ' +
+    'scan (a library class such as HttpServlet), which could shadow a name or supply an ' +
+    'overload; and a write made through `new Function(...)` or a string handed to ' +
+    'setTimeout. A withdrawal whose values are all plain literals leaves no proved-clean ' +
+    'record. Two rounds of an agent trying to break this proof found 60 ways in; every ' +
+    'one is fixed and kept as a test in tests/probes/, and a third round would likely ' +
+    'find more.',
   shapes: ['call', 'assignment'],
   support: {
     javascript: {
@@ -206,7 +221,7 @@ export const sqlInjectionRule: Rule = {
         // in any way a reader cares about. When saying so took reasoning - a
         // branch that cannot run, a condition fixed at compile time - the
         // withdrawal leaves a receipt, because reasoning can be wrong.
-        const argProof = constantProof(arg, built.dynamicParts, language);
+        const argProof = constantProof(arg, built.dynamicParts, language, { staticMethod: ctx.staticMethod, javaTypeInScan: ctx.javaTypeInScan });
         if (argProof) {
           if (argProof.reasoned) ctx.noteClean?.('sql-injection', arg, argProof.reason);
           continue;
@@ -256,7 +271,7 @@ export const sqlInjectionRule: Rule = {
       const built = analyzeStringExpression(assignment.value, language);
       if (!built.isDynamic) return null;
       if (!looksLikeSql(built.literalText)) return null;
-      const buildProof = constantProof(assignment.value, built.dynamicParts, language);
+      const buildProof = constantProof(assignment.value, built.dynamicParts, language, { staticMethod: ctx.staticMethod, javaTypeInScan: ctx.javaTypeInScan });
       if (buildProof) {
         if (buildProof.reasoned) ctx.noteClean?.('sql-injection', assignment.node, buildProof.reason);
         return null;

@@ -95,7 +95,32 @@ export interface RuleContext {
    * Optional so a caller that builds its own context is not broken by it.
    */
   readonly noteClean?: (ruleId: string, node: Node, reason: string) => void;
+  /**
+   * Java only: the static method a call like `Utils.m(...)` or
+   * `a.b.Utils.m(...)` runs, when that is not in doubt - see
+   * taint/project.ts, staticMethod(). Absent when cross-file resolution is
+   * off, and then nothing is read through another file.
+   */
+  readonly staticMethod?: StaticMethodLookup | undefined;
+  /** Java only: is a type of this simple name - top-level or nested - declared anywhere in the scan? */
+  readonly javaTypeInScan?: ((simpleName: string) => boolean) | undefined;
 }
+
+/** A static method found in the scan: the file a reader should be shown, and its declaration. */
+export interface StaticMethodHit {
+  readonly path: string;
+  readonly method: Node;
+}
+
+/**
+ * `receiver` is the class as written at the call - `Utils` or `a.b.Utils`;
+ * `supertypes`, what the classes around the call inherit from.
+ */
+export type StaticMethodLookup = (
+  receiver: string,
+  method: string,
+  supertypes?: readonly string[],
+) => StaticMethodHit | null;
 
 /**
  * What a rule returns when it decides something is worth reporting.

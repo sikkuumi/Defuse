@@ -44,6 +44,7 @@ import {
   buildProjectIndex,
   importSpecifiers,
   indexFunctions,
+  javaTypeFacts,
   type IndexedFileInput,
   type ProjectIndexStats,
 } from '../taint/project.js';
@@ -306,6 +307,7 @@ export async function analyze(
       language: languageId,
       functions: indexFunctions(root, languageId),
       importSpecifiers: importSpecifiers(root, languageId),
+      javaTypes: languageId === 'java' ? javaTypeFacts(root) : undefined,
       parsed: rest,
     });
     store.admit(outcome.file.path, outcome.file.source, outcome.file.grammar, tree);
@@ -404,6 +406,13 @@ export async function analyze(
         provedConstantKeys.add(key);
         verifiedClean.push({ file: displayPath, line, ruleId, kind: 'constant', reason });
       },
+      staticMethod: projectIndex
+        ? (receiver: string, method: string, supertypes?: readonly string[]) => {
+            const hit = projectIndex.staticMethod(filePath, receiver, method, supertypes);
+            return hit && { path: toDisplay(hit.path), method: hit.method };
+          }
+        : undefined,
+      javaTypeInScan: projectIndex ? (name: string) => projectIndex.javaTypeInScan(name) : undefined,
     };
 
     const shapes = await extractShapes(file, file.language.id);

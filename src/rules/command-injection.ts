@@ -30,7 +30,7 @@
 import type { Node } from 'web-tree-sitter';
 import type { LanguageId } from '../parse/languages.js';
 import { asCall, type Rule, type RuleHit } from './contract.js';
-import { analyzeStringExpression } from './lib/strings.js';
+import { analyzeStringExpression, constantProof } from './lib/strings.js';
 import { followLocalBuild } from './lib/local-build.js';
 import { partsAreGuarded } from './lib/guards.js';
 
@@ -128,7 +128,12 @@ export const commandInjectionRule: Rule = {
     'the spliced value is attacker-controlled. A command variable written inside an if, ' +
     'a loop or a switch is not followed, and for list-style APIs we judged shell usage ' +
     'from the visible text of the call only - an options object built elsewhere is ' +
-    'invisible to us.',
+    'invisible to us. A command built right inside the call from values that are ' +
+    'PROVABLY fixed - by the same constant proof, and with the same limits, as the SQL ' +
+    'rule\'s, including a static Java helper in another file - is withdrawn and listed ' +
+    'as proved clean with the reason. Java only: in every other language this rule ' +
+    'does not use the proof and reports as before. A command assembled on an earlier ' +
+    'line does not get that proof either.',
   shapes: ['call'],
   support: {
     javascript: {
@@ -235,6 +240,31 @@ export const commandInjectionRule: Rule = {
       }
       if (!built.isDynamic) continue;
       if (built.mechanism === 'opaque' && built.literalText.length === 0) continue;
+      /*
+       * ASSEMBLED FROM FIXED PIECES IS NOT ASSEMBLED FROM INPUT. The SQL rule
+       * has asked this since the constant proof existed; this rule never did,
+       * so `exec(cmd + bar)` with both halves provably fixed was reported -
+       * 31 of BenchmarkJava's command-injection false positives, where `cmd`
+       * comes from a helper in another file (StaticHelperCommand.java). When
+       * the proof needed reasoning it leaves a receipt, as the SQL rule's does.
+       *
+       * Only for a command written right here in the call. One assembled on an
+       * earlier line (builtOnLine) is read at the call, and a name's value at
+       * the call can differ from its value where the command was built - so
+       * that case keeps the guess.
+       *
+       * And only in Java for now. Two rounds of an agent trying to break the
+       * proof (tests/probes/) found most of its holes outside Java, and the
+       * command rule had never leaned on it in any language; it starts where
+       * it has been tested hardest. Elsewhere this rule reports as before.
+       */
+      if (builtOnLine === null && language === 'java') {
+        const proof = constantProof(arg, built.dynamicParts, language, { staticMethod: ctx.staticMethod, javaTypeInScan: ctx.javaTypeInScan });
+        if (proof) {
+          if (proof.reasoned) ctx.noteClean?.('command-injection', arg, proof.reason);
+          continue;
+        }
+      }
       /*
        * A VALIDATION GUARD. Inside `if (is_numeric($octet[0]) && ...)` the value
        * provably holds no shell metacharacter - it is digits. This is DVWA's own

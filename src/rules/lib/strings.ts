@@ -33,8 +33,18 @@
 
 import type { Node } from 'web-tree-sitter';
 import type { LanguageId } from '../../parse/languages.js';
-import { SWITCH_NODES, createFolder } from '../../taint/fold.js';
+import { SWITCH_NODES, createFolder, type Folder } from '../../taint/fold.js';
+import type { StaticMethodLookup } from '../contract.js';
 import { resolveContainerRead } from '../../taint/local-map.js';
+import {
+  boundElsewhere,
+  enclosingClassLikes,
+  hasModifier,
+  isClassLike,
+  supertypesOf,
+  usedOnlyAsQualifier,
+} from '../../taint/java-scope.js';
+import { declarationVisibility, hidesCodeFromParser } from '../../taint/visibility.js';
 
 /** Node types that ARE a string literal, per language. */
 const STRING_LITERAL_TYPES: Record<LanguageId, readonly string[]> = {
@@ -309,8 +319,40 @@ export function analyzeStringExpression(
           }
           visit(child, depth + 1);
         }
+        /*
+         * BUT NOT THE THING IT IS CALLED ON. In JavaScript and Python the
+         * callee is `dir.concat` or `template.format` as one node, so skipping
+         * "the function's name" skipped `dir` and `template` with it - and they
+         * are the very strings being built on (tests/probes/s09b, p01). Their
+         * receiver is visited like any other part. Go's receiver here is a
+         * package (`fmt`), and Java's call keeps its receiver in a field of its
+         * own, which the loop above already visited.
+         */
+        if (nameNode && (nameNode.type === 'member_expression' || nameNode.type === 'attribute')) {
+          const receiver = nameNode.childForFieldName('object');
+          if (receiver) visit(receiver, depth + 1);
+        }
         return;
       }
+      sawOpaqueRef = true;
+      dynamicParts.push((current.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 60));
+      return;
+    }
+
+    /*
+     * VALUES THAT ARE NOT WHAT THEY SPELL. `(yield prompt)` is whatever the
+     * caller sends back in, not `prompt` (tests/probes/s08). And `"ls " + obj`
+     * in Java or JavaScript calls obj's toString(), which can return anything:
+     * `new Arg(name)` is not `name` (j08), and `this` is not nothing (j14).
+     * Each is one opaque part - never descended into.
+     */
+    if (
+      current.type === 'yield_expression' ||
+      current.type === 'yield' ||
+      ((language === 'java' || language === 'javascript' || language === 'typescript') && current.type === 'this') ||
+      (language === 'java' && current.type === 'object_creation_expression') ||
+      ((language === 'javascript' || language === 'typescript') && current.type === 'new_expression')
+    ) {
       sawOpaqueRef = true;
       dynamicParts.push((current.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 60));
       return;
@@ -1076,6 +1118,7 @@ export function matchKnownSecret(text: string): KnownSecretFormat | null {
 /** Nodes that introduce a scope worth searching for bindings. */
 const SCOPE_NODES = new Set([
   'function_declaration', 'function_expression', 'arrow_function', 'method_definition',
+  'generator_function_declaration', 'generator_function', 'class_static_block',
   'function_definition', 'lambda',
   'method_declaration', 'constructor_declaration',
   'func_literal', 'program', 'module', 'source_file', 'compilation_unit',
@@ -1094,6 +1137,9 @@ const BINDING_NODES: Record<string, { name: string; value: string }> = {
 function isPlainLiteral(node: Node | null, language: LanguageId): boolean {
   if (!node) return false;
   if (node.type === 'number' || node.type === 'integer' || node.type === 'float') return true;
+  // Java's `null` is a fixed value too - `String command = null;` before the
+  // branches that set it is how BenchmarkJava's command helper begins.
+  if (language === 'java' && node.type === 'null_literal') return true;
   if (!STRING_LITERAL_TYPES[language].includes(node.type)) return false;
   return !containsType(node, INTERPOLATION_TYPES, 4);
 }
@@ -1111,14 +1157,17 @@ function enclosingScopes(node: Node): Node[] {
 /** Names bound by the parameter list of a function. Never constant. */
 function parameterNames(scope: Node): Set<string> {
   const names = new Set<string>();
-  const params = scope.childForFieldName('parameters');
-  if (!params) return names;
   const walk = (n: Node | null): void => {
     if (!n) return;
     if (n.type === 'identifier') names.add(n.text ?? '');
     for (const child of n.namedChildren) walk(child ?? null);
   };
-  walk(params);
+  /*
+   * Not only `parameters`: a JavaScript arrow with one bare parameter keeps it
+   * in `parameter` (tests/probes/s07), and a Go method's receiver and named
+   * results are input too (g02).
+   */
+  for (const field of ['parameters', 'parameter', 'receiver', 'result']) walk(scope.childForFieldName(field));
   return names;
 }
 
@@ -1136,6 +1185,34 @@ export interface ConstantProof {
 }
 
 const TERNARY_NODES = new Set(['ternary_expression', 'conditional_expression']);
+/*
+ * Go binds a NEW variable in two places the write survey does not collect:
+ * `switch t := v.(type)` and `case t := <-ch`. Inside them, `t` is not the
+ * one declared outside (tests/probes/g03, g06).
+ */
+function goBindsOtherwise(root: Node, name: string): boolean {
+  const word = new RegExp(`(^|[^\\w])${name}(?![\\w])`);
+  for (const n of root.descendantsOfType(['type_switch_statement', 'receive_statement'])) {
+    if (!n) continue;
+    const bound = n.type === 'type_switch_statement' ? n.childForFieldName('alias') : n.childForFieldName('left');
+    if (bound && word.test(bound.text ?? '')) return true;
+  }
+  return false;
+}
+
+function rootOf(n: Node): Node {
+  let root = n;
+  while (root.parent) root = root.parent;
+  return root;
+}
+
+/** Nodes that declare a variable: Java and JavaScript declarators, Go's `var` and `:=`. */
+const DECLARATION_NODES = new Set(['variable_declarator', 'var_spec', 'short_var_declaration']);
+
+/** Languages whose `+` joins two strings, and the node that holds it. */
+const CONCATENATING: ReadonlySet<LanguageId> = new Set(['java', 'javascript', 'typescript', 'python', 'go']);
+const CONCAT_NODES = new Set(['binary_expression', 'binary_operator']);
+
 
 /*
  * PROVABLY CONSTANT, NOW WITH THE FOLDER.
@@ -1169,16 +1246,50 @@ const TERNARY_NODES = new Set(['ternary_expression', 'conditional_expression']);
  * no live write is not provable. ConstantProofFence.java is the list of shapes
  * that look withdrawable and must not be withdrawn.
  */
+export interface ConstantProofOptions {
+  /** RuleContext.staticMethod. Absent: no helper in another file is read. */
+  readonly staticMethod?: StaticMethodLookup | undefined;
+  /** RuleContext.javaTypeInScan. Absent: every supertype is assumed to be in the scan. */
+  readonly javaTypeInScan?: ((simpleName: string) => boolean) | undefined;
+}
+
 export function constantProof(
   node: Node,
   dynamicParts: readonly string[],
   language: LanguageId,
+  options: ConstantProofOptions = {},
 ): ConstantProof | null {
   if (dynamicParts.length === 0) return null;
+  // A comment the compiler ends where the parser does not - see
+  // taint/visibility.ts. Such a file is one this proof cannot read.
+  if (hidesCodeFromParser(node, language)) return null;
 
-  // A fresh folder per question: its caches are keyed by source span, and a
-  // span is only meaningful inside one file.
-  const folder = createFolder(language);
+  /*
+   * A fresh folder per question AND PER FILE: a folder's caches are keyed by
+   * source span, and a span is only meaningful inside one tree. Once a helper
+   * in another file can be read, one folder for both would answer a question
+   * about bytes 400-980 of Utils.java with what it learned about bytes
+   * 400-980 of the caller.
+   */
+  const folders = new Map<unknown, Folder>();
+  const folderOf = (n: Node): Folder => {
+    let folder = folders.get(n.tree);
+    if (!folder) {
+      folder = createFolder(language);
+      folders.set(n.tree, folder);
+    }
+    return folder;
+  };
+  const treeIds = new Map<unknown, number>();
+  /** A key for a node that is unique across files, not just within one. */
+  const spanKey = (n: Node): string => {
+    let id = treeIds.get(n.tree);
+    if (id === undefined) {
+      id = treeIds.size;
+      treeIds.set(n.tree, id);
+    }
+    return `${id}:${n.startIndex}:${n.endIndex}`;
+  };
 
   const lineOf = (n: Node): number => n.startPosition.row + 1;
   const contains = (outer: Node, inner: Node): boolean =>
@@ -1195,13 +1306,13 @@ export function constantProof(
     let current: Node | null = n.parent;
     while (current && contains(scope, current)) {
       if (current.type === 'if_statement') {
-        const dead = folder.deadBranchOf(current, body);
+        const dead = folderOf(current).deadBranchOf(current, body);
         if (dead && contains(dead, n)) {
           return { at: current, why: `is in a branch that cannot run (line ${lineOf(current)})` };
         }
       }
       if (SWITCH_NODES.has(current.type)) {
-        const decision = folder.switchDecision(current, body);
+        const decision = folderOf(current).switchDecision(current, body);
         if (decision?.dead.some((group) => contains(group, n))) {
           return { at: current, why: `is in a case that cannot run: ${decision.note}` };
         }
@@ -1230,8 +1341,8 @@ export function constantProof(
       v = v.namedChildren[0] ?? v;
     }
     if (!TERNARY_NODES.has(v.type) || depth > 4) return { nodes: [v], note: null };
-    const parts = folder.ternaryParts(v);
-    const truth = folder.conditionTruth(parts.condition, body);
+    const parts = folderOf(v).ternaryParts(v);
+    const truth = folderOf(v).conditionTruth(parts.condition, body);
     if (truth !== undefined) {
       const live = truth ? parts.consequence : parts.alternative;
       if (!live) return null;
@@ -1249,15 +1360,26 @@ export function constantProof(
   };
 
   /*
-   * ONE LEVEL INTO A HELPER. See HelperConstantProof.java for the fence.
+   * ONE LEVEL INTO A HELPER. See HelperConstantProof.java and
+   * StaticHelperCommand.java for the fences.
    *
    * 46 of BenchmarkJava's surviving SQL false positives had their decoy inside
    * a helper: `String bar = new Test().doSomething(request, param)`. The tracer
-   * follows that call; this proof stopped at it. It now follows exactly one
-   * shape, chosen because the type that runs is not in doubt:
+   * follows that call; this proof stopped at it. It follows three shapes, each
+   * chosen because the method that runs is not in doubt:
    *
-   *   `new X(...).m(...)`, X declared in this file, X declaring ONE method m,
-   *   every `return` in m provable by the same rules as everything else here.
+   *   `new X(...).m(...)`, X declared in this file, X declaring ONE method m;
+   *   `m(...)` in this class, when m is private, static or final;
+   *   `Utils.m(...)` or `a.b.Utils.m(...)` - a static method, which may live
+   *   in ANOTHER file; taint/project.ts, staticMethod(), says when that file
+   *   and that method are the only candidates.
+   *
+   * Every `return` in m must be provable by the same rules as everything else
+   * here, with one addition: a parameter of m is as fixed as the argument this
+   * call passes for it - when that argument is provably fixed itself, the
+   * counts line up with no varargs, and m never writes to the parameter. That
+   * is what makes `getOSCommandString("echo")` fixed: it wraps literals around
+   * `append`, and `append` is "echo".
    *
    * Java only. A receiver that is a variable could be any subclass; an
    * overload depends on argument types this proof does not read; a helper
@@ -1265,6 +1387,8 @@ export function constantProof(
    * Other languages' helpers are not followed yet, and the SQL rule's
    * limitations say so rather than letting "constant" imply they are.
    */
+  const bindings = new Map<string, Map<string, () => string[] | null>>();
+
   const helperReturnsConstant = (call: Node, depth: number): string[] | null => {
     if (depth > 0 || language !== 'java' || call.type !== 'method_invocation') return null;
     const receiver = call.childForFieldName('object');
@@ -1275,43 +1399,126 @@ export function constantProof(
       (klass.childForFieldName('body')?.namedChildren ?? []).filter(
         (m): m is Node => m !== null && m.type === 'method_declaration' && m.childForFieldName('name')?.text === methodName,
       );
+    let root: Node = call;
+    while (root.parent) root = root.parent;
 
     let method: Node | null = null;
     let typeName = '';
+    let where = '';
+    /** Could a supertype declared in the scan supply a member we did not look at? */
+    const inherits = (classLike: Node): boolean =>
+      supertypesOf(classLike).some((t) =>
+        t.split('.').some((part) => (options.javaTypeInScan ? options.javaTypeInScan(part) : true)),
+      );
     if (receiver?.type === 'object_creation_expression') {
-      // `new X(...).m(...)`: the type is exact, so X's own m is the one that runs.
+      /*
+       * `new X(...).m(...)`: the type is exact, so X's own m is the one that
+       * runs - when X is the class in scope here. Not with a body attached
+       * (`new X() { ... }` is an anonymous subclass that can override m, p25),
+       * not when X is a class nested somewhere the call cannot see (p26), and
+       * not when X inherits from anything - a superclass or an interface's
+       * default method - since an inherited overload can be the one chosen
+       * (p34, j03).
+       */
+      if (isClassLike(receiver)) return null;
       typeName = (receiver.childForFieldName('type')?.text ?? '').trim();
       if (!/^[A-Za-z_$][\w$]*$/.test(typeName)) return null; // qualified or generic: not declared here
-      let root: Node = call;
-      while (root.parent) root = root.parent;
-      const classes: Node[] = [];
-      const findClasses = (n: Node): void => {
-        if (n.type === 'class_declaration' && n.childForFieldName('name')?.text === typeName) classes.push(n);
-        for (const child of n.namedChildren) if (child) findClasses(child);
+      const declared: Node[] = [];
+      const findTypes = (n: Node): void => {
+        if (n.type !== 'object_creation_expression' && isClassLike(n) && n.childForFieldName('name')?.text === typeName) {
+          declared.push(n);
+        }
+        for (const child of n.namedChildren) if (child) findTypes(child);
       };
-      findClasses(root);
-      if (classes.length !== 1) return null;
-      const candidates = methodsNamed(classes[0]!);
+      findTypes(root);
+      const klass = declared.length === 1 ? declared[0] : undefined;
+      if (!klass || klass.type !== 'class_declaration' || supertypesOf(klass).length > 0) return null;
+      // A class around the call can inherit a member class named X, and then
+      // that is the X created here (tests/probes/j04).
+      if (enclosingClassLikes(call).some(inherits)) return null;
+      const owner = klass.parent?.parent ?? null;
+      const inScope =
+        klass.parent?.type === 'program' ||
+        (klass.parent?.type === 'class_body' && !!owner && contains(owner, call) && isClassLike(owner));
+      if (!inScope) return null;
+      const candidates = methodsNamed(klass);
       if (candidates.length !== 1) return null;
       method = candidates[0]!;
     } else if (!receiver) {
       /*
        * A bare call, `doSomething(request, param)`. It binds to this class's
        * method only if no subclass can replace it - so only when that method
-       * is private, static or final. BenchmarkJava declares its helpers
-       * `private static`, and 27 of the survivors were exactly this shape.
+       * is private, static or final, read from the modifier tokens (p29).
+       * BenchmarkJava declares its helpers `private static`, and 27 of the
+       * survivors were exactly this shape. The
+       * class is the INNERMOST class-like around the call: inside an anonymous
+       * class or an enum, `m()` means theirs (p27, p28), and those are not
+       * read. A superclass declared in the scan can supply a more specific
+       * overload (p30); one from outside it - BenchmarkJava's HttpServlet - is
+       * not read, and the SQL rule's limitations say so.
        */
-      let klass: Node | null = call.parent;
-      while (klass && klass.type !== 'class_declaration') klass = klass.parent;
-      if (!klass) return null;
+      const klass = enclosingClassLikes(call)[0];
+      if (!klass || klass.type !== 'class_declaration' || inherits(klass)) return null;
       typeName = klass.childForFieldName('name')?.text ?? '';
       const candidates = methodsNamed(klass);
       if (candidates.length !== 1) return null;
-      const modifiers = candidates[0]!.namedChildren.find((c): c is Node => c !== null && c.type === 'modifiers');
-      if (!/\b(private|static|final)\b/.test(modifiers?.text ?? '')) return null;
-      method = candidates[0]!;
+      const candidate = candidates[0]!;
+      if (!['private', 'static', 'final'].some((k) => hasModifier(candidate, k))) return null;
+      method = candidate;
+    } else if ((receiver.type === 'identifier' || receiver.type === 'field_access') && options.staticMethod) {
+      /*
+       * `Utils.m(...)`. In Java a variable named `Utils` - or `a` for
+       * `a.b.Utils` - hides the class or package of that name, and so does a
+       * type, a pattern variable, an enum constant, a lambda parameter... So
+       * EVERY appearance of that name in this file must be as a qualifier,
+       * like the one here (p10, p11, p12). Names that arrive without appearing
+       * - static imports, inherited members - are checked by the lookup.
+       */
+      const dotted = (receiver.text ?? '').replace(/\s+/g, '');
+      const first = dotted.split('.')[0] ?? '';
+      if (!first || !usedOnlyAsQualifier(root, first)) return null;
+      const supertypes = enclosingClassLikes(call).flatMap((c) => supertypesOf(c));
+      const found = options.staticMethod(dotted, methodName, supertypes);
+      if (!found || hidesCodeFromParser(found.method, 'java')) return null;
+      method = found.method;
+      typeName = dotted.split('.').pop() ?? dotted;
+      where = ` in ${found.path}`;
     }
     if (!method) return null; // a receiver that is a variable: it could be any subclass
+
+    /* ---- the parameters, bound to what this call passes ---- */
+    const formal = (method.childForFieldName('parameters')?.namedChildren ?? []).filter(
+      (p): p is Node => p !== null && (p.type === 'formal_parameter' || p.type === 'spread_parameter'),
+    );
+    const args = (call.childForFieldName('arguments')?.namedChildren ?? []).filter(
+      (a): a is Node => a !== null && a.type !== 'line_comment' && a.type !== 'block_comment',
+    );
+    // The count must match with no varargs, whatever is read: a call that
+    // passes more or fewer arguments than this method takes is calling
+    // another one (p02).
+    if (formal.length !== args.length || formal.some((p) => p.type !== 'formal_parameter')) return null;
+    const callerBody = enclosingScopes(call)[0];
+    const bound = new Map<string, () => string[] | null>();
+    const used: string[] = [];
+    if (callerBody) {
+      formal.forEach((p, i) => {
+        const name = p.childForFieldName('name')?.text ?? '';
+        const arg = args[i];
+        if (!name || !arg) return;
+        let memo: string[] | null | undefined;
+        bound.set(name, () => {
+          if (memo === undefined) {
+            const why = valueIsConstant(arg, callerBody, depth);
+            memo = why && [
+              ...why,
+              `\`${name}\` is \`${arg.text.replace(/\s+/g, ' ')}\`, passed on line ${lineOf(arg)}`,
+            ];
+            if (memo) used.push(name);
+          }
+          return memo;
+        });
+      });
+    }
 
     const returns: Node[] = [];
     const findReturns = (n: Node): void => {
@@ -1325,12 +1532,28 @@ export function constantProof(
     findReturns(methodBody);
     if (returns.length === 0) return null;
 
-    for (const ret of returns) {
-      const expr = ret.namedChildren.find((c): c is Node => c !== null) ?? null;
-      if (!expr) return null;
-      if (!valueIsConstant(expr, method, depth + 1)) return null;
+    const key = spanKey(method);
+    bindings.set(key, bound);
+    const notes: string[] = [];
+    try {
+      for (const ret of returns) {
+        const expr = ret.namedChildren.find((c): c is Node => c !== null) ?? null;
+        if (!expr) return null;
+        const why = valueIsConstant(expr, method, depth + 1);
+        if (!why) return null;
+        notes.push(...why);
+      }
+    } finally {
+      bindings.delete(key);
     }
-    return [`the helper ${typeName}.${methodName}() on line ${lineOf(method)} returns a fixed literal on every path`];
+    if (used.length === 0) {
+      return [`the helper ${typeName}.${methodName}()${where} on line ${lineOf(method)} returns a fixed literal on every path`];
+    }
+    return [
+      `the helper ${typeName}.${methodName}()${where} on line ${lineOf(method)} returns only literals and ` +
+        `its parameter${used.length === 1 ? '' : 's'} ${used.map((u) => `\`${u}\``).join(', ')}, never written inside it`,
+      ...notes,
+    ];
   };
 
   /** Is this one live value fixed? Returns the notes that justify it, or null. */
@@ -1359,6 +1582,20 @@ export function constantProof(
             `${read.selector} on line ${lineOf(read.write)} - the collection is local, handed to nothing, ` +
             `and written only by straight-line statements`,
         );
+        continue;
+      }
+      /*
+       * `"cmd.exe /c " + append + " "` - pieces joined with `+` are as fixed as
+       * the pieces. Only `+`, only where it joins strings (C's is pointer
+       * arithmetic, PHP's is `.`), and every piece judged by these same rules.
+       */
+      if (CONCATENATING.has(language) && CONCAT_NODES.has(each.type) && each.childForFieldName('operator')?.text === '+') {
+        const left = each.childForFieldName('left');
+        const right = each.childForFieldName('right');
+        const l = left ? valueIsConstant(left, body, depth) : null;
+        const r = l && right ? valueIsConstant(right, body, depth) : null;
+        if (!l || !r) return null;
+        notes.push(...l, ...r);
         continue;
       }
       if (/^[A-Za-z_$][\w$]*$/.test((each.text ?? '').trim()) && each.namedChildren.length === 0) {
@@ -1390,7 +1627,7 @@ export function constantProof(
     const scopes = enclosingScopes(anchor);
     const body = scopes[0];
     if (!body) return null;
-    const key = `${body.startIndex}:${body.endIndex}#${part}`;
+    const key = `${spanKey(body)}#${part}`;
     if (resolving.has(key) || resolving.size > 24) return null;
     resolving.add(key);
     try {
@@ -1441,15 +1678,29 @@ export function constantProof(
 
     /* Every plain write, in every scope, before any value is judged. */
     const writes: Array<{ node: Node; value: Node; scope: Node }> = [];
+    /* Every declaration of the name the same walk passes - with a value or without. */
+    const declarations: Array<{ node: Node; scope: Node }> = [];
     for (const scope of scopes) {
-      if (parameterNames(scope).has(part)) return null; // a parameter is input
+      if (parameterNames(scope).has(part)) {
+        /*
+         * A parameter is input - unless this is a helper being read for one
+         * particular call (helperReturnsConstant), and then it is whatever that
+         * call passes. Only if the helper never writes to it: `a = b;` would
+         * make the literal passed for `a` irrelevant.
+         */
+        const bound = bindings.get(spanKey(scope))?.get(part);
+        if (!bound) return null;
+        const f = folderOf(scope);
+        if (f.writtenOtherwise(part, scope) || f.plainWriteCount(part, scope) > 0) return null;
+        return bound();
+      }
       /*
        * A write this walk does not recognise - `bar, err := f()`, `[bar] = x`,
        * `bar += param` in Python, `for bar in ...` - would leave only the literal
        * writes visible, and the proof would call a tainted value constant. The
        * folder's survey sees every form of write; any irregular one ends this.
        */
-      if (folder.writtenOtherwise(part, scope)) return null;
+      if (folderOf(scope).writtenOtherwise(part, scope)) return null;
       const collect = (n: Node | null): void => {
         if (!n) return;
         if (n !== scope && SCOPE_NODES.has(n.type)) return;
@@ -1457,6 +1708,9 @@ export function constantProof(
         if (fields && (n.childForFieldName(fields.name)?.text ?? '').trim() === part) {
           const value = n.childForFieldName(fields.value);
           if (value) writes.push({ node: n, value, scope });
+        }
+        if (DECLARATION_NODES.has(n.type) && (n.childForFieldName(n.type === 'short_var_declaration' ? 'left' : 'name')?.text ?? '').trim() === part) {
+          declarations.push({ node: n, scope });
         }
         for (const child of n.namedChildren) collect(child ?? null);
       };
@@ -1470,8 +1724,110 @@ export function constantProof(
      * did, one of them is hidden in a closure, and nothing is proved.
      */
     const innermost = scopes[0];
-    if (innermost && folder.plainWriteCount(part, innermost) > writes.filter((w) => w.scope === innermost).length) {
+    if (innermost && folderOf(innermost).plainWriteCount(part, innermost) > writes.filter((w) => w.scope === innermost).length) {
       return null;
+    }
+
+    let outerBound = writes.some((w) => innermost && !sameSpan(w.scope, innermost));
+
+    /*
+     * JAVA SCOPING. The walk above collects every declaration of the name in
+     * the scopes around the read - and Java's scopes are smaller than that.
+     * Each probe in tests/probes/p15-p24 was a constant declaration the read
+     * could not see, standing in for one it could:
+     *
+     *   - a local is visible from its declaration to the end of its block, so
+     *     one in another block (p17), one declared after the read (p18), one
+     *     inside a lambda (p22) and a field of a nested or local class (p19,
+     *     p23, p24) are somebody else's - and any of those ends the proof;
+     *   - a lambda parameter or a pattern variable of the same name can shadow
+     *     the declaration found, and the walk does not collect them (p15, p16);
+     *   - a class between the declaration and the read that inherits from
+     *     anything can inherit a field of the same name, which then wins (p20,
+     *     p21);
+     *   - a field counts only if it is private or final, read from the
+     *     modifier TOKENS - the word in `@SuppressWarnings("private")`, or a
+     *     `final` inside a comment, is not a modifier (p13, p14) - since any
+     *     other class can assign one that is neither;
+     *   - no declaration in view at all - an inherited field, a static import -
+     *     is nothing this proof can read.
+     */
+    if (language === 'java') {
+      if (boundElsewhere(rootOf(anchor), part)) return null;
+      if (declarations.length === 0) return null;
+      let local = false;
+      for (const { node: declarator } of declarations) {
+        const visible = declarationVisibility(declarator, language);
+        if (!visible || !contains(visible.region, anchor) || anchor.startIndex < visible.from) return null;
+        if (enclosingClassLikes(anchor).some((c) => contains(visible.region, c) && supertypesOf(c).length > 0)) {
+          return null;
+        }
+        const holder = declarator.parent;
+        if (holder?.type === 'local_variable_declaration') local = true;
+        else if (holder?.type === 'field_declaration' && !hasModifier(holder, 'private') && !hasModifier(holder, 'final')) {
+          return null;
+        }
+      }
+      /*
+       * A write inside a class nested in this code - a local or anonymous
+       * class, a record's constructor, an initializer block - runs as THAT
+       * class's code, where every name around it may mean something else:
+       * `if (dbg) cmd = ...` inside a record reads the record's own `dbg`
+       * (tests/probes/j09, j10). Its branches cannot be decided from here, so
+       * such a write ends the proof.
+       */
+      if (writes.some((w) => enclosingClassLikes(w.node).some((c) => !contains(c, anchor)))) return null;
+      if (!local) outerBound = true;
+    } else if (language === 'javascript' || language === 'typescript' || language === 'go') {
+      /*
+       * The same visibility rule as Java's, by these languages' own scoping:
+       * every declaration found must be one the read can see (a block's
+       * `let`, a `for` header's, a Go block's `:=` - s02, s03, s05, s06, g05),
+       * and there must be one: a name declared nowhere in view is an import,
+       * another script's global or another file's package variable (s04, g04).
+       */
+      if (language === 'go' && goBindsOtherwise(rootOf(anchor), part)) return null;
+      if (declarations.length === 0) return null;
+      for (const { node: declarator } of declarations) {
+        const visible = declarationVisibility(declarator, language);
+        if (!visible || !contains(visible.region, anchor) || anchor.startIndex < visible.from) return null;
+      }
+      // Not declared in the reading function: it belongs to a scope outside,
+      // where any other function can assign it - with or without a write of
+      // its own in view.
+      if (!declarations.some((d) => innermost && sameSpan(d.scope, innermost))) outerBound = true;
+    }
+
+    /*
+     * A NAME BOUND OUTSIDE THIS FUNCTION CAN BE WRITTEN BY ANY OTHER ONE.
+     *
+     *     static String table = "users";
+     *     void setTable(HttpServletRequest r) { table = r.getParameter("t"); }
+     *     void list(Statement s) { s.execute("SELECT * FROM " + table); }
+     *
+     * The walk above does not enter other functions - on purpose, because a
+     * sibling's OWN local of the same name is irrelevant (const-interp.py). But
+     * `table` here is not anybody's local: it is a field, and setTable writes
+     * it. The walk saw only "users" and called the query constant. So for a
+     * name bound outside the reading function, every function inside the scope
+     * that holds it is searched too, and any write not already judged ends the
+     * proof - a sibling's same-named local included, which costs a little
+     * precision and never a finding. OuterWriteFence.* has each shape.
+     *
+     * Python and PHP are left out on purpose: a plain assignment inside a
+     * function makes a NEW local there, and reaching the outer name takes a
+     * `global` (or `nonlocal`) statement - which the survey above already
+     * treats as an irregular write.
+     */
+    if (outerBound && language !== 'python' && language !== 'php') {
+      const holding = [...declarations.map((d) => d.scope), ...writes.map((w) => w.scope)];
+      const declaring =
+        (holding.length > 0 && innermost && holding.every((h) => sameSpan(h, innermost))
+          ? scopes[scopes.length - 1]
+          : [...scopes].reverse().find((s) => holding.some((h) => sameSpan(h, s)))) ?? scopes[scopes.length - 1];
+      if (!declaring) return null;
+      const folder = folderOf(declaring);
+      if (folder.writtenOtherwise(part, declaring) || folder.plainWriteCount(part, declaring) > writes.length) return null;
     }
 
     /*
@@ -1490,7 +1846,12 @@ export function constantProof(
      * value round again. Not attempted in C or C++, where a declaration in an
      * inner block can shadow the name without this walk seeing a write.
      */
-    const last = certainLastWrite(writes, anchor);
+    // Only for a name local to the reading function: a call between the last
+    // write and the read can change a field, or a variable another function
+    // shares.
+    // A `goto` can jump over the last write (tests/probes/g01).
+    const jumps = !!innermost && innermost.descendantsOfType('goto_statement').length > 0;
+    const last = outerBound || jumps ? null : certainLastWrite(writes, anchor);
     if (last) {
       const why = valueIsConstant(last.value, body, depth);
       if (!why) return null;

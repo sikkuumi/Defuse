@@ -2096,6 +2096,64 @@ async function main(): Promise<number> {
 
 
   /*
+   * THE BREAK-IT PROBES.
+   *
+   * tests/probes/ holds programs written by an agent whose only job was to make
+   * the constant proof call a value fixed when it is not: a class hidden by a
+   * variable, a static import or a pattern; an inherited overload; a modifier
+   * that is only a word in a comment; a local that is out of scope where the
+   * value is read; a `\u000a` that javac reads as a newline. Its first run found
+   * 32, and every one was a real injection the proof had silenced, with a
+   * receipt calling it constant. Each directory is a small project of its own,
+   * scanned on its own because they reuse class names, and every
+   * `// EXPECT rule` line in it must still be reported.
+   */
+  console.log(`\n${color.bold('  Break-it probes (tests/probes)')}`);
+  {
+    const PROBES = path.resolve(HERE, '../../tests/probes');
+    const filesUnder = async (at: string): Promise<string[]> => {
+      const out: string[] = [];
+      for (const entry of await readdir(at, { withFileTypes: true })) {
+        const full = path.join(at, entry.name);
+        if (entry.isDirectory()) out.push(...(await filesUnder(full)));
+        else if (entry.isFile()) out.push(full);
+      }
+      return out;
+    };
+    const probeDirs = (await readdir(PROBES, { withFileTypes: true }))
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
+    for (const dir of probeDirs) {
+      const root = path.join(PROBES, dir);
+      const result = await scan(root, {});
+      const missed: string[] = [];
+      let expected = 0;
+      for (const file of await filesUnder(root)) {
+        const rel = path.relative(root, file);
+        (await readFile(file, 'utf8')).split('\n').forEach((text, index) => {
+          const match = EXPECT.exec(text);
+          if (!match?.[2] || match[1]) return;
+          expected++;
+          if (findingsNear(result.findings, rel, index + 1, match[2].toLowerCase(), false).length === 0) {
+            missed.push(`${rel}:${index + 2} ${match[2]}`);
+          }
+        });
+      }
+      if (expected > 0 && missed.length === 0) {
+        passed++;
+        console.log(`    ${color.green(g('tick'))} ${dir}`);
+      } else {
+        failed++;
+        console.log(
+          `    ${color.red(g('cross'))} ${dir}: ` +
+            (expected === 0 ? 'no EXPECT line found' : `NOT REPORTED ${missed.join(', ')}`),
+        );
+      }
+    }
+  }
+
+  /*
    * A FULLY-QUALIFIED JAVA REFERENCE IS AN EDGE TOO.
    *
    * This cannot be a fixture. The fixture directories are flat, and two Java

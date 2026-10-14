@@ -46,6 +46,7 @@ import { basenameOf, dirnameOf, joinPath, resolveFrom, toPosix } from '../core/p
 import type { LanguageId } from '../parse/languages.js';
 import { nodeAtRange, type TreeStore } from '../parse/tree-store.js';
 import { collectFunctions, type CrossFileResolver } from './tracer.js';
+import { hasModifier } from './java-scope.js';
 
 /**
  * A function recorded as COORDINATES rather than as a syntax node.
@@ -83,6 +84,82 @@ export interface IndexedFileInput {
   readonly functions: ReadonlyMap<string, IndexedFunction>;
   /** Raw module specifiers, already read out of the tree. */
   readonly importSpecifiers: readonly string[];
+  /** Java only - see javaTypeFacts(). */
+  readonly javaTypes?: JavaTypeFacts | undefined;
+}
+
+/**
+ * What a Java file says about the types it declares and names, read from the
+ * top level of its tree in the first pass. staticMethod() below needs these to
+ * answer "which class does `Utils` mean here?" without holding the tree.
+ */
+export interface JavaTypeFacts {
+  /** From `package a.b;` - the empty string for the unnamed package. */
+  readonly packageName: string;
+  /** Top-level type declarations of every kind - class, interface, enum, record, annotation. */
+  readonly types: readonly { readonly name: string; readonly kind: string }[];
+  /** `import a.b.C;` as `a.b.C`. Not `import a.b.*;`, not `import static`. */
+  readonly singleTypeImports: readonly string[];
+  /** The last name of each `import static a.b.C.m;` - a member that is then in scope by that name. */
+  readonly staticImports: readonly string[];
+  /** Whether any `import static a.b.C.*;` brings in members nobody here can list. */
+  readonly staticOnDemand: boolean;
+  /** Every type declared anywhere in the file, nested ones included. */
+  readonly allTypeNames: readonly string[];
+}
+
+const JAVA_TYPE_DECLARATIONS = new Set([
+  'class_declaration', 'interface_declaration', 'enum_declaration', 'record_declaration',
+  'annotation_type_declaration',
+]);
+
+export function javaTypeFacts(root: Node): JavaTypeFacts {
+  /*
+   * A dotted name read from its identifiers, not its text - so a comment
+   * between `import` and the name is not part of the name. A regex over the
+   * line missed such an import entirely, and the class it named lost to one in
+   * the same package that the import outranks (tests/probes/p08).
+   */
+  const dotted = (n: Node | null | undefined): string => {
+    const parts: string[] = [];
+    const visit = (x: Node): void => {
+      if (x.type === 'identifier') parts.push(x.text ?? '');
+      for (const c of x.namedChildren) if (c && c.type !== 'block_comment' && c.type !== 'line_comment') visit(c);
+    };
+    if (n) visit(n);
+    return parts.join('.');
+  };
+  let packageName = '';
+  const types: { name: string; kind: string }[] = [];
+  const singleTypeImports: string[] = [];
+  const staticImports: string[] = [];
+  let staticOnDemand = false;
+  for (const child of root.namedChildren) {
+    if (!child) continue;
+    if (child.type === 'package_declaration') {
+      packageName = dotted(child.namedChildren.find((c) => c?.type === 'scoped_identifier' || c?.type === 'identifier'));
+    } else if (JAVA_TYPE_DECLARATIONS.has(child.type)) {
+      const name = child.childForFieldName('name')?.text;
+      if (name) types.push({ name, kind: child.type });
+    } else if (child.type === 'import_declaration') {
+      const isStatic = child.children.some((c) => c?.type === 'static');
+      const onDemand = child.namedChildren.some((c) => c?.type === 'asterisk');
+      const name = dotted(child.namedChildren.find((c) => c?.type === 'scoped_identifier' || c?.type === 'identifier'));
+      if (isStatic && onDemand) staticOnDemand = true;
+      else if (isStatic) staticImports.push(name.split('.').pop() ?? '');
+      else if (!onDemand && name) singleTypeImports.push(name);
+    }
+  }
+  /*
+   * Nested types count for "is this type in the scan?": a superclass that is
+   * a nested class of this or another file is as able to supply members as a
+   * top-level one (tests/probes/j05, j06).
+   */
+  const allTypeNames = root
+    .descendantsOfType([...JAVA_TYPE_DECLARATIONS])
+    .map((n) => n?.childForFieldName('name')?.text ?? '')
+    .filter(Boolean);
+  return { packageName, types, singleTypeImports, staticImports, staticOnDemand, allTypeNames };
 }
 
 /** Turn a file's functions into coordinates, using the tracer's own definition. */
@@ -115,6 +192,7 @@ interface IndexedFile {
   readonly functions: ReadonlyMap<string, IndexedFunction>;
   /** Absolute paths of files this one imports, as far as we could resolve them. */
   readonly imports: Set<string>;
+  readonly javaTypes?: JavaTypeFacts | undefined;
 }
 
 export interface ProjectIndexStats {
@@ -156,6 +234,19 @@ export interface ProjectIndexStats {
 
 export interface ProjectIndex extends CrossFileResolver {
   readonly stats: () => ProjectIndexStats;
+  /**
+   * The one static method `receiver.method(...)` can run, from a Java file -
+   * or null whenever that is in any doubt. See the note in the body.
+   */
+  readonly staticMethod: (
+    fromPath: string,
+    receiver: string,
+    method: string,
+    /** Simple names of the types the call sits inside inherit from - see strings.ts. */
+    supertypes?: readonly string[],
+  ) => { readonly path: string; readonly method: Node } | null;
+  /** Is a Java type of this simple name - top-level or nested - declared anywhere in the scan? */
+  readonly javaTypeInScan: (simpleName: string) => boolean;
 }
 
 /* -------------------------------------------------------------------------- *
@@ -283,6 +374,28 @@ export function importSpecifiers(root: Node, language: LanguageId): string[] {
 const JS_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'];
 
 /** Turn a specifier into a path we actually have, or null. */
+/*
+ * Every known path by its file name, built once per scan. Java resolves each
+ * `a.b.C` by looking for C.java, and BenchmarkJava names a class in full
+ * thousands of times - filtering all 2,766 paths for every one of those was
+ * the single largest cost in its scan.
+ */
+const basenameIndex = new WeakMap<ReadonlySet<string>, Map<string, string[]>>();
+function byBasename(known: ReadonlySet<string>): Map<string, string[]> {
+  let index = basenameIndex.get(known);
+  if (!index) {
+    index = new Map();
+    for (const p of known) {
+      const name = basenameOf(p);
+      const list = index.get(name);
+      if (list) list.push(p);
+      else index.set(name, [p]);
+    }
+    basenameIndex.set(known, index);
+  }
+  return index;
+}
+
 function resolveSpecifier(
   specifier: string,
   fromFile: IndexedFile,
@@ -339,7 +452,7 @@ function resolveSpecifier(
     // `com.example.Helper` -> a file called Helper.java, if there is exactly one.
     const className = specifier.split('.').pop() ?? '';
     if (!className || className === '*') return null;
-    const matches = [...known].filter((p) => basenameOf(p) === `${className}.java`);
+    const matches = byBasename(known).get(`${className}.java`) ?? [];
     return matches.length === 1 ? (matches[0] ?? null) : null;
   }
 
@@ -370,6 +483,7 @@ export function buildProjectIndex(
       language: file.language,
       functions: file.functions,
       imports: new Set<string>(),
+      javaTypes: file.javaTypes,
     });
   }
 
@@ -424,6 +538,10 @@ export function buildProjectIndex(
       else byFunctionName.set(name, [entry]);
     }
   }
+
+  /** Every Java type name declared in the scan, of every kind, nested ones included. */
+  const typeNames = new Set<string>();
+  for (const entry of byPath.values()) for (const t of entry.javaTypes?.allTypeNames ?? []) typeNames.add(t);
 
   let resolved = 0;
   let ambiguous = 0;
@@ -490,6 +608,117 @@ export function buildProjectIndex(
         fn: { name: indexed.name, params: indexed.params, minArgs: indexed.minArgs, maxArgs: indexed.maxArgs, body },
       };
     },
+
+    /*
+     * `Utils.getOSCommandString("echo")` - A STATIC CALL, NAMED THROUGH ITS CLASS.
+     *
+     * resolve() above answers by function NAME, which is right for the tracer:
+     * it only ever follows taint INTO a function, and entering the wrong one
+     * can at worst report a flow that looks odd. The constant proof asks the
+     * opposite question - "is what comes back fixed?" - and a wrong answer
+     * there deletes a finding. So this answers only when Java itself leaves no
+     * choice:
+     *
+     *   - the receiver names a class: `a.b.Utils` by its full name - where
+     *     `a` must look like a package and not a type - or `Utils` through a
+     *     single-type import or, failing that, the caller's own package. An
+     *     import-on-demand (`import a.b.*;`) is not followed;
+     *   - exactly ONE file in the scan declares that package and a top-level
+     *     class of that name - two copies is two candidates, and neither wins;
+     *   - that class declares exactly one method of the name, and it is
+     *     static. An overload is chosen by argument types, which nobody here
+     *     reads; an inherited method lives in a class this does not look for.
+     *
+     * The caller's side - a local variable named `Utils` hides the class - is
+     * checked where the call is, in rules/lib/strings.ts.
+     */
+    staticMethod(fromPath: string, receiver: string, methodName: string, supertypes: readonly string[] = []) {
+      const from = byPath.get(fromPath);
+      const facts = from?.javaTypes;
+      if (!from || from.language !== 'java' || !facts) return null;
+      const dotted = receiver.replace(/\s+/g, '');
+      if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(dotted)) return null;
+      const segments = dotted.split('.');
+      const first = segments[0] ?? '';
+      const className = segments[segments.length - 1] ?? '';
+
+      /*
+       * Names that reach this file without a declaration in it: a static import
+       * of a member called `first` (a nested type or a field - tests/probes/p04,
+       * p05), any `import static a.b.C.*;`, and members inherited from a
+       * supertype declared in the scan (p06). Each could be what `first` means.
+       * A supertype from OUTSIDE the scan - HttpServlet, say - is not read; the
+       * SQL rule's limitations say so.
+       */
+      if (facts.staticOnDemand || facts.staticImports.includes(first)) return null;
+      if (supertypes.some((t) => t.split('.').some((part) => typeNames.has(part)))) return null;
+
+      let packageName: string;
+      if (segments.length > 1) {
+        /*
+         * `Wrapper.Inner` is a package Wrapper's class Inner ONLY if no type
+         * called Wrapper is in scope - a type outranks a package (JLS 6.5.2),
+         * and then Inner is Wrapper's nested class. Types in scope include
+         * library ones this scan never sees, so the first segment must look
+         * like a package: not capitalised (the convention every package
+         * follows), not a type of ANY kind anywhere in the scan (an interface
+         * called `app` - p07), not imported by name.
+         */
+        if (
+          /^[A-Z]/.test(first) ||
+          typeNames.has(first) ||
+          facts.singleTypeImports.some((i) => i === first || i.endsWith(`.${first}`))
+        ) {
+          return null;
+        }
+        packageName = segments.slice(0, -1).join('.');
+      } else {
+        const imported = facts.singleTypeImports.filter((i) => i.endsWith(`.${className}`));
+        if (imported.length > 1) return null;
+        packageName = imported[0]
+          ? imported[0].slice(0, imported[0].length - className.length - 1)
+          : facts.packageName;
+      }
+
+      // Every kind of type counts as a candidate: a class and an interface
+      // with one full name are two candidates, and neither wins (p09).
+      const hits = [...byPath.values()].filter(
+        (f) =>
+          f.language === 'java' &&
+          f.javaTypes?.packageName === packageName &&
+          f.javaTypes.types.some((t) => t.name === className),
+      );
+      if (hits.length !== 1 || !hits[0]) return null;
+      const winner = hits[0];
+      const declared = winner.javaTypes?.types.filter((t) => t.name === className) ?? [];
+      if (declared.length !== 1 || declared[0]?.kind !== 'class_declaration') return null;
+
+      store.pin(winner.path);
+      const root = store.get(winner.path).rootNode;
+      const klass = root.namedChildren.find(
+        (c): c is Node => c?.type === 'class_declaration' && c.childForFieldName('name')?.text === className,
+      );
+      if (!klass) {
+        relocationsFailed++;
+        return null;
+      }
+      /*
+       * A class that inherits from anything can inherit a method of this name
+       * - a more specific overload, or the only one that takes this many
+       * arguments - and that is the one that runs (p01, p02, p03).
+       */
+      if (klass.childForFieldName('superclass')) return null;
+      const methods = (klass.childForFieldName('body')?.namedChildren ?? []).filter(
+        (m): m is Node => m?.type === 'method_declaration' && m.childForFieldName('name')?.text === methodName,
+      );
+      const method = methods.length === 1 ? methods[0] : undefined;
+      if (!method || !hasModifier(method, 'static')) return null;
+      // A private method cannot be called from another class at all.
+      if (winner.path !== fromPath && hasModifier(method, 'private')) return null;
+      return { path: winner.path, method };
+    },
+
+    javaTypeInScan: (simpleName: string) => typeNames.has(simpleName),
 
     noteAmbiguous() {
       ambiguous++;
