@@ -775,17 +775,50 @@ function parameterDeclarations(fnNode: Node): Array<{ name: string; text: string
   const out: Array<{ name: string; text: string; node: Node }> = [];
   for (const child of container.namedChildren) {
     if (!child) continue;
-    const named =
-      child.childForFieldName('name') ??
-      child.childForFieldName('pattern') ??
-      child.namedChildren.find((c): c is Node => c !== null && VARIABLE_NODES.has(c.type)) ??
-      null;
+    // A bare `def view(name)` parameter IS the identifier - it has no children.
+    const named = VARIABLE_NODES.has(child.type)
+      ? child
+      : child.childForFieldName('name') ??
+        child.childForFieldName('pattern') ??
+        child.namedChildren.find((c): c is Node => c !== null && VARIABLE_NODES.has(c.type)) ??
+        null;
     if (!named) continue;
     out.push({ name: text(named), text: text(child), node: child });
   }
   return out;
 }
 
+
+/**
+ * A URL PATH THAT NAMES THIS PARAMETER, read off a Python route decorator.
+ *
+ *     @app.route("/user/<name>")        Flask, <converter:name> too
+ *     @router.get("/items/{item_id}")   FastAPI / Starlette
+ *     def view(name): ...
+ *
+ * The framework splits the URL and passes the segment as a plain str, so the
+ * body holds no source to match - the placeholder in the decorator is the
+ * only evidence, which is why parameterSources (one regex per parameter's own
+ * text) cannot see it. Only a parameter the path NAMES is bound: a decorator
+ * that is not a route method, or a parameter with no placeholder, binds
+ * nothing (route-path-params.py). Django binds kwargs in a separate urls.py
+ * and is not read here.
+ */
+const ROUTE_DECORATOR = /^@[\w.]+\.(?:route|get|post|put|patch|delete|api_route)\(\s*[rRbBuU]?(["'])(.*?)\1/s;
+
+function routePathFor(fnNode: Node, name: string): string | null {
+  const parent = fnNode.parent;
+  if (!name || parent?.type !== 'decorated_definition') return null;
+  for (const decorator of parent.namedChildren) {
+    if (decorator?.type !== 'decorator') continue;
+    const path = ROUTE_DECORATOR.exec(text(decorator))?.[2];
+    if (!path) continue;
+    for (const match of path.matchAll(/<(?:[^<>:]+:)?(\w+)>|\{(\w+)(?::[^}]*)?\}/g)) {
+      if ((match[1] ?? match[2]) === name) return `"${path}"`;
+    }
+  }
+  return null;
+}
 
 /**
  * DECLARED TYPES, so a receiver check can see past the variable's name.
@@ -2604,6 +2637,19 @@ export function traceFile(
             unknownHops: [],
           });
         }
+      }
+      for (const parameter of parameterDeclarations(node)) {
+        const route = routePathFor(node, parameter.name);
+        if (!route) continue;
+        seenSources.add(siteOf(parameter.node, scope.filePath));
+        env.set(parameter.name, {
+          steps: [
+            step('source', parameter.node, `\`${parameter.name}\` is bound from the URL path ${route}`),
+          ],
+          sanitizedFor: new Set(),
+          origin: parameter.name,
+          unknownHops: [],
+        });
       }
       queue.push({
         body,
