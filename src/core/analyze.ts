@@ -407,8 +407,8 @@ export async function analyze(
         verifiedClean.push({ file: displayPath, line, ruleId, kind: 'constant', reason });
       },
       staticMethod: projectIndex
-        ? (receiver: string, method: string, supertypes?: readonly string[]) => {
-            const hit = projectIndex.staticMethod(filePath, receiver, method, supertypes);
+        ? (receiver: string, method: string, supertypes?: readonly string[], allowInstance?: boolean) => {
+            const hit = projectIndex.staticMethod(filePath, receiver, method, supertypes, allowInstance);
             return hit && { path: toDisplay(hit.path), method: hit.method };
           }
         : undefined,

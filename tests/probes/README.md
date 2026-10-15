@@ -3,7 +3,7 @@
 Each directory here is a small program that once fooled Defuse's constant
 proof: a value the proof called fixed - and withdrew the finding for - that
 can in fact carry something the program did not write. Most were written by an
-agent whose only job was to find such programs, in two rounds:
+agent whose only job was to find such programs, in three rounds:
 
 - **Round one (p01-p32)** - Java: a class hidden by a variable, a pattern, a
   static import or an inherited member type; an inherited overload; `final`
@@ -13,6 +13,13 @@ agent whose only job was to find such programs, in two rounds:
   block-scoped declarations standing in for imports and package variables,
   Go's receivers, `goto`, type switches and `select`; records and enums;
   `toString()` reached through `+`; a lone carriage return ending a comment.
+- **Round three (r3-)** - Java, on reading a local that holds a `new X()`: a
+  field that keeps what an EARLIER call passed (`r3-a04`, `a05`, `a09`,
+  `z-scope-static-swap`); `o.new X()`, which creates o's member class X
+  (`r3-a06`, `a08`, `d01`); a method calling itself (`r3-a07`,
+  `z-scope-recursive-static`); the object handed to reflection (`r3-b07`). The
+  other `r3-` directories are shapes from the same round that the proof
+  already read correctly.
 
 `p33`, `p34` were added while fixing them. The `c` directories (and `j11`-`j13`,
 `k01`-`k07`) are shapes the proof already read correctly when probed, kept so

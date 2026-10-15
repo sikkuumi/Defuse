@@ -773,6 +773,27 @@ async function main(): Promise<number> {
     for (const miss of tooFaint.slice(0, 6)) console.log(`    ${color.red(g('cross'))} ${miss}`);
   }
 
+  // The scanner page wears the same mark as the site.
+  //
+  // The page kept an inline hexagon-and-N for weeks after the mark became
+  // docs/defuse-mark.png: two logos for one tool, and no check to notice. The
+  // mark has ONE file now. scripts/build-ui.mjs copies it into ui/ at build
+  // time, and the page points at that copy for its tab icon and its header -
+  // so there is no second drawing of it to drift.
+  const buildUi = await readFile(path.resolve(HERE, '../../scripts/build-ui.mjs'), 'utf8');
+  const markProblems: string[] = [];
+  if (!/<link rel="icon" href="defuse-mark\.png"/.test(pageHtml)) markProblems.push('tab icon is not defuse-mark.png');
+  if (!/<img class="logo" src="defuse-mark\.png"/.test(pageHtml)) markProblems.push('header logo is not defuse-mark.png');
+  if (/<svg class="logo"|image\/svg\+xml[^"]*viewBox='0 0 32 32'/.test(pageHtml)) markProblems.push('an inline drawing of the old mark is still in the page');
+  if (!/docs['"],\s*['"]defuse-mark\.png/.test(buildUi)) markProblems.push('scripts/build-ui.mjs does not copy docs/defuse-mark.png into ui/');
+  if (markProblems.length === 0) {
+    passed++;
+    console.log(`    ${color.green(g('tick'))} the scanner page uses the site's mark, docs/defuse-mark.png, for its icon and header`);
+  } else {
+    failed++;
+    for (const problem of markProblems) console.log(`    ${color.red(g('cross'))} ${problem}`);
+  }
+
   // A modifier class must not also be a component name.
   //
   // `tile(…, 'flow')` put class="tile flow" on the flow-verified tile - and

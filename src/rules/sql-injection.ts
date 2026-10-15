@@ -138,12 +138,15 @@ export const sqlInjectionRule: Rule = {
     'finding is upgraded to flow-verified and this text is replaced by a traced path. ' +
     'When every spliced value is PROVABLY a fixed literal - including a write in a ' +
     'branch that cannot run, a condition decided at compile time, literals joined ' +
-    'with `+`, a Java helper reached through `new X().m()`, a private/static method, ' +
+    'with `+`, a Java helper reached through `new X().m()` or through a local that ' +
+    'certainly holds a `new X()` (declared once, never written again, used only as the ' +
+    'receiver of calls), a private/static method, ' +
     'or a static method named through its class (`Utils.m()`, in this file or another, ' +
     'when exactly one class of that full name and one method of that name exist in ' +
     'the scan) whose returns are built from literals and parameters passed fixed ' +
-    'values, a read from a local Java map or list that returns a literal stored under ' +
-    'that key or at that position, or a dirty write that is certainly overwritten ' +
+    'values, a read from a local Java map or list that returns a literal - or a local ' +
+    'name fixed where it was stored - put under that key or at that position, or a ' +
+    'dirty write that is certainly overwritten ' +
     'before the query - the guess is withdrawn and listed as proved clean with the ' +
     'reason, rather than reported. That proof stops at one helper level, does not ' +
     'follow helpers outside Java or choose between overloads, does not use the ' +
@@ -152,15 +155,18 @@ export const sqlInjectionRule: Rule = {
     'reported here. A name must be declared where the read can see it (Java, JavaScript, ' +
     'TypeScript, Go block scoping); one declared outside the reading function counts only ' +
     'when no other function in its file writes it, and a Java field only when it is ' +
-    'private or final. What the proof does NOT see, and so can wrongly call fixed: a ' +
+    'private or final; inside a helper, a field written from a parameter is input, ' +
+    'since it keeps what an EARLIER call passed. What the proof does NOT see, and so ' +
+    'can wrongly call fixed: a ' +
     'write from ANOTHER file to a JavaScript or Python module-level name or a Go package ' +
     'variable declared in this file; a member inherited from a superclass outside the ' +
     'scan (a library class such as HttpServlet), which could shadow a name or supply an ' +
-    'overload; and a write made through `new Function(...)` or a string handed to ' +
-    'setTimeout. A withdrawal whose values are all plain literals leaves no proved-clean ' +
-    'record. Two rounds of an agent trying to break this proof found 60 ways in; every ' +
-    'one is fixed and kept as a test in tests/probes/, and a third round would likely ' +
-    'find more.',
+    'overload; a write made by reflection (`Field.set` with setAccessible, from code ' +
+    'that never names the field); and a write made through `new Function(...)` or ' +
+    'a string handed to setTimeout. A withdrawal whose values are all plain literals ' +
+    'leaves no proved-clean record. Three rounds of an agent trying to break this proof ' +
+    'found 70 ways in; every one is fixed and kept as a test in tests/probes/, and a ' +
+    'fourth round would likely find more.',
   shapes: ['call', 'assignment'],
   support: {
     javascript: {

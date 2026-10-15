@@ -120,6 +120,7 @@ export type StaticMethodLookup = (
   receiver: string,
   method: string,
   supertypes?: readonly string[],
+  allowInstance?: boolean,
 ) => StaticMethodHit | null;
 
 /**

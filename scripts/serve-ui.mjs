@@ -17,6 +17,7 @@ const TYPES = {
   '.wasm': 'application/wasm',
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.png': 'image/png',
 };
 
 createServer(async (request, response) => {

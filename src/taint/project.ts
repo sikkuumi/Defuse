@@ -244,6 +244,8 @@ export interface ProjectIndex extends CrossFileResolver {
     method: string,
     /** Simple names of the types the call sits inside inherit from - see strings.ts. */
     supertypes?: readonly string[],
+    /** The caller created the object with `new X(...)`, so an instance method is exact too. */
+    allowInstance?: boolean,
   ) => { readonly path: string; readonly method: Node } | null;
   /** Is a Java type of this simple name - top-level or nested - declared anywhere in the scan? */
   readonly javaTypeInScan: (simpleName: string) => boolean;
@@ -632,7 +634,13 @@ export function buildProjectIndex(
      * The caller's side - a local variable named `Utils` hides the class - is
      * checked where the call is, in rules/lib/strings.ts.
      */
-    staticMethod(fromPath: string, receiver: string, methodName: string, supertypes: readonly string[] = []) {
+    staticMethod(
+      fromPath: string,
+      receiver: string,
+      methodName: string,
+      supertypes: readonly string[] = [],
+      allowInstance = false,
+    ) {
       const from = byPath.get(fromPath);
       const facts = from?.javaTypes;
       if (!from || from.language !== 'java' || !facts) return null;
@@ -708,11 +716,15 @@ export function buildProjectIndex(
        * arguments - and that is the one that runs (p01, p02, p03).
        */
       if (klass.childForFieldName('superclass')) return null;
+      // An instance method can also come from an interface's default method.
+      if (allowInstance && klass.childForFieldName('interfaces')) return null;
       const methods = (klass.childForFieldName('body')?.namedChildren ?? []).filter(
         (m): m is Node => m?.type === 'method_declaration' && m.childForFieldName('name')?.text === methodName,
       );
       const method = methods.length === 1 ? methods[0] : undefined;
-      if (!method || !hasModifier(method, 'static')) return null;
+      // Static - or, when the caller holds a `new X(...)` and so knows the
+      // object is exactly an X, an instance method (strings.ts, heldCreation).
+      if (!method || (!allowInstance && !hasModifier(method, 'static'))) return null;
       // A private method cannot be called from another class at all.
       if (winner.path !== fromPath && hasModifier(method, 'private')) return null;
       return { path: winner.path, method };

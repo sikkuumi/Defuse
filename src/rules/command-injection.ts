@@ -253,8 +253,8 @@ export const commandInjectionRule: Rule = {
        * the call can differ from its value where the command was built - so
        * that case keeps the guess.
        *
-       * And only in Java for now. Two rounds of an agent trying to break the
-       * proof (tests/probes/) found most of its holes outside Java, and the
+       * And only in Java for now. The first two rounds of an agent trying to
+       * break the proof (tests/probes/) found most of its holes outside Java, and the
        * command rule had never leaned on it in any language; it starts where
        * it has been tested hardest. Elsewhere this rule reports as before.
        */

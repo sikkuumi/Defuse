@@ -104,7 +104,12 @@ for (const grammar of GRAMMARS) {
   await cp(path.join(grammarSrc, name), path.join(grammarOut, name));
 }
 
+// The mark. docs/defuse-mark.png is the only copy anyone edits; the site uses
+// it in place and the page gets this copy. The page used to draw its own -
+// an old hexagon-and-N - and kept it for weeks after the mark changed.
+await cp(path.join(root, 'docs', 'defuse-mark.png'), path.join(root, 'ui', 'defuse-mark.png'));
+
 console.log(
   `ui/ built: engine (minus ${NODE_ONLY.size} Node-only modules), ` +
-    `tree-sitter runtime, ${GRAMMARS.length} grammars`,
+    `tree-sitter runtime, ${GRAMMARS.length} grammars, the mark`,
 );

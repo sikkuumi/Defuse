@@ -2,7 +2,7 @@
   "scored": 1210,
   "findingsByConfidence": {
     "flow-verified": 640,
-    "signature-based": 1259
+    "signature-based": 1238
   },
   "casesWithBothLabels": 2,
   "tiers": [
@@ -26,14 +26,14 @@
     {
       "label": "signature-only",
       "tp": 82,
-      "fp": 56,
+      "fp": 35,
       "fn": 562,
-      "tn": 510,
-      "precision": "59.4%",
+      "tn": 531,
+      "precision": "70.1%",
       "recall": "12.7%",
-      "decoyFalsePositives": 4,
-      "decoyShare": "7%",
-      "nonDecoyFalsePositives": 52,
+      "decoyFalsePositives": 0,
+      "decoyShare": "0%",
+      "nonDecoyFalsePositives": 35,
       "missedByCategory": {
         "cmdi": 120,
         "sqli": 210,
@@ -43,18 +43,18 @@
     {
       "label": "combined (published)",
       "tp": 644,
-      "fp": 56,
+      "fp": 35,
       "fn": 0,
-      "tn": 510,
-      "precision": "92.0%",
+      "tn": 531,
+      "precision": "94.8%",
       "recall": "100.0%",
-      "decoyFalsePositives": 4,
-      "decoyShare": "7%",
-      "nonDecoyFalsePositives": 52,
+      "decoyFalsePositives": 0,
+      "decoyShare": "0%",
+      "nonDecoyFalsePositives": 35,
       "missedByCategory": {}
     }
   ],
   "reconciles": true,
   "engineVersion": "0.5.0",
-  "measuredAt": "2026-10-14"
+  "measuredAt": "2026-10-15"
 }

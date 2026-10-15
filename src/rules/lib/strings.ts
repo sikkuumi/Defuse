@@ -35,7 +35,7 @@ import type { Node } from 'web-tree-sitter';
 import type { LanguageId } from '../../parse/languages.js';
 import { SWITCH_NODES, createFolder, type Folder } from '../../taint/fold.js';
 import type { StaticMethodLookup } from '../contract.js';
-import { resolveContainerRead } from '../../taint/local-map.js';
+import { declaredImmutable, enclosingMethod, resolveContainerRead } from '../../taint/local-map.js';
 import {
   boundElsewhere,
   enclosingClassLikes,
@@ -1389,6 +1389,50 @@ export function constantProof(
    */
   const bindings = new Map<string, Map<string, () => string[] | null>>();
 
+  /*
+   * THE `new` A LOCAL CERTAINLY HOLDS, if it holds one.
+   *
+   *     SeparateClassRequest scr = new SeparateClassRequest(request);
+   *     String param = scr.getTheValue("BenchmarkTest00930");
+   *
+   * A variable could hold any subclass - unless it is a local declared once,
+   * in view of the call, with `= new X(...)`, and never written again anywhere
+   * in the method (closures included). Then it holds that X and nothing else.
+   * Not a parameter, not a field, not a name a lambda or a pattern also binds,
+   * and not read from inside a class that could inherit a field of that name
+   * (LocalObjectHelper.java has each).
+   *
+   * And the object must never leave the method's hands: every use of the name
+   * is as the receiver of a call, `h.m(...)`. Passed as an argument, it can be
+   * changed by whatever receives it - reflection rewrites a private field
+   * (tests/probes/r3-b07) - and `h.f = ...` writes a field directly.
+   */
+  const heldCreation = (name: string, call: Node): Node | null => {
+    if (language !== 'java' || !name) return null;
+    const fn = enclosingScopes(call)[0];
+    if (!fn || parameterNames(fn).has(name) || boundElsewhere(rootOf(call), name)) return null;
+    const declarators = fn
+      .descendantsOfType('variable_declarator')
+      .filter((d): d is Node => !!d && d.childForFieldName('name')?.text === name);
+    const declarator = declarators.length === 1 ? declarators[0] : undefined;
+    const value = declarator?.childForFieldName('value');
+    if (!declarator || value?.type !== 'object_creation_expression') return null;
+    if (declarator.parent?.type !== 'local_variable_declaration') return null;
+    const visible = declarationVisibility(declarator, language);
+    if (!visible || !contains(visible.region, call) || call.startIndex < visible.from) return null;
+    const f = folderOf(fn);
+    if (f.writtenOtherwise(name, fn) || f.plainWriteCount(name, fn) !== 1) return null;
+    if (enclosingClassLikes(call).some((c) => contains(visible.region, c) && supertypesOf(c).length > 0)) return null;
+    const nameNode = declarator.childForFieldName('name');
+    const onlyReceiver = fn.descendantsOfType('identifier').every((id) => {
+      if (!id || id.text !== name || (nameNode && sameSpan(id, nameNode))) return true;
+      const p = id.parent;
+      return p?.type === 'method_invocation' && !!p.childForFieldName('object') && sameSpan(p.childForFieldName('object')!, id);
+    });
+    if (!onlyReceiver) return null;
+    return value;
+  };
+
   const helperReturnsConstant = (call: Node, depth: number): string[] | null => {
     if (depth > 0 || language !== 'java' || call.type !== 'method_invocation') return null;
     const receiver = call.childForFieldName('object');
@@ -1410,7 +1454,18 @@ export function constantProof(
       supertypesOf(classLike).some((t) =>
         t.split('.').some((part) => (options.javaTypeInScan ? options.javaTypeInScan(part) : true)),
       );
-    if (receiver?.type === 'object_creation_expression') {
+    /*
+     * `h.m(...)` where `h` is a local that certainly holds a `new X(...)` - see
+     * heldCreation below. The object is exactly an X, so it is read like
+     * `new X(...).m(...)`.
+     */
+    const created =
+      receiver?.type === 'object_creation_expression'
+        ? receiver
+        : receiver?.type === 'identifier'
+          ? heldCreation(receiver.text ?? '', call)
+          : null;
+    if (created) {
       /*
        * `new X(...).m(...)`: the type is exact, so X's own m is the one that
        * runs - when X is the class in scope here. Not with a body attached
@@ -1418,11 +1473,18 @@ export function constantProof(
        * not when X is a class nested somewhere the call cannot see (p26), and
        * not when X inherits from anything - a superclass or an interface's
        * default method - since an inherited overload can be the one chosen
-       * (p34, j03).
+       * (p34, j03). X may live in another file, found the way a static
+       * helper's class is (staticMethod), with an instance method allowed.
        */
-      if (isClassLike(receiver)) return null;
-      typeName = (receiver.childForFieldName('type')?.text ?? '').trim();
-      if (!/^[A-Za-z_$][\w$]*$/.test(typeName)) return null; // qualified or generic: not declared here
+      if (isClassLike(created)) return null;
+      // `o.new X()` creates o's member class X - not the X this name finds
+      // from here (tests/probes/r3-a06, r3-a08, r3-d01).
+      if (created.child(0)?.type !== 'new') return null;
+      typeName = (created.childForFieldName('type')?.text ?? '').replace(/\s+/g, '');
+      if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(typeName)) return null; // generic: not read
+      // A class around the call can inherit a member class named X, and then
+      // that is the X created here (tests/probes/j04).
+      if (enclosingClassLikes(call).some(inherits)) return null;
       const declared: Node[] = [];
       const findTypes = (n: Node): void => {
         if (n.type !== 'object_creation_expression' && isClassLike(n) && n.childForFieldName('name')?.text === typeName) {
@@ -1430,20 +1492,28 @@ export function constantProof(
         }
         for (const child of n.namedChildren) if (child) findTypes(child);
       };
-      findTypes(root);
-      const klass = declared.length === 1 ? declared[0] : undefined;
-      if (!klass || klass.type !== 'class_declaration' || supertypesOf(klass).length > 0) return null;
-      // A class around the call can inherit a member class named X, and then
-      // that is the X created here (tests/probes/j04).
-      if (enclosingClassLikes(call).some(inherits)) return null;
-      const owner = klass.parent?.parent ?? null;
-      const inScope =
-        klass.parent?.type === 'program' ||
-        (klass.parent?.type === 'class_body' && !!owner && contains(owner, call) && isClassLike(owner));
-      if (!inScope) return null;
-      const candidates = methodsNamed(klass);
-      if (candidates.length !== 1) return null;
-      method = candidates[0]!;
+      if (!typeName.includes('.')) findTypes(root);
+      if (declared.length > 0) {
+        const klass = declared.length === 1 ? declared[0] : undefined;
+        if (!klass || klass.type !== 'class_declaration' || supertypesOf(klass).length > 0) return null;
+        const owner = klass.parent?.parent ?? null;
+        const inScope =
+          klass.parent?.type === 'program' ||
+          (klass.parent?.type === 'class_body' && !!owner && contains(owner, call) && isClassLike(owner));
+        if (!inScope) return null;
+        const candidates = methodsNamed(klass);
+        if (candidates.length !== 1) return null;
+        method = candidates[0]!;
+      } else {
+        const first = typeName.split('.')[0] ?? '';
+        if (!options.staticMethod || !first || !usedOnlyAsQualifier(root, first)) return null;
+        const supertypes = enclosingClassLikes(call).flatMap((c) => supertypesOf(c));
+        const found = options.staticMethod(typeName, methodName, supertypes, true);
+        if (!found || hidesCodeFromParser(found.method, 'java')) return null;
+        method = found.method;
+        where = ` in ${found.path}`;
+      }
+      typeName = typeName.split('.').pop() ?? typeName;
     } else if (!receiver) {
       /*
        * A bare call, `doSomething(request, param)`. It binds to this class's
@@ -1485,6 +1555,14 @@ export function constantProof(
       where = ` in ${found.path}`;
     }
     if (!method) return null; // a receiver that is a variable: it could be any subclass
+    /*
+     * A method calling itself. Its parameters are bound to what this call
+     * passes - and the arguments are the CALLER's parameters, the same names in
+     * the same method, which would then read their own binding: `m(b, "x")`
+     * inside m makes the caller's `b` look like "x" (tests/probes/r3-a07,
+     * r3-z-scope-recursive-static). Not read.
+     */
+    if (spanKey(rootOf(method)) === spanKey(rootOf(call)) && contains(method, call)) return null;
 
     /* ---- the parameters, bound to what this call passes ---- */
     const formal = (method.childForFieldName('parameters')?.namedChildren ?? []).filter(
@@ -1576,12 +1654,26 @@ export function constantProof(
       }
       const read = resolveContainerRead(each, language);
       if (read) {
-        if (!isPlainLiteral(read.value, language)) return null;
-        notes.push(
-          `\`${each.text.replace(/\s+/g, ' ')}\` on line ${lineOf(each)} returns the literal stored at ` +
-            `${read.selector} on line ${lineOf(read.write)} - the collection is local, handed to nothing, ` +
-            `and written only by straight-line statements`,
-        );
+        const where =
+          `\`${each.text.replace(/\s+/g, ' ')}\` on line ${lineOf(each)} returns what was stored at ` +
+          `${read.selector} on line ${lineOf(read.write)} - the collection is local, handed to nothing, ` +
+          `and written only by straight-line statements`;
+        if (isPlainLiteral(read.value, language)) {
+          notes.push(where.replace('returns what was stored', 'returns the literal stored'));
+          continue;
+        }
+        /*
+         * A NAME was stored - `map.put("keyB", param)`. Its value is judged
+         * where it was stored, not where it is read: the map holds what the
+         * name held then (ContainerHeldValue.java). Only for a type that cannot
+         * change in place, or an alias could change the stored object later.
+         */
+        const fn = enclosingMethod(each);
+        const stored = read.value.text ?? '';
+        if (read.value.type !== 'identifier' || !fn || !declaredImmutable(fn, stored)) return null;
+        const inner = nameIsConstant(stored, read.value, depth);
+        if (!inner) return null;
+        notes.push(...inner, `${where}, and \`${stored}\` was fixed when stored`);
         continue;
       }
       /*
@@ -1862,34 +1954,49 @@ export function constantProof(
       ];
     }
 
-    for (const scope of scopes) {
-      const walk = (n: Node | null): void => {
-        if (!n || !fixed) return;
-        // Do NOT descend into a nested scope. Searching the module body walked
-        // straight into sibling functions, so an unrelated `t = request.args...`
-        // three functions away made a genuinely constant `t` here look tainted.
-        if (n !== scope && SCOPE_NODES.has(n.type)) return;
-        const fields = BINDING_NODES[n.type];
-        if (fields) {
-          const target = n.childForFieldName(fields.name);
-          if ((target?.text ?? '').trim() === part) {
-            const value = n.childForFieldName(fields.value);
-            if (value) {
-              const deadIf = deadArmHolding(n, scope, body);
-              if (deadIf) {
-                notes.push(`the write on line ${lineOf(n)} ${deadIf.why}`);
-              } else {
-                live++;
-                const why = valueIsConstant(value, body, depth);
-                if (!why) fixed = false;
-                else notes.push(...why);
+    /*
+     * A FIELD OUTLIVES THE CALL. Inside a helper read for one call, a parameter
+     * means what THAT call passes - but a field written from a parameter, `f =
+     * v`, holds what whichever call ran LAST passed: `swap(tainted);
+     * swap("x")` returns the tainted value, and a lazy cache keeps the first
+     * call's (tests/probes/r3-a04, r3-a05, r3-a09, r3-z-scope-static-swap). So
+     * a name bound outside the reading function is judged with no parameter
+     * bound, and a parameter written into it is input.
+     */
+    const suspended = outerBound && bindings.size > 0 ? new Map(bindings) : null;
+    if (suspended) bindings.clear();
+    try {
+      for (const scope of scopes) {
+        const walk = (n: Node | null): void => {
+          if (!n || !fixed) return;
+          // Do NOT descend into a nested scope. Searching the module body walked
+          // straight into sibling functions, so an unrelated `t = request.args...`
+          // three functions away made a genuinely constant `t` here look tainted.
+          if (n !== scope && SCOPE_NODES.has(n.type)) return;
+          const fields = BINDING_NODES[n.type];
+          if (fields) {
+            const target = n.childForFieldName(fields.name);
+            if ((target?.text ?? '').trim() === part) {
+              const value = n.childForFieldName(fields.value);
+              if (value) {
+                const deadIf = deadArmHolding(n, scope, body);
+                if (deadIf) {
+                  notes.push(`the write on line ${lineOf(n)} ${deadIf.why}`);
+                } else {
+                  live++;
+                  const why = valueIsConstant(value, body, depth);
+                  if (!why) fixed = false;
+                  else notes.push(...why);
+                }
               }
             }
           }
-        }
-        for (const child of n.namedChildren) walk(child ?? null);
-      };
-      walk(scope);
+          for (const child of n.namedChildren) walk(child ?? null);
+        };
+        walk(scope);
+      }
+    } finally {
+      if (suspended) for (const [k, v] of suspended) bindings.set(k, v);
     }
 
     // No live write means we cannot see where it comes from - so we do not get

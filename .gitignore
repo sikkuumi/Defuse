@@ -7,6 +7,7 @@ corpus2/
 ui/engine/
 ui/vendor/
 ui/grammars/
+ui/defuse-mark.png
 
 # PowerShell console dumps from local scans (UTF-16, not source)
 flow.txt

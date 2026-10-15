@@ -1,17 +1,17 @@
 {
   "scored": 1210,
   "tp": 644,
-  "fp": 56,
+  "fp": 35,
   "fn": 0,
-  "tn": 510,
-  "precision": "92.0%",
+  "tn": 531,
+  "precision": "94.8%",
   "recall": "100.0%",
   "missedByCategory": {},
   "filesParsed": 2766,
   "parseErrors": 0,
-  "durationMs": 25935,
-  "decoyFalsePositives": 4,
-  "decoyShare": "7%",
+  "durationMs": 33482,
+  "decoyFalsePositives": 0,
+  "decoyShare": "0%",
   "engineVersion": "0.5.0",
-  "measuredAt": "2026-10-14"
+  "measuredAt": "2026-10-15"
 }
