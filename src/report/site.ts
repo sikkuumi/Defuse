@@ -73,54 +73,38 @@ import type { BenchmarkResult, LabelSplitResult } from './coverage-table.js';
  * remains is disabled under `prefers-reduced-motion`.
  */
 
-const esc = (s: string): string =>
+export const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 /** The install line, in one place - the hero prints it and the button copies it. */
-const INSTALL_COMMAND = 'npx github:Sikkuumi/Defuse scan .';
+export const INSTALL_COMMAND = 'npx github:Sikkuumi/Defuse scan .';
 
-export function renderSite(benchmark: BenchmarkResult, split: LabelSplitResult): string {
-  const verified = split.tiers.find((t) => t.label.startsWith('flow-verified'));
-  const signature = split.tiers.find((t) => t.label.startsWith('signature-only'));
-  if (!verified || !signature) throw new Error('label split is missing a tier');
+/**
+ * THE PAID CHECK, in one place.
+ *
+ * The scanner is free; a check is the scanner run on someone's code, read by a
+ * person, and handed over as the client report (`--report`). Contact goes
+ * through a GitHub request form for now - .github/ISSUE_TEMPLATE/
+ * security-check.yml - and that form is PUBLIC, so the page and the form both
+ * say not to put code or secrets in it. When there is a private address,
+ * `contactUrl` and `contactLabel` are the only lines to change.
+ */
+export const SERVICE = {
+  price: 'From ₹9,999',
+  priceNote: 'per project, for code up to about 25,000 lines. Larger projects are quoted before any work starts.',
+  by: 'Sikkuumiii',
+  contactUrl: 'https://github.com/Sikkuumi/Defuse/issues/new?template=security-check.yml',
+  contactLabel: 'Request a check on GitHub',
+  contactNote:
+    'The request form is public. Write only the language, the rough size and how to reach you privately - never code, keys or company details.',
+} as const;
 
-  const ruleCount = ALL_RULES.length;
-  const languageNames = LANGUAGES.map((l) => l.displayName);
-  const exclDecoy = (
-    (verified.tp / (verified.tp + verified.nonDecoyFalsePositives)) *
-    100
-  ).toFixed(1);
-  const gap = (
-    Number.parseFloat(verified.precision) - Number.parseFloat(signature.precision)
-  ).toFixed(1);
-
-  /* Rule/language pairs the engine declares it does not implement. Counted, not
-     asserted - if a rule gains a language this number drops on its own. */
-  let notImplemented = 0;
-  for (const rule of ALL_RULES) {
-    for (const language of LANGUAGES) {
-      if (rule.support[language.id]?.status === 'not-implemented') notImplemented++;
-    }
-  }
-
-  /* Bar widths are the measured percentages, so the chart cannot disagree with
-     the number printed beside it. */
-  const bar = (p: string): string => Number.parseFloat(p).toFixed(1);
-
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Defuse — static analysis that says what it proved</title>
-<meta name="description" content="A multi-language SAST scanner that labels every finding proven or guessed, prints the path behind every claim, and publishes what it did not check.">
-<meta property="og:title" content="Defuse">
-<meta property="og:description" content="Every scanner says possible. This one says what it proved.">
-<meta property="og:type" content="website">
-<meta name="theme-color" content="#262626">
-<link rel="icon" href="defuse-mark.png">
-<style>
-  /*
+/**
+ * WHAT EVERY PAGE OF THE SITE SHARES - the fonts, the colours, the base type,
+ * the glass surface, the navigation bar and the footer - so the landing page
+ * and the pricing page cannot drift apart in the brand they wear.
+ */
+export const BASE_CSS = `  /*
    * THE FONTS ARE SERVED FROM THIS ORIGIN. THE PAGE CALLS NOBODY.
    *
    * This used to be a stylesheet link to fonts.googleapis.com, which meant the
@@ -187,7 +171,101 @@ export function renderSite(benchmark: BenchmarkResult, split: LabelSplitResult):
     border:1px solid var(--line); border-radius:16px;
   }
 
-  /* ---------- motion ---------- */
+`;
+
+export const NAV_CSS = `  nav{position:relative;display:flex;align-items:center;gap:18px;padding:26px 0}
+  nav img{width:29px;height:auto}
+  .word{font-weight:700;font-size:25px;letter-spacing:-.6px;color:var(--brand-lift)}
+  .navlinks{display:none;gap:30px;margin-left:26px}
+  .navlinks a{font-size:14px;color:var(--mute)}
+  .navlinks a:hover{color:var(--white)}
+  @media(min-width:880px){.navlinks{display:flex}}
+  .ghbtn{margin-left:auto;font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--white);border:1px solid var(--line);border-radius:999px;padding:10px 19px;transition:background 220ms ease,border-color 220ms ease}
+  .ghbtn:hover{background:var(--glass);border-color:var(--brand-lift);color:var(--white)}
+
+`;
+
+export const FOOTER_CSS = `  footer{border-top:1px solid var(--hair);padding:46px 0 70px;display:flex;flex-wrap:wrap;gap:18px;align-items:center;justify-content:space-between}
+`;
+
+
+/** The navigation bar, the same on every page; `page` decides where the section links point. */
+export function siteNav(page: 'home' | 'pricing'): string {
+  const base = page === 'home' ? '' : 'index.html';
+  const sections: Array<[string, string]> = [
+    ['#finding', 'A finding'],
+    ['#labels', 'The labels'],
+    ['#numbers', 'Measurements'],
+    ['#gaps', 'Gaps'],
+    ['#check', 'Get it checked'],
+  ];
+  const links = sections.map(([href, label]) => `        <a href="${base}${href}">${label}</a>`);
+  links.push(`        <a href="pricing.html"${page === 'pricing' ? ' aria-current="page" style="color:var(--white)"' : ''}>Pricing</a>`);
+  return `    <nav>
+      <a href="index.html" style="display:flex;align-items:center;gap:18px" aria-label="Defuse home">
+        <img src="defuse-mark.png" alt="">
+        <span class="word">Defuse</span>
+      </a>
+      <div class="navlinks">
+${links.join('\n')}
+      </div>
+      <a class="ghbtn" href="https://github.com/Sikkuumi/Defuse">github</a>
+    </nav>`;
+}
+
+/** The footer, the same on every page. */
+export function siteFooter(): string {
+  return `  <footer>
+    <div style="display:flex;align-items:center;gap:13px">
+      <img src="defuse-mark.png" alt="" style="width:25px;height:auto">
+      <span class="word" style="font-size:20px">Defuse</span>
+    </div>
+    <div class="mono" style="font-size:13px;color:var(--faint)"><a href="https://github.com/Sikkuumi/Defuse">github.com/Sikkuumi/Defuse</a> · <a href="pricing.html">pricing</a> · AGPL-3.0 · commercial licence available</div>
+  </footer>`;
+}
+
+export function renderSite(benchmark: BenchmarkResult, split: LabelSplitResult): string {
+  const verified = split.tiers.find((t) => t.label.startsWith('flow-verified'));
+  const signature = split.tiers.find((t) => t.label.startsWith('signature-only'));
+  if (!verified || !signature) throw new Error('label split is missing a tier');
+
+  const ruleCount = ALL_RULES.length;
+  const languageNames = LANGUAGES.map((l) => l.displayName);
+  const exclDecoy = (
+    (verified.tp / (verified.tp + verified.nonDecoyFalsePositives)) *
+    100
+  ).toFixed(1);
+  const gap = (
+    Number.parseFloat(verified.precision) - Number.parseFloat(signature.precision)
+  ).toFixed(1);
+
+  /* Rule/language pairs the engine declares it does not implement. Counted, not
+     asserted - if a rule gains a language this number drops on its own. */
+  let notImplemented = 0;
+  for (const rule of ALL_RULES) {
+    for (const language of LANGUAGES) {
+      if (rule.support[language.id]?.status === 'not-implemented') notImplemented++;
+    }
+  }
+
+  /* Bar widths are the measured percentages, so the chart cannot disagree with
+     the number printed beside it. */
+  const bar = (p: string): string => Number.parseFloat(p).toFixed(1);
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Defuse — static analysis that says what it proved</title>
+<meta name="description" content="A multi-language SAST scanner that labels every finding proven or guessed, prints the path behind every claim, and publishes what it did not check.">
+<meta property="og:title" content="Defuse">
+<meta property="og:description" content="Every scanner says possible. This one says what it proved.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#262626">
+<link rel="icon" href="defuse-mark.png">
+<style>
+${BASE_CSS}  /* ---------- motion ---------- */
   @keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
   /*
    * THE TRACE RUNS ON ONE CLOCK.
@@ -278,17 +356,7 @@ export function renderSite(benchmark: BenchmarkResult, split: LabelSplitResult):
      covers the whole page, and two purple washes stacked in the same corner
      read as a smudge rather than as depth. */
   header{position:relative;padding:0 0 clamp(54px,7vw,92px)}
-  nav{position:relative;display:flex;align-items:center;gap:18px;padding:26px 0}
-  nav img{width:29px;height:auto}
-  .word{font-weight:700;font-size:25px;letter-spacing:-.6px;color:var(--brand-lift)}
-  .navlinks{display:none;gap:30px;margin-left:26px}
-  .navlinks a{font-size:14px;color:var(--mute)}
-  .navlinks a:hover{color:var(--white)}
-  @media(min-width:880px){.navlinks{display:flex}}
-  .ghbtn{margin-left:auto;font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--white);border:1px solid var(--line);border-radius:999px;padding:10px 19px;transition:background 220ms ease,border-color 220ms ease}
-  .ghbtn:hover{background:var(--glass);border-color:var(--brand-lift);color:var(--white)}
-
-  .hero{position:relative;padding-top:clamp(38px,6vw,84px)}
+${NAV_CSS}  .hero{position:relative;padding-top:clamp(38px,6vw,84px)}
   h1{font-size:clamp(40px,7.4vw,86px);letter-spacing:-2.2px;margin:22px 0 0;max-width:15ch}
   .lede{margin-top:24px;font-size:clamp(16px,1.9vw,19px);font-weight:300;max-width:60ch}
 
@@ -389,8 +457,20 @@ export function renderSite(benchmark: BenchmarkResult, split: LabelSplitResult):
   .langs{margin-top:22px;display:flex;flex-wrap:wrap;gap:9px}
   .langs span{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--mute);border:1px solid var(--hair);border-radius:7px;padding:7px 12px}
 
-  footer{border-top:1px solid var(--hair);padding:46px 0 70px;display:flex;flex-wrap:wrap;gap:18px;align-items:center;justify-content:space-between}
-</style>
+  /* ---------- the paid check ---------- */
+  .check{display:grid;grid-template-columns:1fr;gap:14px;margin-top:40px}
+  @media(min-width:900px){.check{grid-template-columns:minmax(220px,.8fr) 1.6fr 1.4fr;gap:18px}}
+  .check .glass{padding:24px 22px}
+  .price b{display:block;font-weight:700;font-size:clamp(28px,2.6vw,34px);letter-spacing:-1px;color:var(--white);white-space:nowrap}
+  .price span{display:block;margin-top:8px;color:var(--mute);font-size:14px}
+  .gets ol,.isnt ul{margin:14px 0 0 18px;color:var(--mute);font-size:14.5px}
+  .gets li,.isnt li{margin:8px 0}
+  .gets strong{color:var(--white);font-weight:500}
+  .cta{margin-top:30px;display:flex;flex-wrap:wrap;gap:16px 22px;align-items:center}
+  .ctabtn{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:14px;color:var(--white);background:var(--brand);border:1px solid var(--brand);border-radius:999px;padding:13px 24px;transition:background 220ms ease}
+  .ctabtn:hover{background:var(--brand-lift);color:var(--white)}
+
+${FOOTER_CSS}</style>
 </head>
 <body>
 
@@ -402,17 +482,7 @@ export function renderSite(benchmark: BenchmarkResult, split: LabelSplitResult):
 
 <header>
   <div class="wrap">
-    <nav>
-      <img src="defuse-mark.png" alt="">
-      <span class="word">Defuse</span>
-      <div class="navlinks">
-        <a href="#finding">A finding</a>
-        <a href="#labels">The labels</a>
-        <a href="#numbers">Measurements</a>
-        <a href="#gaps">Gaps</a>
-      </div>
-      <a class="ghbtn" href="https://github.com/Sikkuumi/Defuse">github</a>
-    </nav>
+${siteNav('home')}
 
     <div class="hero rise">
       <div class="kicker">Static application security testing</div>
@@ -651,17 +721,57 @@ export function renderSite(benchmark: BenchmarkResult, split: LabelSplitResult):
       version to other people over a network, in which case those users are owed your source. If those terms
       do not work for your company, and for some they genuinely do not, the copyright sits in one place and a
       commercial licence can be discussed.</p>
+    <p style="margin-top:14px">The scanner is the whole of the free plan, not a trial of it. Tools for working
+      through findings over time, and across a team, are paid - <a href="pricing.html">see plans and pricing</a>.</p>
+  </div>
+</section>
+
+<section id="check">
+  <div class="wrap">
+    <div class="kicker">If you would rather not run it yourself</div>
+    <h2>Your code, scanned<br>and read by a person.</h2>
+    <p style="margin-top:20px">${esc(SERVICE.by)}, who builds Defuse, runs it on your code, reads every finding,
+      and hands back the report in a form your team can act on. The same two labels apply: what was proven
+      comes with its path, what was only matched is said to be unproven, and what was not checked is written
+      down.</p>
+
+    <div class="check">
+      <div class="price glass">
+        <b>${esc(SERVICE.price)}</b>
+        <span>${esc(SERVICE.priceNote)}</span>
+      </div>
+      <div class="gets glass">
+        <div class="kicker">What you get</div>
+        <ol>
+          <li><strong>The client report.</strong> Proven problems with the path behind each, what to review,
+            what was checked and cleared, and what was not checked - one file that prints to PDF.</li>
+          <li><strong>A written summary.</strong> Which findings matter first, which matched lines are false
+            alarms and why, and what to fix.</li>
+          <li><strong>A 30-minute call</strong> to walk your team through it.</li>
+        </ol>
+      </div>
+      <div class="isnt glass">
+        <div class="kicker">What it is not</div>
+        <ul>
+          <li>Not a penetration test. Defuse reads source code; it does not attack the running application,
+            so neither label proves a problem can be exploited in production.</li>
+          <li>Not a dependency audit. The libraries your project uses are not checked for known
+            vulnerabilities.</li>
+          <li>Not a guarantee of safety. Section 4 of every report lists what was not checked, and that list
+            is part of the answer.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="cta">
+      <a class="ctabtn" href="${esc(SERVICE.contactUrl)}">${esc(SERVICE.contactLabel)}</a>
+      <p class="mono" style="font-size:12.5px;color:var(--faint);max-width:62ch">${esc(SERVICE.contactNote)}</p>
+    </div>
   </div>
 </section>
 
 <div class="wrap">
-  <footer>
-    <div style="display:flex;align-items:center;gap:13px">
-      <img src="defuse-mark.png" alt="" style="width:25px;height:auto">
-      <span class="word" style="font-size:20px">Defuse</span>
-    </div>
-    <div class="mono" style="font-size:13px;color:var(--faint)"><a href="https://github.com/Sikkuumi/Defuse">github.com/Sikkuumi/Defuse</a> · AGPL-3.0 · commercial licence available</div>
-  </footer>
+${siteFooter()}
 </div>
 
 <script>

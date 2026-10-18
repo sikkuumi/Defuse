@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Defuse — plans and pricing</title>
+<meta name="description" content="Defuse is free and open source. Paid plans add tools for working through findings over time and across a team - and never change what the scanner finds.">
+<meta property="og:title" content="Defuse — plans and pricing">
+<meta property="og:description" content="The scanner is free. Paid plans organise findings; they never re-decide one.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#262626">
+<link rel="icon" href="defuse-mark.png">
+<style>
+  /*
+   * THE FONTS ARE SERVED FROM THIS ORIGIN. THE PAGE CALLS NOBODY.
+   *
+   * This used to be a stylesheet link to fonts.googleapis.com, which meant the
+   * homepage of a security tool made a request to a third party before it had
+   * drawn anything - handing that third party the visitor's IP address and
+   * user agent on the way. The people most likely to open devtools on this
+   * page are exactly the people who would notice, and they would be right to.
+   *
+   * Six files, about 100KB, latin subsets only. Both families are SIL Open
+   * Font License 1.1, which permits redistribution and requires the licence to
+   * travel with the files - hence docs/fonts/LICENSE-*.txt, which are served
+   * alongside rather than being a gesture.
+   *
+   * font-display:swap draws the text immediately in the fallback and repaints
+   * when the real face arrives. The alternative, block, hides the heading until
+   * the font loads, and a blank hero is a worse failure than a brief reflow.
+   */
+  @font-face{font-family:"Space Grotesk";src:url("fonts/space-grotesk-latin-300-normal.woff2") format("woff2");font-weight:300;font-style:normal;font-display:swap}
+  @font-face{font-family:"Space Grotesk";src:url("fonts/space-grotesk-latin-400-normal.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+  @font-face{font-family:"Space Grotesk";src:url("fonts/space-grotesk-latin-500-normal.woff2") format("woff2");font-weight:500;font-style:normal;font-display:swap}
+  @font-face{font-family:"Space Grotesk";src:url("fonts/space-grotesk-latin-700-normal.woff2") format("woff2");font-weight:700;font-style:normal;font-display:swap}
+  @font-face{font-family:"IBM Plex Mono";src:url("fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+  @font-face{font-family:"IBM Plex Mono";src:url("fonts/ibm-plex-mono-latin-500-normal.woff2") format("woff2");font-weight:500;font-style:normal;font-display:swap}
+
+  :root{
+    /* Ground and surfaces, sampled from the Instagram carousel. */
+    --bg:#262626; --panel:#2C2C2C; --raised:#2F2F2F;
+    --white:#F5F5F5; --mute:#A8A8A8; --faint:#6E6E6E;
+    /* One accent, three tints. #792CF7 is the mark's own value; the lighter two
+       exist only so that text on this ground clears contrast - 792CF7 sits at
+       3.4:1, which is fine for a 40px heading and not fine for a 14px line. */
+    --brand:#792CF7; --brand-lift:#9153F7; --brand-soft:#A87BFF;
+    --line:rgba(245,245,245,.10); --hair:rgba(245,245,245,.06);
+    --glass:rgba(245,245,245,.035);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg); color:var(--white);
+    font-family:"Space Grotesk",system-ui,sans-serif; font-weight:400; line-height:1.6;
+    -webkit-font-smoothing:antialiased; overflow-x:hidden;
+    /* The 34px grid from the carousel, at the faintest weight that still reads. */
+    background-image:
+      linear-gradient(rgba(245,245,245,.020) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(245,245,245,.020) 1px,transparent 1px);
+    background-size:34px 34px;
+  }
+  .wrap{max-width:1140px;margin:0 auto;padding:0 28px}
+  a{color:var(--brand-soft);text-decoration:none;transition:color 200ms ease}
+  a:hover{color:var(--white)}
+  .mono,code{font-family:"IBM Plex Mono",ui-monospace,monospace}
+  .kicker{font-family:"IBM Plex Mono",monospace;font-size:12px;letter-spacing:2.6px;text-transform:uppercase;color:var(--faint)}
+  h1,h2,h3{font-weight:700;letter-spacing:-.9px;line-height:1.06}
+  h2{font-size:clamp(32px,4.6vw,52px);margin:18px 0 0}
+  p{color:var(--mute);max-width:66ch}
+  section{padding:clamp(60px,8vw,104px) 0;border-top:1px solid var(--hair);position:relative}
+
+  /* ---------- glass ---------- */
+  /* Every glass surface names --panel first, so the layout survives with
+     backdrop-filter switched off or unsupported. */
+  .glass{
+    background:var(--panel); background:linear-gradient(180deg,var(--glass),rgba(245,245,245,.012)),var(--panel);
+    -webkit-backdrop-filter:blur(16px) saturate(118%); backdrop-filter:blur(16px) saturate(118%);
+    border:1px solid var(--line); border-radius:16px;
+  }
+
+
+  header{position:relative;padding:0 0 clamp(40px,6vw,72px)}
+  nav{position:relative;display:flex;align-items:center;gap:18px;padding:26px 0}
+  nav img{width:29px;height:auto}
+  .word{font-weight:700;font-size:25px;letter-spacing:-.6px;color:var(--brand-lift)}
+  .navlinks{display:none;gap:30px;margin-left:26px}
+  .navlinks a{font-size:14px;color:var(--mute)}
+  .navlinks a:hover{color:var(--white)}
+  @media(min-width:880px){.navlinks{display:flex}}
+  .ghbtn{margin-left:auto;font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--white);border:1px solid var(--line);border-radius:999px;padding:10px 19px;transition:background 220ms ease,border-color 220ms ease}
+  .ghbtn:hover{background:var(--glass);border-color:var(--brand-lift);color:var(--white)}
+
+
+  h1{font-size:clamp(38px,6.4vw,72px);letter-spacing:-2px;margin:22px 0 0;max-width:17ch}
+  .lede{margin-top:22px;font-size:clamp(16px,1.9vw,19px);font-weight:300;max-width:62ch}
+
+  /* ---------- the plans ---------- */
+  .plans{display:grid;grid-template-columns:1fr;gap:18px;margin-top:8px}
+  @media(min-width:960px){.plans{grid-template-columns:repeat(3,1fr);gap:20px}}
+  .plan{display:flex;flex-direction:column;padding:30px 28px 28px;border-radius:16px}
+  .pname{font-family:"IBM Plex Mono",monospace;font-size:13px;letter-spacing:2.2px;text-transform:uppercase;color:var(--white)}
+  .amount{margin-top:18px;font-weight:700;font-size:clamp(38px,4vw,48px);letter-spacing:-1.6px;line-height:1;color:var(--white)}
+  .unit{margin-top:8px;font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--mute)}
+  .pnote{margin-top:6px;font-size:13.5px;color:var(--mute)}
+  .who{margin-top:18px;font-size:15px;color:var(--mute)}
+  /* Side by side, the price blocks and the one-line descriptions are given the same height, so the
+     feature lists start on one line across the three cards. */
+  @media(min-width:960px){.plan.glass .pricebox{min-height:150px}.plan.glass .who{min-height:4.8em}}
+  .builds{margin-top:22px;padding-top:18px;border-top:1px solid var(--hair);font-family:"IBM Plex Mono",monospace;font-size:12px;letter-spacing:1px;color:var(--faint)}
+  .feats{list-style:none;margin:14px 0 26px;flex-grow:1}
+  .feats li{padding:12px 0;border-bottom:1px solid var(--hair)}
+  .feats li:last-child{border-bottom:0}
+  .feats b{display:block;font-weight:500;font-size:15px;color:var(--white)}
+  .feats span{display:block;margin-top:4px;font-size:14px;line-height:1.55;color:var(--mute)}
+  .pbtn{display:block;text-align:center;font-family:"IBM Plex Mono",monospace;font-size:14px;color:var(--white);
+    border:1px solid var(--line);border-radius:999px;padding:12px 20px;transition:background 220ms ease,border-color 220ms ease}
+  .pbtn:hover{background:var(--glass);border-color:var(--brand-lift);color:var(--white)}
+  .pbtn.primary{background:var(--brand);border-color:var(--brand)}
+  .pbtn.primary:hover{background:var(--brand-lift)}
+  .pbtn:focus-visible{outline:2px solid var(--brand-soft);outline-offset:3px}
+
+  /* Not built yet: drawn as an outline with no price, so it cannot be mistaken for something on sale. */
+  .soonrow{display:grid;grid-template-columns:1fr;gap:18px;margin-top:18px}
+  @media(min-width:760px){.soonrow{grid-template-columns:1fr 1fr;gap:20px}}
+  .plan.soon{border:1px solid var(--hair);background:transparent;padding:26px 28px}
+  .plan.soon .pname{color:var(--mute)}
+  .plan.soon .who{margin-top:10px;font-size:14.5px}
+  .plan.soon .pbtn{margin-top:20px;align-self:flex-start;color:var(--mute)}
+  .tag{margin-top:14px;align-self:flex-start;font-family:"IBM Plex Mono",monospace;font-size:11.5px;letter-spacing:1.4px;text-transform:uppercase;color:var(--mute);border:1px solid var(--line);border-radius:6px;padding:4px 9px}
+
+  /* ---------- promises, effort, buying ---------- */
+  .three{display:grid;grid-template-columns:1fr;gap:18px;margin-top:40px}
+  @media(min-width:900px){.three{grid-template-columns:repeat(3,1fr);gap:20px}}
+  .three .glass{padding:26px 24px}
+  .three h3{font-size:19px;font-weight:500;letter-spacing:-.3px;color:var(--white)}
+  .three p{margin-top:10px;font-size:14.5px}
+  .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:40px}
+  @media(min-width:760px){.stats{grid-template-columns:repeat(4,1fr);gap:18px}}
+  .stat{padding:24px 22px;border-radius:14px}
+  .stat b{display:block;font-weight:700;font-size:clamp(26px,3.2vw,34px);letter-spacing:-1px}
+  .stat span{display:block;margin-top:5px;font-family:"IBM Plex Mono",monospace;font-size:11.5px;letter-spacing:1.4px;text-transform:uppercase;color:var(--faint)}
+  .steps{margin:26px 0 0 20px;color:var(--mute);max-width:70ch}
+  .steps li{margin:10px 0}
+  .steps strong{color:var(--white);font-weight:500}
+  footer{border-top:1px solid var(--hair);padding:46px 0 70px;display:flex;flex-wrap:wrap;gap:18px;align-items:center;justify-content:space-between}
+
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <nav>
+      <a href="index.html" style="display:flex;align-items:center;gap:18px" aria-label="Defuse home">
+        <img src="defuse-mark.png" alt="">
+        <span class="word">Defuse</span>
+      </a>
+      <div class="navlinks">
+        <a href="index.html#finding">A finding</a>
+        <a href="index.html#labels">The labels</a>
+        <a href="index.html#numbers">Measurements</a>
+        <a href="index.html#gaps">Gaps</a>
+        <a href="index.html#check">Get it checked</a>
+        <a href="pricing.html" aria-current="page" style="color:var(--white)">Pricing</a>
+      </div>
+      <a class="ghbtn" href="https://github.com/Sikkuumi/Defuse">github</a>
+    </nav>
+    <div class="kicker" style="margin-top:clamp(30px,5vw,64px)">Plans and pricing</div>
+    <h1>The scanner is free. Teams pay for the tools around it.</h1>
+    <p class="lede">Community is the whole scanner, open source, with nothing held back. The paid plans add
+      tools for working through findings over time and across a team. They read what the scanner found;
+      they never change what it found or how it is labelled.</p>
+  </div>
+</header>
+
+<section id="plans" style="padding-top:clamp(36px,5vw,56px)">
+  <div class="wrap">
+    <div class="plans">
+      <div class="plan glass">
+        <div class="pname">Community</div>
+        <div class="pricebox">
+          <div class="amount">Free</div>
+          <div class="unit">for everyone, for good</div>
+          <div class="pnote">Open source, AGPL-3.0</div>
+        </div>
+        <p class="who">Anyone scanning their own code, on their own machine or in their own CI.</p>
+        <div class="builds">Included:</div>
+        <ul class="feats">
+          <li><b>The scanner</b><span>8 languages and 10 rules. Data flow is traced in every language, into other functions, and into other files in every language but PHP.</span></li>
+          <li><b>Two labels on every finding</b><span>Proven, with the path from source to sink printed; or to review, a matched pattern that was not traced. Never blended into one score.</span></li>
+          <li><b>What it did not check</b><span>Every run lists the rule and language pairs it does not cover - 22 today - each with its reason.</span></li>
+          <li><b>Terminal, browser and CI</b><span>A terminal command, a browser page that scans on your own machine and uploads nothing, JSON output, and SARIF for GitHub code scanning.</span></li>
+          <li><b>Client report</b><span>One HTML file for a client or a manager, with the proven problems, what to review and what was not checked. Prints to PDF.</span></li>
+        </ul>
+        <a class="pbtn" href="https://github.com/Sikkuumi/Defuse#readme">Run it now</a>
+      </div>
+      <div class="plan glass">
+        <div class="pname">Pro</div>
+        <div class="pricebox">
+          <div class="amount">$19</div>
+          <div class="unit">per developer / month</div>
+          
+        </div>
+        <p class="who">One developer working through findings over time, on their own machine.</p>
+        <div class="builds">Everything in Community, and:</div>
+        <ul class="feats">
+          <li><b>New problems only</b><span>Compare two scans and see only what a change added. A line that moved is matched, not called new; what disappeared is "no longer reported", never "fixed".</span></li>
+          <li><b>Trend dashboard</b><span>Proven and to-review counts across your scans, in one file that opens offline. Where the scanner itself changed, the point is marked with the reason.</span></li>
+        </ul>
+        <a class="pbtn" href="https://github.com/Sikkuumi/Defuse/issues/new?template=plan-enquiry.yml&amp;title=Plan%20enquiry%3A%20Pro">Ask for Pro</a>
+      </div>
+      <div class="plan glass">
+        <div class="pname">Team</div>
+        <div class="pricebox">
+          <div class="amount">$49</div>
+          <div class="unit">per developer / month</div>
+          <div class="pnote">From 5 developers ($245 a month). 14-day trial on request.</div>
+        </div>
+        <p class="who">A team that wants every pull request checked, and one shared record of what was decided.</p>
+        <div class="builds">Everything in Pro, and:</div>
+        <ul class="feats">
+          <li><b>Pull-request check</b><span>Each pull request is scanned against its base. One comment, updated on every push, lists only what it adds, and the check fails only on new problems at the level you set.</span></li>
+          <li><b>Shared triage</b><span>False alarms and accepted risks are marked in the repository with a reason and a name. A mark never hides a finding, ends when the code changes, and a pull request cannot approve its own.</span></li>
+          <li><b>Automatic history</b><span>One scan a day kept on its own branch, and the trend dashboard rebuilt on every push to main. On private repositories, unless you choose otherwise.</span></li>
+        </ul>
+        <a class="pbtn primary" href="https://github.com/Sikkuumi/Defuse/issues/new?template=plan-enquiry.yml&amp;title=Plan%20enquiry%3A%20Team">Ask for Team</a>
+      </div>
+    </div>
+    <div class="soonrow">
+      <div class="plan soon">
+        <div class="pname">Business</div>
+        <div class="tag">Coming soon</div>
+        <p class="who">Organisations that want one yearly price.</p>
+        <p class="who">Not available yet. If you need it, say so - it will be shaped around real requests rather than guessed at.</p>
+        <a class="pbtn" href="https://github.com/Sikkuumi/Defuse/issues/new?template=plan-enquiry.yml&amp;title=Plan%20enquiry%3A%20Business">Tell us you need it</a>
+      </div>
+      <div class="plan soon">
+        <div class="pname">Enterprise</div>
+        <div class="tag">Coming soon</div>
+        <p class="who">Large organisations with their own terms and reviews.</p>
+        <p class="who">Not available yet. If you need it, say so - it will be shaped around real requests rather than guessed at.</p>
+        <a class="pbtn" href="https://github.com/Sikkuumi/Defuse/issues/new?template=plan-enquiry.yml&amp;title=Plan%20enquiry%3A%20Enterprise">Tell us you need it</a>
+      </div>
+    </div>
+    <p class="mono" style="margin-top:22px;font-size:12.5px;color:var(--faint);max-width:none">Prices in US dollars.
+      There is no checkout yet - see how buying works below.</p>
+  </div>
+</section>
+
+<section id="promise">
+  <div class="wrap">
+    <div class="kicker">The same in every plan</div>
+    <h2>Paying never makes<br>a guess look like a proof.</h2>
+    <div class="three">
+      <div class="glass">
+        <h3>The scanner decides</h3>
+        <p>The paid tools read the scanner's own output. They organise findings - compare them, mark them,
+          chart them - and never re-decide or relabel one.</p>
+      </div>
+      <div class="glass">
+        <h3>Nothing is hidden</h3>
+        <p>A finding your team marks is still listed, with the reason beside it. A comparison never calls a
+          finding fixed; it says "no longer reported", because that is all it can know.</p>
+      </div>
+      <div class="glass">
+        <h3>Your code stays with you</h3>
+        <p>Everything runs on your machine or in your own CI. There is no account to make and nothing is
+          uploaded anywhere.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="work">
+  <div class="wrap">
+    <div class="kicker">The work behind it</div>
+    <h2>Measured, and<br>published whole.</h2>
+    <p style="margin-top:20px">The engine is scored against OWASP BenchmarkJava, with the two labels scored
+      separately. Safety rules are switched off one at a time to prove a test notices. And the scanner
+      is run on large real projects - Django, WordPress and VS Code among them - to find what synthetic tests
+      miss. <a href="index.html#numbers">The measurements, and what they do not promise, are on the main page.</a></p>
+    <div class="stats">
+      <div class="stat glass"><b>1,210</b><span>benchmark cases scored</span></div>
+      <div class="stat glass"><b>10</b><span>rules</span></div>
+      <div class="stat glass"><b>8</b><span>languages traced</span></div>
+      <div class="stat glass"><b>22</b><span>gaps listed by name</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="buying">
+  <div class="wrap">
+    <div class="kicker">How buying works, today</div>
+    <h2>Set up by hand,<br>for now.</h2>
+    <ol class="steps">
+      <li><strong>Ask</strong> using the button on the plan you want. It opens a short request form on GitHub.</li>
+      <li><strong>Hear back</strong> privately, with the licence terms and an invoice.</li>
+      <li><strong>Get the package</strong> - a file your machine or your CI installs next to the scanner.</li>
+    </ol>
+    <p style="margin-top:20px">The request form is public. Write only the plan, the number of developers and
+      how to reach you privately - never code, keys or company details.</p>
+    <p style="margin-top:14px">Would rather have a person run it for you? The security check is
+      from ₹9,999 per project - <a href="index.html#check">see what it includes</a>.</p>
+  </div>
+</section>
+
+<div class="wrap">
+  <footer>
+    <div style="display:flex;align-items:center;gap:13px">
+      <img src="defuse-mark.png" alt="" style="width:25px;height:auto">
+      <span class="word" style="font-size:20px">Defuse</span>
+    </div>
+    <div class="mono" style="font-size:13px;color:var(--faint)"><a href="https://github.com/Sikkuumi/Defuse">github.com/Sikkuumi/Defuse</a> · <a href="pricing.html">pricing</a> · AGPL-3.0 · commercial licence available</div>
+  </footer>
+</div>
+
+</body>
+</html>

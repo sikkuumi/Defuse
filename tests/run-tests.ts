@@ -62,6 +62,7 @@ import {
   type LabelSplitResult,
 } from '../src/report/coverage-table.js';
 import { renderSite } from '../src/report/site.js';
+import { plans, renderPricing } from '../src/report/pricing.js';
 import { looksLikeSql, matchKnownSecret, isTestPath } from '../src/rules/lib/strings.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -2152,9 +2153,9 @@ async function main(): Promise<number> {
    * are removed before looking.
    */
   console.log(`\n${color.bold('  Landing page network calls')}`);
-  {
+  for (const page of ['index.html', 'pricing.html']) {
     try {
-      const html = await readFile(path.resolve(HERE, '../../docs/index.html'), 'utf8');
+      const html = await readFile(path.resolve(HERE, `../../docs/${page}`), 'utf8');
       const withoutAnchors = html.replace(/<a\b[^>]*>/gi, '<a>');
       const auto: string[] = [];
       const patterns = [
@@ -2172,12 +2173,12 @@ async function main(): Promise<number> {
       if (auto.length === 0) {
         passed++;
         console.log(
-          `    ${color.green(g('tick'))} docs/index.html fetches nothing from another origin`,
+          `    ${color.green(g('tick'))} docs/${page} fetches nothing from another origin`,
         );
       } else {
         failed++;
         console.log(
-          `    ${color.red(g('cross'))} docs/index.html would call ${auto.length} external ` +
+          `    ${color.red(g('cross'))} docs/${page} would call ${auto.length} external ` +
             `resource(s) on load: ${[...new Set(auto)].join(', ')}`,
         );
         console.log(
@@ -2187,8 +2188,83 @@ async function main(): Promise<number> {
     } catch {
       skipped++;
       console.log(
-        `    ${color.dim('·')} SKIPPED: docs/index.html not built yet - run \`npm run build:site\`.`,
+        `    ${color.dim('·')} SKIPPED: docs/${page} not built yet - run \`npm run build:site\`.`,
       );
+    }
+  }
+
+  /*
+   * THE PRICING PAGE SAYS ONLY WHAT IS TRUE TODAY.
+   *
+   * A pricing page is where a project is most tempted to round up: list the
+   * features it means to build, call a plan "most popular" before anyone has
+   * bought it, or lift a flattering number off the measurements page without
+   * the footnote that limits it. Each of those is checked here, along with the
+   * plain staleness check the landing page gets.
+   */
+  console.log(`\n${color.bold('  Pricing page')}`);
+  {
+    const pricingChecks: Array<[string, boolean]> = [];
+    try {
+      const [onDisk, benchmark, split, form, home] = await Promise.all([
+        readFile(path.resolve(HERE, '../../docs/pricing.html'), 'utf8'),
+        readFile(path.resolve(HERE, '../../docs/benchmark-result.json'), 'utf8'),
+        readFile(path.resolve(HERE, '../../docs/label-split-result.json'), 'utf8'),
+        readFile(path.resolve(HERE, '../../.github/ISSUE_TEMPLATE/plan-enquiry.yml'), 'utf8').catch(() => ''),
+        readFile(path.resolve(HERE, '../../docs/index.html'), 'utf8'),
+      ]);
+      const all = plans();
+      const soon = all.filter((p) => p.status === 'coming-soon');
+      pricingChecks.push([
+        'docs/pricing.html matches the plans and the recorded measurements',
+        onDisk === renderPricing(JSON.parse(benchmark) as BenchmarkResult),
+      ]);
+      // The coming-soon cards, each one as its own slice of the page: no price, no feature list.
+      const soonRow = onDisk.slice(onDisk.indexOf('<div class="soonrow">'), onDisk.indexOf('There is no checkout yet'));
+      const soonCards = soonRow.split('<div class="plan soon">').slice(1);
+      pricingChecks.push([
+        'a plan that is not built shows no price and no features, only "coming soon"',
+        soon.length === 2 &&
+          soonCards.length === soon.length &&
+          soon.every((p, i) => !p.price && p.features.length === 0 && soonCards[i]!.includes(`>${p.name}<`)) &&
+          soonCards.every((c) => c.includes('Coming soon') && !/\$\d/.test(c) && !c.includes('class="feats"')),
+      ]);
+      pricingChecks.push([
+        'every plan on sale has a price and says what it includes',
+        all.filter((p) => p.status === 'available').every((p) => !!p.price && p.features.length > 0),
+      ]);
+      pricingChecks.push([
+        'no "most popular" or "best value" badge - nothing has been bought yet',
+        !/most popular|best value|recommended/i.test(onDisk),
+      ]);
+      const precisions = (JSON.parse(split) as LabelSplitResult).tiers.map((t) => t.precision);
+      pricingChecks.push([
+        'no precision figure is quoted away from the footnote that limits it',
+        precisions.every((p) => !onDisk.includes(p)) && !/\d%/.test(onDisk.replace(/<style>[\s\S]*?<\/style>/, '')),
+      ]);
+      pricingChecks.push([
+        'it says there is no checkout and that the request form is public',
+        /no checkout/i.test(onDisk) && /request form is public/i.test(onDisk),
+      ]);
+      pricingChecks.push([
+        'every "ask" button opens the plan request form, and the form exists',
+        form.includes('This request is public') &&
+          all.filter((p) => p.name !== 'Community').every((p) => p.cta.href.includes('template=plan-enquiry.yml')),
+      ]);
+      pricingChecks.push(['the landing page links to the pricing page', home.includes('href="pricing.html"')]);
+    } catch {
+      skipped++;
+      console.log(`    ${color.dim('·')} SKIPPED: docs/pricing.html not built yet - run \`npm run build:site\`.`);
+    }
+    for (const [name, ok] of pricingChecks) {
+      if (ok) {
+        passed++;
+        console.log(`    ${color.green(g('tick'))} ${name}`);
+      } else {
+        failed++;
+        console.log(`    ${color.red(g('cross'))} ${name}`);
+        if (name.startsWith('docs/pricing.html matches')) console.log(`      ${color.dim('fix: npm run build:site')}`);
+      }
     }
   }
 
