@@ -18,7 +18,7 @@
  *   2  the tool itself failed (bad arguments, unreadable path, internal error)
  */
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { SEVERITY_ORDER, type Severity } from './core/finding.js';
@@ -35,6 +35,7 @@ import { color, g, setAsciiMode, wrapText } from './report/colors.js';
 import { renderHuman } from './report/human.js';
 import { renderJson } from './report/json.js';
 import { renderSarif } from './report/sarif.js';
+import { renderHtmlReport } from './report/html-report.js';
 
 interface Args {
   readonly command: string;
@@ -58,6 +59,9 @@ const VALUE_FLAGS = new Set([
   'fail-on',
   'depth',
   'max-lines',
+  'report',
+  'report-name',
+  'report-by',
 ]);
 
 function parseArgs(argv: readonly string[]): Args {
@@ -179,6 +183,13 @@ ${b('SCAN OPTIONS')}
                             flow-verified finding carries its traced path as a
                             SARIF codeFlow; a signature-based one carries none,
                             and every message opens with which it is.
+  --report=<file.html>      also write a report for the project owner: one
+                            self-contained HTML file (nothing loaded from the
+                            web) that prints to PDF - proven problems with their
+                            paths, what to review, what was cleared, and what
+                            was not checked
+  --report-name=<name>      the project name shown on that report
+  --report-by=<name>        "Prepared by" on that report
   --compact                 with --json or --sarif, emit a single line
   --min-severity=<level>    hide findings below this level in the terminal report
                             (they remain in --json).  critical|high|medium|low|info
@@ -322,6 +333,28 @@ async function commandScan(args: Args): Promise<number> {
   });
 
   if (!quiet) process.stderr.write(`\r${' '.repeat(70)}\r`);
+
+  /*
+   * The client report is WRITTEN BY THE TOOL, never piped. On Windows,
+   * PowerShell's `>` writes UTF-16, and a report redirected that way opens as
+   * noise in a browser - so the file is written here, as UTF-8, and the
+   * terminal says where it went.
+   */
+  const reportPath = flagString(args, 'report');
+  if (args.flags.has('report') && !reportPath) {
+    console.error(color.red('error: --report needs a file name, e.g. --report=report.html'));
+    return 2;
+  }
+  if (reportPath) {
+    const html = renderHtmlReport(result, {
+      generatedAt: new Date(),
+      root: path.relative(process.cwd(), resolved),
+      ...(flagString(args, 'report-name') ? { projectName: flagString(args, 'report-name')! } : {}),
+      ...(flagString(args, 'report-by') ? { preparedBy: flagString(args, 'report-by')! } : {}),
+    });
+    writeFileSync(path.resolve(reportPath), html, 'utf8');
+    console.error(color.dim(`client report written to ${path.resolve(reportPath)}`));
+  }
 
   if (asSarif) {
     console.log(renderSarif(result, !args.flags.has('compact')));

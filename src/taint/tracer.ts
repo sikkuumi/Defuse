@@ -1394,6 +1394,14 @@ export function traceFile(
     ...(sanitizesKinds ? { sanitizesKinds } : {}),
   });
 
+  /**
+   * Is this WHOLE expression one a source names as not the client's - see
+   * SourceSpec.except? Then it is clean, and so is anything read straight out
+   * of it.
+   */
+  const exceptedSource = (expression: string): boolean =>
+    dictionary.sources.some((s) => !!s.except && s.pattern.test(expression) && s.except.test(expression));
+
   /** Does this expression's text look like a known attacker-controlled source? */
   const sourceTaint = (node: Node, expression: string): Taint | null => {
     for (const source of dictionary.sources) {
@@ -1463,6 +1471,7 @@ export function traceFile(
     }
 
     if (MEMBER_NODES.has(node.type)) {
+      if (exceptedSource(expression)) return null;
       // `req.query.id` matches a source pattern as a whole.
       const direct = sourceTaint(node, expression);
       if (direct) return direct;
@@ -1667,6 +1676,7 @@ export function traceFile(
     // sanitiser was skipped and the SANITISED value was reported as a verified
     // vulnerability. A source is about where a value comes FROM, not about what
     // characters appear anywhere inside the expression.
+    if (exceptedSource(text(node))) return null;
     const asSource = sourceTaint(node, `${calleeText}(`);
     if (asSource) return asSource;
 

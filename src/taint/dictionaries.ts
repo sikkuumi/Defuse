@@ -17,6 +17,7 @@
  * listed in ENGINE_CAPABILITIES.notImplemented and printed in every report.
  */
 
+import { DECLARED_NOT_HTML } from './content-type.js';
 import type { LanguageId } from '../parse/languages.js';
 import type { CallSinkSpec, SourceSpec, TaintDictionary } from './types.js';
 
@@ -308,6 +309,18 @@ const PYTHON_DICTIONARY: TaintDictionary = {
     {
       pattern: /\brequest\.(headers|cookies|META|COOKIES)\b/,
       description: 'HTTP request headers or cookies',
+      /*
+       * request.META also holds keys the SERVER writes. CSRF_COOKIE is set by
+       * Django's CSRF middleware only after the cookie passes its format check
+       * (letters and digits, fixed length), and CSRF_COOKIE_NEEDS_UPDATE is a
+       * flag it sets. Scanning Django reported the CSRF token reaching a page
+       * as a flow-verified XSS (tests/fixtures/safe/django-not-html.py).
+       * Only these exact reads are excepted, with no fallback value that could
+       * itself be dirty; every other key - HTTP_*, QUERY_STRING, an unknown
+       * one - stays a source (tests/fixtures/vulnerable/django-responses.py).
+       */
+      except:
+        /^(?:self\.)?request\.META(?:\[\s*(["'])(?:CSRF_COOKIE|CSRF_COOKIE_NEEDS_UPDATE)\1\s*\]|\.get\(\s*(["'])(?:CSRF_COOKIE|CSRF_COOKIE_NEEDS_UPDATE)\2\s*(?:,\s*(?:(["'])[^"'\\]*\3|None|True|False))?\s*\))$/,
     },
     { pattern: /\bsys\.argv\b/, description: 'command-line arguments' },
     { pattern: /(^|[^.\w])input\s*\(/, description: 'input() read from the terminal' },
@@ -394,6 +407,9 @@ const PYTHON_DICTIONARY: TaintDictionary = {
       kind: 'xss',
       methods: ['HttpResponse'],
       argIndexes: [0],
+      // A response the call declares text/plain, CSV or JSON is not a page
+      // - see taint/content-type.ts.
+      unlessOption: DECLARED_NOT_HTML,
       description: 'an HTTP response body written without escaping',
     },
   ],

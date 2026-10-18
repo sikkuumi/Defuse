@@ -97,6 +97,14 @@ export interface SourceSpec {
   readonly pattern: RegExp;
   /** Plain-language description for the flow path, e.g. "HTTP query string". */
   readonly description: string;
+  /**
+   * The WHOLE expression, anchored, that `pattern` also matches but that the
+   * client does not write - Django's `request.META["CSRF_COOKIE"]`, set by its
+   * own middleware after checking the cookie is letters and digits. Such an
+   * expression is not a source, and the container it is read from does not
+   * make it dirty either. Keep these exact: anything not listed stays a source.
+   */
+  readonly except?: RegExp;
 }
 
 /** A call that does something dangerous with a string. */
@@ -167,10 +175,11 @@ export interface CallSinkSpec {
    * NOT a sink when the call text shows the dangerous behaviour turned off.
    *
    * The mirror image of requiresShellOption, and it exists because the safe
-   * form of a deserialiser is the dangerous call plus an argument:
+   * form of a call is often the dangerous call plus an argument:
    *
    *     unserialize($data, ['allowed_classes' => false])   // PHP
    *     yaml.load(text, Loader=yaml.SafeLoader)            // Python
+   *     HttpResponse(body, content_type="text/plain")      // Django: not a page
    *
    * Both are still a call to the risky function. Reporting them would punish
    * the fix, which is the worst thing an injection rule can do - it teaches

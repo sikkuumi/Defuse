@@ -641,9 +641,31 @@ Useful flags:
 --coverage-matrix       print the full rule × language table
 --show-suppressed       list findings silenced by defuse:ignore comments
 --sarif                 SARIF 2.1.0, for GitHub code scanning and any SARIF viewer
+--report=report.html    also write a client-readable HTML report (prints to PDF)
 --compact               one line per finding
 --no-config             ignore .defuse.json even if one is present
 ```
+
+**`--report=report.html`**: a report for the person who owns the code rather
+than the person who ran the scan - one HTML file that loads nothing from the web,
+runs no script, and prints to PDF from any browser. In order: what was **proven**,
+each with the path Defuse followed; what is **to review**, grouped by check, with
+what that check cannot tell; what was **checked and cleared**, with the reason;
+and what was **not checked** at all, including that dependency folders are not
+scanned and library versions are not checked. `--report-name` and `--report-by`
+fill in the project name and "Prepared by". The browser UI has the same report
+behind **Download report**, made by the same renderer from the same analysis.
+
+```bash
+npx github:sikkuumi/Defuse scan ./app --report=app-report.html --report-by="Your Name"
+```
+
+Two things are deliberate. Every piece of text taken from the scanned code is
+escaped, and a test feeds the renderer a snippet built to break out of the page:
+a security report that ran the code it quoted would be an attack on its reader.
+And the value of a reported hardcoded secret is cut to its first few characters
+and its length, because this file is made to be sent to someone - the full value
+stays in the code and in the scan's own output.
 
 **`--sarif`**: real SARIF 2.1.0, typed against `@types/sarif`. The confidence
 label is carried three ways so it cannot be lost in transit — a `[flow-verified]`
@@ -676,7 +698,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 784 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 811 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.
@@ -864,6 +886,31 @@ its own exam result is asking you to take its word for something it has not
 checked either.
 
 ### What moved the score, and what did not
+
+**Django, scanned from the browser: two proofs that were wrong.** Django
+(2,974 files) was scanned in the browser UI. Seven findings came back
+`flow-verified`, and two of them were not true: a response Django sends as
+`text/plain`, which a browser shows as text and never runs, and Django's own
+CSRF token, read from `request.META["CSRF_COOKIE"]` - a key Django's middleware
+writes only after checking the cookie is letters and digits. Both are fixed at
+the root: a response that declares itself text, CSV or JSON in the call is not
+a page, and those two server-written META keys are not client input. Everything
+next to them stays reported - an SVG response, an `HTTP_*` header, an unknown
+key, a fallback value that is the client's (`django-responses.py`). The same
+scan turned up 8 MD5/SHA-1 calls that pass `usedforsecurity=False`, Python's
+own statement that the digest is not for security - withdrawn now, each with a
+receipt saying it rests on that statement - and 4 HIGH "secrets" that were a
+key prefix, the word `POST`, an SQL template and a session key name. Django went
+from 443 findings to 429, none added; BenchmarkJava, the ten real projects and
+DVWA did not change by one finding.
+
+The other thing that scan raised was a policy question. The CSRF trace passed
+through three functions Defuse has no entry for, and a trace through an unknown
+function is assumed to carry the value, with the hop named in the path. That
+assumption stays: on BenchmarkJava, 243 of the 602 flow-verified findings on
+real bugs pass through such a function, and every one of them is right.
+Dropping them to `signature-based` would cost 40% of the proofs to remove a
+mistake that had a better fix at its source.
 
 **An object held in a local: 21 false positives.** All 21 had the same two
 lines:

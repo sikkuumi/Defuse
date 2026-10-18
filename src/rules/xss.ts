@@ -40,6 +40,7 @@ import { asAssignment, asCall, type Rule, type RuleHit } from './contract.js';
 import { analyzeStringExpression, looksLikeHtml } from './lib/strings.js';
 import { partsAreGuarded } from './lib/guards.js';
 import { analyzeHtmlSafety, supportsHtmlSafety, type HtmlSafety } from './lib/html-safety.js';
+import { DECLARED_NOT_HTML } from '../taint/content-type.js';
 
 /** Assigning to these properties parses the value as HTML. */
 const HTML_SINK_PROPERTIES: Record<LanguageId, readonly string[]> = {
@@ -319,7 +320,7 @@ export const xssRule: Rule = {
     },
     python: {
       status: 'partial',
-      note: 'PARTIAL: Django/Flask escape hatches (mark_safe, Markup, render_template_string, HttpResponse with built HTML) are detected. Template files themselves (.html, .jinja) are NOT parsed at all, so `{{ x|safe }}` inside a template is invisible.',
+      note: 'PARTIAL: Django/Flask escape hatches (mark_safe, Markup, render_template_string, HttpResponse with built HTML) are detected. An HttpResponse whose call declares content_type="text/plain", "text/csv" or "application/json" is not a page and is not reported; a content type passed positionally or through a variable is not read, so that response still reports. Template files themselves (.html, .jinja) are NOT parsed at all, so `{{ x|safe }}` inside a template is invisible.',
     },
     java: {
       status: 'partial',
@@ -457,6 +458,12 @@ export const xssRule: Rule = {
         const destination =
           call.calleeName.startsWith('Fprint') ? (call.args[0]?.text ?? '') : call.receiverText;
         if (!GO_PAGE_WRITER.test(destination)) return null;
+      }
+
+      // A Django response that declares itself text, CSV or JSON is not a
+      // page - the same test the data-flow sink applies (taint/content-type.ts).
+      if (language === 'python' && call.calleeName === 'HttpResponse' && DECLARED_NOT_HTML.test(call.node.text ?? '')) {
+        return null;
       }
 
       const isEscapeHatch = ESCAPE_HATCHES.has(call.calleeName);

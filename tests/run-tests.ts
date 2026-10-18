@@ -51,6 +51,7 @@ import { scoreAnalysis, SEVERITY_WEIGHT } from '../src/core/score.js';
 import { analyze } from '../src/core/analyze.js';
 import { renderSarif } from '../src/report/sarif.js';
 import { renderHuman } from '../src/report/human.js';
+import { renderHtmlReport, escapeHtml } from '../src/report/html-report.js';
 import {
   renderRuleMatrix,
   renderCounts,
@@ -717,6 +718,82 @@ async function main(): Promise<number> {
    * reason every other rule in this suite is: an intention decays, a check
    * does not. The audit found the CRITICAL label at 3.16:1 and a deck that
    * Tab could not reach at all - neither was noticeable by looking.       */
+  /* ---- the client report ----
+   * `--report` writes a file a project owner reads once and may print. It is
+   * held to the same contract as the terminal: every finding appears, under
+   * the label it carries; counts agree with the scan; and nothing the scanned
+   * code contains can run in the reader's browser. A security report that was
+   * itself an XSS vector would be the worst bug this project could ship.   */
+  console.log(`\n${color.bold('  Client report (--report)')}`);
+  {
+    const html = renderHtmlReport(result, { generatedAt: new Date('2026-01-01T00:00:00Z'), root: FIXTURES });
+    const problems: string[] = [];
+    const proven = result.findings.filter((f) => f.confidence === 'flow-verified').length;
+    const review = result.findings.filter((f) => f.confidence === 'signature-based').length;
+    if (!html.includes(`data-count-proven="${proven}"`)) problems.push('proven count disagrees with the scan');
+    if (!html.includes(`data-count-review="${review}"`)) problems.push('to-review count disagrees with the scan');
+    if (!html.includes(`data-count-cleared="${result.verifiedClean.length}"`)) problems.push('cleared count disagrees with the scan');
+    const cards = (html.match(/class="finding card proven"/g) ?? []).length;
+    const rows = (html.match(/class="finding guess"/g) ?? []).length;
+    if (cards !== proven) problems.push(`${cards} proven cards for ${proven} flow-verified findings`);
+    if (rows !== review) problems.push(`${rows} review rows for ${review} signature-based findings`);
+    // Self-contained: nothing fetched, nothing run.
+    // Every raw `<` in the output is a tag the report wrote (scanned text is
+    // escaped), so the tags themselves are what to inspect.
+    const tags = [...html.matchAll(/<([a-zA-Z][\w-]*)([^>]*)>/g)];
+    const loaders = tags.filter(
+      ([, name, attrs]) =>
+        /^(script|link|iframe|img|object|embed|frame|audio|video|source|base)$/i.test(name ?? '') ||
+        /\b(src|href|srcset|action|formaction)\s*=/i.test(attrs ?? ''),
+    );
+    const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+    if (loaders.length > 0 || /@import|url\(/i.test(css)) {
+      problems.push(`the report loads or runs something: ${loaders.map((t) => t[0]).slice(0, 3).join(' ')}`);
+    }
+    if (!html.includes('What this scan did not check')) problems.push('the not-checked section is missing');
+    // A hostile snippet must arrive as text.
+    const hostile = '</code><script>alert(1)</script><img src=x onerror=alert(2)>';
+    // One of each label, so both the proven card and the review row are fed it.
+    const samples = [
+      result.findings.find((f) => f.confidence === 'flow-verified'),
+      result.findings.find((f) => f.confidence === 'signature-based'),
+    ].filter((f): f is Finding => !!f);
+    if (samples.length === 2) {
+      const poisoned = {
+        ...result,
+        findings: samples.map((sample) => ({
+          ...sample,
+          message: hostile,
+          location: { ...sample.location, snippet: hostile, file: `${FIXTURES}/<b>x</b>.py` },
+        })),
+      };
+      const out = renderHtmlReport(poisoned as typeof result, { generatedAt: new Date(0), projectName: hostile, preparedBy: hostile });
+      if (/<script>alert|<img src=x|<b>x<\/b>/.test(out)) problems.push('text from the scanned code was rendered as markup');
+      if (!out.includes(escapeHtml(hostile))) problems.push('a hostile snippet did not appear escaped');
+    } else {
+      problems.push('the fixtures no longer hold a finding of each label to test escaping with');
+    }
+    // A reported secret's value must not travel with the report.
+    const secret = result.findings.find((f) => f.ruleId === 'hardcoded-secret' && /(["'])[^"']{12,}\1/.test(f.location.snippet));
+    const secretValue = secret?.location.snippet.match(/(["'])([^"']{12,})\1/)?.[2];
+    if (!secretValue) problems.push('the fixtures no longer hold a long hardcoded secret to test masking with');
+    else if (html.includes(escapeHtml(secretValue))) problems.push(`a secret's full value is printed in the report (${secret?.location.file})`);
+
+    // Nothing proven must not read as "safe".
+    const none = renderHtmlReport({ ...result, findings: [], verifiedClean: [] } as typeof result, { generatedAt: new Date(0) });
+    if (!/did not prove any problem[^.]*\. That is not the same as finding none/.test(none)) problems.push('an empty report does not say that none proven is not none present');
+    if (problems.length === 0) {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} every finding appears under its own label, counts agree, nothing loads or runs, hostile text is escaped ` +
+          color.dim(`(${proven} proven, ${review} to review, ${result.verifiedClean.length} cleared)`),
+      );
+    } else {
+      failed++;
+      for (const problem of problems) console.log(`    ${color.red(g('cross'))} client report: ${problem}`);
+    }
+  }
+
   console.log(`\n${color.bold('  Page accessibility')}`);
   const pageHtml = await readFile(path.resolve(HERE, '../../ui/index.html'), 'utf8');
   const appJs = await readFile(path.resolve(HERE, '../../ui/app.js'), 'utf8');

@@ -40,6 +40,7 @@ import type { LanguageId } from '../parse/languages.js';
 import { asAssignment, asCall, type Rule, type RuleHit } from './contract.js';
 import {
   isLikelyPlaceholder,
+  looksLikeSql,
   looksLikeProse,
   echoesItsOwnName,
   isStructuralIdentifier,
@@ -82,9 +83,47 @@ const SECRET_NAME = new RegExp(
 /**
  * Names that MATCH the pattern above but are not secrets: they hold the name of
  * a secret, its location, or a boolean about it. Checked first.
+ *
+ * `prefix`, `suffix` and `source` came from Django, where all three were HIGH
+ * findings: SECRET_KEY_INSECURE_PREFIX = "django-insecure-" is the prefix the
+ * code checks keys FOR, and token_source = "POST" is where a token is read
+ * from (tests/fixtures/safe/secret-shaped-names.py).
  */
 const NOT_A_SECRET =
-  /(_?(name|field|label|header|type|env|var|path|file|url|uri|prompt|placeholder|examples?|samples?|hash|algo|algorithm|regex|pattern|length|expiry|ttl|enabled|required)$)|^(has|is|use|should|allow|require)/i;
+  /(_?(name|field|label|header|type|env|var|path|file|url|uri|prompt|placeholder|examples?|samples?|hash|algo|algorithm|regex|pattern|length|expiry|ttl|enabled|required|prefix|suffix|source)$)|^(has|is|use|should|allow|require)/i;
+
+/**
+ * A VALUE THAT NAMES A KEY SLOT, not one that fills it:
+ *
+ *     INTERNAL_RESET_SESSION_TOKEN = "_password_reset_token"
+ *
+ * is the session key Django stores the reset token UNDER. Lowercase
+ * snake_case, letters only, at least two words, one of which is a slot noun.
+ * Anything with a digit or a capital still reports - generated values carry
+ * one or the other - and so does snake_case without a slot word
+ * (`DB_PASSWORD = "admin_pass"`, tests/fixtures/vulnerable/secret-near-misses.py).
+ * The cost: a human-chosen secret spelled like a key name, `my_secret_token`,
+ * is not reported, and the rule's limitations say so.
+ */
+const KEY_SLOT_NAME = /^_?[a-z]+(?:_[a-z]+)+$/;
+const SLOT_NOUNS = new Set(['password', 'passwd', 'token', 'secret', 'key', 'session', 'csrf', 'cookie', 'nonce']);
+function namesAKeySlot(value: string): boolean {
+  if (!KEY_SLOT_NAME.test(value)) return false;
+  return value.split('_').some((word) => SLOT_NOUNS.has(word));
+}
+
+/**
+ * A STATEMENT OR TEMPLATE THE SECRET IS SUBSTITUTED INTO:
+ *
+ *     set_password = 'ALTER USER %(user)s IDENTIFIED BY "%(password)s"'
+ *
+ * from Django's Oracle backend. The password is the placeholder, filled in
+ * later; the string is SQL. A Spring `{noop}hunter22` is not a template - the
+ * brace form is not read here at all.
+ */
+function isStatementOrTemplate(value: string): boolean {
+  return looksLikeSql(value) || /%\([A-Za-z_]\w*\)[sdr]/.test(value);
+}
 
 /** Entropy threshold above which a long literal starts looking machine-generated. */
 const ENTROPY_THRESHOLD = 4.0;
@@ -121,7 +160,11 @@ export const hardcodedSecretRule: Rule = {
     'DELIBERATE GAP: values matching a vendor format but ending in EXAMPLE, or with ' +
     'the random portion filled by 0000/1234567890, are treated as published ' +
     'documentation placeholders (AWS prints AKIAIOSFODNN7EXAMPLE in its own docs) and ' +
-    'are NOT reported. A real key that happens to end in EXAMPLE would be missed.',
+    'are NOT reported. A real key that happens to end in EXAMPLE would be missed. ' +
+    'Also not reported: a value under a name ending in prefix, suffix or source; a value ' +
+    'that is an SQL statement or a %(name)s template; and a lowercase snake_case value ' +
+    'that names a key slot (`_password_reset_token`) - so a human-chosen secret spelled ' +
+    'like one, `my_secret_token`, would be missed.',
   shapes: ['assignment', 'call'],
   support: {
     javascript: {
@@ -246,6 +289,7 @@ export const hardcodedSecretRule: Rule = {
     // A value that only restates its own variable name is a lookup key, not a
     // credential. See echoesItsOwnName() - this was 152 findings on Keycloak.
     if (echoesItsOwnName(name, value)) return null;
+    if (isStatementOrTemplate(value)) return null;
 
     /* ---- Signal 2: the variable name says "credential". ---- */
     if (SECRET_NAME.test(name) && !NOT_A_SECRET.test(name)) {
@@ -253,6 +297,7 @@ export const hardcodedSecretRule: Rule = {
       // A suspicious NAME cannot outvote a value that is structurally not a
       // key. `token: 'delimiter.curly'` is a theme scope, not a credential.
       if (isStructuralIdentifier(value)) return null;
+      if (namesAKeySlot(value)) return null;
       return {
         node: assignment.node,
         severity: downgrade('high'),

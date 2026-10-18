@@ -93,7 +93,10 @@ export const weakHashRule: Rule = {
     'purpose. MD5 used for a cache key, an ETag or deduplication is FINE and this ' +
     'finding is then a false positive. We cannot see what the digest is USED for. The ' +
     'taint engine follows attacker input forwards into sinks; answering "what happens to ' +
-    'this hash afterwards" is the opposite direction and is not implemented.',
+    'this hash afterwards" is the opposite direction and is not implemented. The one ' +
+    'exception is Python\'s `usedforsecurity=False`, which states the purpose in the call: ' +
+    'such a call is withdrawn and listed as proved clean, and the receipt says it rests ' +
+    'on that statement being true.',
   shapes: ['call'],
   support: {
     javascript: {
@@ -103,7 +106,7 @@ export const weakHashRule: Rule = {
     typescript: { status: 'implemented', note: 'Identical to JavaScript.' },
     python: {
       status: 'implemented',
-      note: 'hashlib.md5/sha1 and hashlib.new("md5"). The `usedforsecurity=False` keyword (Python 3.9+) is NOT yet honoured - a documented false-positive source we intend to fix.',
+      note: 'hashlib.md5/sha1 and hashlib.new("md5"). A call passing the literal keyword `usedforsecurity=False` (Python 3.9+) is withdrawn with a proved-clean receipt: it is the programmer stating in the code that the digest is not for security. A flag held in a variable is not read, and still reports.',
     },
     java: {
       status: 'implemented',
@@ -152,11 +155,40 @@ export const weakHashRule: Rule = {
       };
     };
 
+    /*
+     * PYTHON SAYS WHAT THE HASH IS FOR. `hashlib.md5(x, usedforsecurity=False)`
+     * is the one place the purpose this rule cannot see is written in the call
+     * (Python 3.9+). The keyword must be a real keyword argument with the
+     * literal False - not text in a comment or a string, not a variable - and
+     * the withdrawal leaves a receipt saying what it rests on
+     * (tests/fixtures/vulnerable/hash-purpose.py).
+     */
+    const declaredNotForSecurity =
+      language === 'python' &&
+      call.args.some(
+        (arg) =>
+          arg.type === 'keyword_argument' &&
+          arg.childForFieldName('name')?.text === 'usedforsecurity' &&
+          arg.childForFieldName('value')?.type === 'false',
+      );
+    const withdraw = (algorithm: string): null => {
+      ctx.noteClean?.(
+        'weak-hash',
+        call.node,
+        `The call passes usedforsecurity=False: Python's own declaration that this ` +
+          `${algorithm.toUpperCase()} digest is not used for security (a cache key, an ETag, a ` +
+          `checksum), so it is not reported. This rests on that statement being true - if the ` +
+          `digest does protect something, the declaration is wrong and so is this receipt.`,
+      );
+      return null;
+    };
+
     /* ---- Algorithm named in a string argument: createHash("md5") ---- */
     if (ALGORITHM_ARG_CALLS[language].includes(call.calleeName)) {
       for (const arg of call.args) {
         const text = unquote((arg.text ?? '').trim());
         if (WEAK_ALGORITHMS.test(text)) {
+          if (declaredNotForSecurity) return withdraw(text);
           return report(
             text,
             `\`${call.calleeText}("${text}")\` selects the algorithm by name.`,
@@ -176,6 +208,7 @@ export const weakHashRule: Rule = {
         );
       }
       if (WEAK_ALGORITHMS.test(call.calleeName)) {
+        if (declaredNotForSecurity) return withdraw(call.calleeName);
         return report(call.calleeName, `\`${call.calleeText}()\` names the algorithm directly.`);
       }
       // DigestUtils.md5Hex / sha1Hex

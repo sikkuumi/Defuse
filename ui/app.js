@@ -8,6 +8,7 @@
 
 import { LANGUAGES, SCANNABLE_EXTENSIONS } from '/engine/parse/languages.js';
 import { NETWORK_SOURCE_NOTICE } from '/engine/core/licence.js';
+import { renderHtmlReport } from '/engine/report/html-report.js';
 
 // The landing card's language line. Derived, never typed - see the comment in
 // index.html for what typing it cost.
@@ -784,6 +785,47 @@ $('download').addEventListener('click', () => {
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
   link.download = 'defuse-findings.json';
+  link.click();
+  URL.revokeObjectURL(link.href);
+});
+
+/*
+ * THE CLIENT REPORT, FROM THE BROWSER. The same renderer `defuse scan
+ * --report` uses (src/report/html-report.ts), fed the same analysis - so a
+ * report made here and one made in a terminal cannot disagree. The browser
+ * gathers files on its own terms, and the report says what those are.
+ */
+function scannedFolder(paths) {
+  const tops = new Set(paths.map((p) => (p.includes('/') ? p.split('/')[0] : '')));
+  return tops.size === 1 ? [...tops][0] : '';
+}
+
+$('downloadReport').addEventListener('click', () => {
+  if (!lastResult) return;
+  const paths = [...sources.keys()];
+  const folder = scannedFolder(paths);
+  const report = renderHtmlReport(
+    {
+      ...lastResult,
+      target: folder || 'selected files',
+      oversizedFiles: [],
+      excluded: { patterns: [], fileCount: 0, directories: [] },
+      stats: { ...lastResult.stats, filesFound: paths.length, filesWithParseErrors: lastResult.parseProblems.length },
+    },
+    {
+      generatedAt: new Date(),
+      root: folder,
+      projectName: folder || 'Selected files',
+      intake:
+        `This scan ran in the browser, which reads at most ${MAX_FILES.toLocaleString('en-US')} files, ` +
+        `skips any file over ${MAX_FILE_BYTES / 1024 / 1024} MB, and skips dependency and build folders. ` +
+        `${paths.length.toLocaleString('en-US')} files were read. A file left out this way is not in this report.`,
+    },
+  );
+  const blob = new Blob([report], { type: 'text/html' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `defuse-report-${(folder || 'files').replace(/[^\w.-]+/g, '-')}.html`;
   link.click();
   URL.revokeObjectURL(link.href);
 });
