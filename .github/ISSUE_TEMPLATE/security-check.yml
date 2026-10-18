@@ -1,0 +1,55 @@
+name: Request a security check
+description: Ask for a Defuse security check of your code (from ₹9,999 per project). This form is PUBLIC.
+title: "Security check request"
+labels: ["security-check"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This request is public - anyone can read it.**
+        Do not paste code, keys, passwords, URLs of private systems or company details here.
+        Just enough for a first reply; everything else is discussed privately.
+
+        What you get: the Defuse client report, a written summary of what matters and what is a false alarm,
+        and a 30-minute call. It is not a penetration test and does not check your libraries for known
+        vulnerabilities.
+  - type: dropdown
+    id: languages
+    attributes:
+      label: Main language(s)
+      multiple: true
+      options:
+        - JavaScript
+        - TypeScript
+        - Python
+        - Java
+        - PHP
+        - Go
+        - C
+        - C++
+        - Other (say below)
+    validations:
+      required: true
+  - type: dropdown
+    id: size
+    attributes:
+      label: Rough size of the code
+      options:
+        - Small (up to about 25,000 lines)
+        - Medium (25,000 - 100,000 lines)
+        - Large (over 100,000 lines)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: contact
+    attributes:
+      label: How should we reach you privately?
+      description: A first name and a way to contact you is enough. Remember this page is public.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else (optional)
+      description: For example a deadline. No code, no secrets.

@@ -1,0 +1,44 @@
+name: Ask about a plan
+description: Ask for Defuse Pro or Team, a Team trial, or tell us you need Business or Enterprise. This form is PUBLIC.
+title: "Plan enquiry"
+labels: ["plan-enquiry"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This request is public - anyone can read it.**
+        Do not paste code, keys, passwords or company details here. Just enough for a first reply;
+        the licence terms and the invoice are sent privately.
+
+        There is no checkout yet: a plan is set up by hand after you ask.
+  - type: dropdown
+    id: plan
+    attributes:
+      label: Which plan?
+      options:
+        - Pro ($19 per developer / month)
+        - Team ($49 per developer / month, from 5 developers)
+        - Team - 14-day trial first
+        - Business (coming soon)
+        - Enterprise (coming soon)
+    validations:
+      required: true
+  - type: input
+    id: developers
+    attributes:
+      label: How many developers?
+      description: A rough number is fine.
+    validations:
+      required: true
+  - type: input
+    id: contact
+    attributes:
+      label: How should we reach you privately?
+      description: A first name and a way to contact you is enough. Remember this page is public.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else (optional)
+      description: For example where you run your CI. No code, no secrets.
