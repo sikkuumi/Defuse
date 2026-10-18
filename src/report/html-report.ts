@@ -46,6 +46,11 @@ export interface HtmlReportOptions {
   readonly projectName?: string;
   /** Optional: the person or firm who ran the scan and reviewed the report. */
   readonly preparedBy?: string;
+  /**
+   * Optional: one line printed under the header - that this is a sample, a
+   * draft, or which branch was scanned. Escaped like every other string here.
+   */
+  readonly note?: string;
   /** When the scan ran. Passed in so the output is reproducible in tests. */
   readonly generatedAt: Date;
   /**
@@ -445,6 +450,7 @@ export function renderHtmlReport(result: ScanResult, options: HtmlReportOptions)
 </header>
 <h1>${e(project)}</h1>
 <table class="meta"><tbody>${meta.map(([k, v]) => `<tr><th>${e(k)}</th><td>${e(v)}</td></tr>`).join('')}</tbody></table>
+${options.note?.trim() ? `<p class="note">${e(options.note.trim())}</p>` : ''}
 
 <section id="glance">
 <div class="stats">
@@ -492,6 +498,7 @@ h4{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mute
 p{margin:6px 0}
 .lead{color:var(--muted);max-width:72ch}
 .meta{border-collapse:collapse;margin:0 0 8px}
+.note{border-left:3px solid var(--brand);background:var(--soft);padding:9px 14px;margin:14px 0 6px;max-width:72ch}
 .meta th{text-align:left;font-weight:500;color:var(--muted);padding:2px 18px 2px 0;vertical-align:top;white-space:nowrap}
 .meta td{padding:2px 0;overflow-wrap:anywhere}
 .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:20px 0 12px}

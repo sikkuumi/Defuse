@@ -32,7 +32,8 @@
     "memory": "npm run build --silent && node scripts/memory.mjs",
     "identity": "npm run build --silent && node scripts/identity.mjs",
     "label-split": "npm run build --silent && node scripts/label-split.mjs",
-    "build:site": "npm run build --silent && node scripts/build-site.mjs"
+    "build:site": "npm run build --silent && node scripts/build-site.mjs",
+    "review-reasons": "node scripts/review-reasons.mjs"
   },
   "dependencies": {
     "tree-sitter-wasms": "0.1.13",

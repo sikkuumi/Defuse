@@ -225,6 +225,17 @@ export interface SanitizerSpec {
   readonly names: readonly string[];
   /** Which sinks this soap actually works for. */
   readonly kinds: readonly SinkKind[];
+  /**
+   * Kinds this soap protects ONLY when its output lands inside a quoted string.
+   *
+   * `mysqli_real_escape_string()` puts a backslash in front of quote characters
+   * and nothing else. Inside `'...'` in a query that is the whole defence - a
+   * quote is the only way out. In an unquoted slot (`WHERE id = $id`) there is
+   * nothing to break out of, and `1 OR 1=1` passes through it untouched. So the
+   * value is only provisionally clean until the tracer sees where it is spliced
+   * into the query. See `quotePending` in tracer.ts.
+   */
+  readonly onlyInsideQuotes?: readonly SinkKind[];
   readonly description: string;
 }
 

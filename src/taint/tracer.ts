@@ -71,6 +71,8 @@ import { SINK_KIND_RULE, type SinkKind, type TaintDictionary } from './types.js'
  * -------------------------------------------------------------------------- */
 interface InternalStep extends FlowStep {
   readonly sanitizesKinds?: readonly SinkKind[];
+  /** A sanitiser whose protection depends on landing inside quotes - see SanitizerSpec.onlyInsideQuotes. */
+  readonly quoteDependent?: boolean;
 }
 
 interface Taint {
@@ -145,6 +147,19 @@ interface Taint {
    * this marks the container, and `containerGuess` is set later, at the read.
    */
   readonly collectedMany?: boolean | undefined;
+  /**
+   * Kinds this value is clean for ONLY IF it ends up inside quotes - it went
+   * through an escape-only function such as mysqli_real_escape_string(). See
+   * SanitizerSpec.onlyInsideQuotes.
+   *
+   * Settled where the value is spliced into a string: inside quotes the
+   * escaping is the whole defence, so the kinds stay clean and this clears;
+   * outside quotes it protects nothing, so the kinds are taken back out of
+   * sanitizedFor and the path says why. A value that reaches a sink with this
+   * still set was assembled somewhere this engine cannot read (sprintf, a
+   * builder), so it is neither cleared nor called proven - see quoteUnknown.
+   */
+  readonly quotePending?: readonly SinkKind[] | undefined;
 }
 
 /**
@@ -185,6 +200,12 @@ export interface FlowResult {
    * containerGuess.
    */
   readonly containerGuess?: boolean;
+  /**
+   * The value went through escaping that only protects inside quotes, and was
+   * put into the query somewhere this engine cannot read, so whether it is
+   * quoted is unknown. Reported, not certified - and not cleared either.
+   */
+  readonly quoteUnknown?: boolean;
   /** The file the sink is in - may not be the file being scanned. */
   readonly filePath: string;
 }
@@ -425,6 +446,66 @@ const STRING_NODES = new Set([
 ]);
 
 const INTERPOLATION_NODES = new Set(['template_substitution', 'interpolation']);
+
+/**
+ * A string literal's text without its prefix and delimiters: `f"..."`,
+ * `'...'`, `"""..."""`, and a PHP heredoc's first and last lines.
+ */
+function stringContent(raw: string): string {
+  if (raw.startsWith('<<<')) {
+    const lines = raw.split('\n');
+    return lines.slice(1, -1).join('\n');
+  }
+  const open = raw.search(/["'`]/);
+  if (open === -1) return raw;
+  const quote = raw[open]!;
+  const width = raw.startsWith(quote.repeat(3), open) ? 3 : 1;
+  const end = raw.length - width >= open + width ? raw.length - width : raw.length;
+  return raw.slice(open + width, end);
+}
+
+/** The text of a string literal from just after its opening delimiter - for a prefix ending mid-string. */
+function afterOpening(raw: string): string {
+  if (raw.startsWith('<<<')) {
+    const newline = raw.indexOf('\n');
+    return newline === -1 ? '' : raw.slice(newline + 1);
+  }
+  const open = raw.search(/["'`]/);
+  if (open === -1) return raw;
+  const quote = raw[open]!;
+  const width = raw.startsWith(quote.repeat(3), open) ? 3 : 1;
+  return raw.slice(open + width);
+}
+
+/**
+ * The literal text a string-building expression contributes, in order. Parts
+ * that are not literals - variables, calls - contribute nothing, which is the
+ * cautious reading: a quote this engine cannot see is not counted as there.
+ */
+function literalTextOf(node: Node | null): string {
+  if (!node) return '';
+  if (STRING_NODES.has(node.type)) return stringContent(node.text);
+  if (node.type === 'parenthesized_expression') {
+    return literalTextOf(node.namedChildren.find((c): c is Node => c !== null) ?? null);
+  }
+  if (node.type === 'binary_expression' || node.type === 'binary_operator') {
+    const operator = node.childForFieldName('operator')?.text ?? '';
+    if (operator !== '+' && operator !== '.') return '';
+    return literalTextOf(node.childForFieldName('left')) + literalTextOf(node.childForFieldName('right'));
+  }
+  return '';
+}
+
+/**
+ * Does a value spliced in right after this text sit inside a quoted string?
+ * An odd number of single or double quotes before it says it does. A backtick
+ * is NOT counted: it quotes an identifier, and escaping does not touch it.
+ */
+function opensAQuote(textBefore: string): boolean {
+  const singles = (textBefore.match(/'/g) ?? []).length;
+  const doubles = (textBefore.match(/"/g) ?? []).length;
+  return singles % 2 === 1 || doubles % 2 === 1;
+}
 
 /**
  * Nodes that BUILD a container out of listed elements.
@@ -1428,7 +1509,36 @@ export function traceFile(
     branchAssumed: taint.branchAssumed,
     containerGuess: taint.containerGuess,
     collectedMany: taint.collectedMany,
+    quotePending: taint.quotePending,
   });
+
+  /**
+   * WHERE AN ESCAPED VALUE IS SPLICED DECIDES WHETHER THE ESCAPING COUNTS.
+   *
+   * Inside quotes, escape-only cleaning (see SanitizerSpec.onlyInsideQuotes) is
+   * the whole defence, so it stands. Outside them it protects nothing: the
+   * kinds go back out of sanitizedFor, and the path says why, so a reader sees
+   * the escaping AND the reason it did not help.
+   */
+  const placeInString = (taint: Taint, quoted: boolean, node: Node): Taint => {
+    const pending = taint.quotePending;
+    if (!pending || pending.length === 0) return taint;
+    if (quoted) return { ...taint, quotePending: undefined };
+    return {
+      ...taint,
+      steps: [
+        ...taint.steps,
+        step(
+          'propagation',
+          node,
+          'placed OUTSIDE quotes in the string it is built into, where the escaping applied earlier ' +
+            'protects nothing - escaping only works on a value inside quotes',
+        ),
+      ],
+      sanitizedFor: new Set([...taint.sanitizedFor].filter((k) => !pending.includes(k))),
+      quotePending: undefined,
+    };
+  };
 
   /**
    * The heart of it: "is this expression dirty, and how did it get that way?"
@@ -1517,20 +1627,30 @@ export function traceFile(
        * operand could be the one that comes out.
        */
       if (!BINARY_CARRIERS.has(operator)) return null;
-      const left = evaluate(node.childForFieldName('left'), scope, depth + 1);
-      const right = evaluate(node.childForFieldName('right'), scope, depth + 1);
+      const leftNode = node.childForFieldName('left');
+      let left = evaluate(leftNode, scope, depth + 1);
+      let right = evaluate(node.childForFieldName('right'), scope, depth + 1);
+      // Joining strings settles any quote-dependent cleaning - see placeInString.
+      // A right operand is quoted when the literal text before it opens a quote;
+      // a left operand still unsettled here starts the string, so nothing quotes it.
+      if (operator === '+' || operator === '.') {
+        if (right?.quotePending?.length) right = placeInString(right, opensAQuote(literalTextOf(leftNode)), node);
+        if (left?.quotePending?.length) left = placeInString(left, false, node);
+      }
       const taint = left ?? right;
       if (!taint) return null;
       // If both sides are dirty, keep the union of what has been washed.
+      const pendingBoth = [...new Set([...(left?.quotePending ?? []), ...(right?.quotePending ?? [])])];
       const merged: Taint =
         left && right
           ? {
               steps: left.steps,
               sanitizedFor: new Set(
-                [...left.sanitizedFor].filter((k) => right.sanitizedFor.has(k)),
+                [...left.sanitizedFor].filter((k) => right!.sanitizedFor.has(k)),
               ),
               origin: left.origin,
               unknownHops: [...left.unknownHops, ...right.unknownHops],
+              quotePending: pendingBoth.length > 0 ? pendingBoth : undefined,
             }
           : taint;
       return addStep(
@@ -1572,7 +1692,18 @@ export function traceFile(
             : null;
         if (!inner) continue;
         const taint = evaluate(inner, scope, depth + 1);
-        if (taint) return addStep(taint, node, 'interpolated into a string template');
+        if (taint) {
+          // Quote-dependent cleaning is settled by what comes before the splice
+          // in this literal. If the offsets do not line up with the text, the
+          // position is unknown and the value is treated as unquoted.
+          let placed = taint;
+          if (taint.quotePending?.length) {
+            const offset = child.startIndex - node.startIndex;
+            const lined = node.text.slice(offset, offset + child.text.length) === child.text;
+            placed = placeInString(taint, lined && opensAQuote(afterOpening(node.text.slice(0, offset))), node);
+          }
+          return addStep(placed, node, 'interpolated into a string template');
+        }
       }
       return null;
     }
@@ -1782,19 +1913,25 @@ export function traceFile(
       for (const arg of args) {
         const taint = evaluate(arg, scope, depth + 1);
         if (!taint) continue;
+        const quoteDependent = sanitizer.onlyInsideQuotes ?? [];
+        const pending = [...new Set([...(taint.quotePending ?? []), ...quoteDependent])];
         return {
           steps: [
             ...taint.steps,
-            step(
-              'sanitizer',
-              node,
-              `passed through \`${name}()\` - ${sanitizer.description}`,
-              sanitizer.kinds,
-            ),
+            {
+              ...step(
+                'sanitizer',
+                node,
+                `passed through \`${name}()\` - ${sanitizer.description}`,
+                sanitizer.kinds,
+              ),
+              ...(quoteDependent.length > 0 ? { quoteDependent: true } : {}),
+            },
           ],
           sanitizedFor: new Set([...taint.sanitizedFor, ...sanitizer.kinds]),
           origin: taint.origin,
           unknownHops: taint.unknownHops,
+          quotePending: pending.length > 0 ? pending : undefined,
         };
       }
       return null;
@@ -1901,6 +2038,7 @@ export function traceFile(
       sanitizedFor: carried.sanitizedFor,
       origin: carried.origin,
       unknownHops: [...carried.unknownHops, name],
+      quotePending: carried.quotePending,
       compartment,
       collectedMany: carried.collectedMany,
       /*
@@ -1949,6 +2087,15 @@ export function traceFile(
       const coversThisKind = s.sanitizesKinds?.includes(kind) ?? false;
       if (coversThisKind && taint.sanitizedFor.has(kind)) {
         return { kind: s.kind, location: s.location, description: s.description };
+      }
+      if (coversThisKind && s.quoteDependent) {
+        return {
+          kind: 'propagation',
+          location: s.location,
+          description:
+            `${s.description} - NOTE: this value is not inside quotes where it is used, ` +
+            `so the escaping does not protect it`,
+        };
       }
       if (coversThisKind) {
         return {
@@ -2004,7 +2151,9 @@ export function traceFile(
      * That is the fourth-time-lesson recorded on this function - every reason
      * not to report belongs here, or it only half exists.
      */
-    if (taint.sanitizedFor.has(kind)) return 'sanitised';
+    // Escaping whose protection depends on quotes, on a value whose place in
+    // the query was never seen, proves nothing either way - see quoteUnknown.
+    if (taint.sanitizedFor.has(kind) && !taint.quotePending?.includes(kind)) return 'sanitised';
     // Cleanliness established by the control flow rather than by transforming
     // the value: inside `if (is_numeric($octet[0]) && ...)` the value provably
     // holds no metacharacter. See rules/lib/guards.ts.
@@ -2055,6 +2204,7 @@ export function traceFile(
       unknownHops: taint.unknownHops,
       branchAssumed: taint.branchAssumed ?? false,
       containerGuess: taint.containerGuess ?? false,
+      quoteUnknown: taint.quotePending?.includes(kind) ?? false,
       filePath: toDisplay(currentPath),
     });
   };
@@ -2381,6 +2531,7 @@ export function traceFile(
           unknownHops: taint.unknownHops,
           branchAssumed: taint.branchAssumed ?? false,
           containerGuess: taint.containerGuess ?? false,
+          quoteUnknown: taint.quotePending?.includes(sink.kind) ?? false,
           filePath: toDisplay(currentPath),
         });
       }
@@ -2413,6 +2564,7 @@ export function traceFile(
         unknownHops: taint.unknownHops,
         branchAssumed: taint.branchAssumed ?? false,
         containerGuess: taint.containerGuess ?? false,
+        quoteUnknown: taint.quotePending?.includes(sink.kind) ?? false,
         filePath: toDisplay(currentPath),
       });
     }

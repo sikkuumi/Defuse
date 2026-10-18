@@ -62,6 +62,7 @@ const VALUE_FLAGS = new Set([
   'report',
   'report-name',
   'report-by',
+  'report-note',
 ]);
 
 function parseArgs(argv: readonly string[]): Args {
@@ -190,6 +191,7 @@ ${b('SCAN OPTIONS')}
                             was not checked
   --report-name=<name>      the project name shown on that report
   --report-by=<name>        "Prepared by" on that report
+  --report-note=<text>      one line under the report's header, e.g. that it is a sample or a draft
   --compact                 with --json or --sarif, emit a single line
   --min-severity=<level>    hide findings below this level in the terminal report
                             (they remain in --json).  critical|high|medium|low|info
@@ -351,6 +353,7 @@ async function commandScan(args: Args): Promise<number> {
       root: path.relative(process.cwd(), resolved),
       ...(flagString(args, 'report-name') ? { projectName: flagString(args, 'report-name')! } : {}),
       ...(flagString(args, 'report-by') ? { preparedBy: flagString(args, 'report-by')! } : {}),
+      ...(flagString(args, 'report-note') ? { note: flagString(args, 'report-note')! } : {}),
     });
     writeFileSync(path.resolve(reportPath), html, 'utf8');
     console.error(color.dim(`client report written to ${path.resolve(reportPath)}`));

@@ -31,3 +31,19 @@ export const mixedSchema = {
 // passphrase reads exactly like prose; only the NAME tells you which is which.
 // EXPECT hardcoded-secret
 const sessionSecret = "manny is cool";
+
+// The lexer-token exemption is narrow, and this is its fence. A name that
+// carries ANOTHER credential word is a credential slot whatever the value
+// looks like, and a value with even one ordinary word in it is not a keyword
+// list - see safe/lexer-tokens.py for what the exemption is for.
+// EXPECT hardcoded-secret
+const sessionToken = "not in";
+
+// Kept apart from the line above on purpose: an EXPECT accepts a finding a
+// few lines below it, so two fences side by side could cover for each other.
+// One ordinary word in the value, and it is not a keyword list any more.
+
+
+
+// EXPECT hardcoded-secret
+const token = "is notably long";

@@ -768,7 +768,7 @@ async function main(): Promise<number> {
           location: { ...sample.location, snippet: hostile, file: `${FIXTURES}/<b>x</b>.py` },
         })),
       };
-      const out = renderHtmlReport(poisoned as typeof result, { generatedAt: new Date(0), projectName: hostile, preparedBy: hostile });
+      const out = renderHtmlReport(poisoned as typeof result, { generatedAt: new Date(0), projectName: hostile, preparedBy: hostile, note: hostile });
       if (/<script>alert|<img src=x|<b>x<\/b>/.test(out)) problems.push('text from the scanned code was rendered as markup');
       if (!out.includes(escapeHtml(hostile))) problems.push('a hostile snippet did not appear escaped');
     } else {
@@ -779,6 +779,11 @@ async function main(): Promise<number> {
     const secretValue = secret?.location.snippet.match(/(["'])([^"']{12,})\1/)?.[2];
     if (!secretValue) problems.push('the fixtures no longer hold a long hardcoded secret to test masking with');
     else if (html.includes(escapeHtml(secretValue))) problems.push(`a secret's full value is printed in the report (${secret?.location.file})`);
+
+    // A note (sample, draft) is printed under the header, once.
+    const noted = renderHtmlReport(result, { generatedAt: new Date(0), note: 'Sample report - not a client project' });
+    if ((noted.match(/<p class="note">Sample report - not a client project<\/p>/g) ?? []).length !== 1) problems.push('--report-note is not printed under the header');
+    if (/<p class="note">/.test(html)) problems.push('a report without a note prints an empty note');
 
     // Nothing proven must not read as "safe".
     const none = renderHtmlReport({ ...result, findings: [], verifiedClean: [] } as typeof result, { generatedAt: new Date(0) });

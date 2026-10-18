@@ -646,7 +646,16 @@ export async function analyze(
        * container scored 50.5% precision against 71.5% for paths that do not.
        * Half the bucket was a coin flip wearing a certificate.
        */
-      if (flow.branchAssumed || flow.containerGuess) {
+      /*
+       * THE THIRD: ESCAPING THAT DEPENDS ON QUOTES WE COULD NOT SEE.
+       *
+       * The value went through an escape-only function (mysqli_real_escape_string,
+       * escapeSql) and was put into the query by something this engine does not
+       * read - sprintf, a builder. Inside quotes that escaping is a defence;
+       * outside, none. Clearing the line would claim the first, proving it would
+       * claim the second, and neither was seen. So it is reported as a guess.
+       */
+      if (flow.branchAssumed || flow.containerGuess || flow.quoteUnknown) {
         const downgraded = signatureFinding({
             ruleId: rule.id,
             ruleName: rule.name,
@@ -655,7 +664,13 @@ export async function analyze(
             severity: rule.severity,
             message: `Possibly attacker-controlled data from \`${flow.origin}\` reaches ${flow.sinkDescription}`,
             location,
-            reasoning: flow.branchAssumed
+            reasoning: flow.quoteUnknown && !flow.branchAssumed && !flow.containerGuess
+              ? `A value from \`${flow.origin}\` reaches ${flow.sinkDescription} after an escaping ` +
+                `function that only protects a value placed INSIDE QUOTES in the query. The query ` +
+                `is put together somewhere this engine does not read, so whether the value sits ` +
+                `inside quotes is not known. If it does, this line is safe; if it does not, it is ` +
+                `SQL injection. Check the quotes around it.`
+              : flow.branchAssumed
               ? `A value from \`${flow.origin}\` can reach ${flow.sinkDescription}, but the ` +
               `path depends on a BRANCH THIS ENGINE DOES NOT EVALUATE: somewhere along it a ` +
               `clean assignment sits inside an if/else, and we keep the taint rather than ` +

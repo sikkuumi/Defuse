@@ -111,6 +111,7 @@ npm run install-check                          # is the published package the sa
 npm run git-install-check                      # does a clone of this repo build and behave?
 npm run memory                                 # what does a scan cost per byte of source?
 npm run identity                               # did a refactor move any answer?
+npm run review-reasons -- scan.json .          # why is each "to review" finding still open? (a sorting aid)
 ```
 
 `npm run identity` is the one to run before and after anything that is *meant*
@@ -493,6 +494,20 @@ const id = parseInt(req.query.id, 10);
 db.query("SELECT * FROM users WHERE id = " + id);               // a number cannot inject
 ```
 
+Some soap also depends on **where the value lands**. String escaping such as
+`mysqli_real_escape_string()` only protects a value inside quotes in the query,
+so Defuse settles it where the value is spliced into the string:
+
+```php
+$id = mysqli_real_escape_string($conn, $_POST['id']);
+mysqli_query($conn, "SELECT * FROM users WHERE name = '$id'");  // cleared: inside quotes
+mysqli_query($conn, "SELECT * FROM users WHERE id = $id");      // proven: no quotes, `1 OR 1=1` gets through
+```
+
+When the query is put together somewhere Defuse cannot read (`sprintf`, a query
+builder), it cannot see the quotes, so the line is reported as *to review* -
+neither cleared nor proven.
+
 Language coverage is reported separately from rule coverage, because the two are
 genuinely different depths of analysis:
 
@@ -653,7 +668,8 @@ each with the path Defuse followed; what is **to review**, grouped by check, wit
 what that check cannot tell; what was **checked and cleared**, with the reason;
 and what was **not checked** at all, including that dependency folders are not
 scanned and library versions are not checked. `--report-name` and `--report-by`
-fill in the project name and "Prepared by". The browser UI has the same report
+fill in the project name and "Prepared by", and `--report-note` adds one line under
+the header (for example that the report is a draft). The browser UI has the same report
 behind **Download report**, made by the same renderer from the same analysis.
 
 ```bash
@@ -698,7 +714,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 820 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 828 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.

@@ -121,6 +121,33 @@ function namesAKeySlot(value: string): boolean {
  * later; the string is SQL. A Spring `{noop}hunter22` is not a template - the
  * brace form is not read here at all.
  */
+/**
+ * A LEXER'S TOKEN, NOT AN AUTH TOKEN.
+ *
+ * Django's template engine builds operator tokens for `{% if %}` -
+ * `token = "is not"`, `token = "not in"` in django/template/smartif.py - and
+ * both were reported as hardcoded credentials because of the variable name.
+ *
+ * The test is narrow on purpose. The name's only credential word must be
+ * `token` (`sessionToken` is a credential slot whatever it holds), and EVERY
+ * word of the value must be a programming-language keyword or an operator.
+ * One ordinary word - "manny is cool" - and it is a passphrase again.
+ */
+const LANGUAGE_WORDS = new Set([
+  'is', 'not', 'in', 'and', 'or', 'if', 'else', 'elif', 'for', 'while', 'def', 'class',
+  'return', 'true', 'false', 'none', 'null', 'nil', 'undefined', 'new', 'of', 'as', 'with',
+  'from', 'import', 'lambda', 'yield', 'await', 'async', 'try', 'except', 'finally', 'raise',
+  'throw', 'catch', 'case', 'switch', 'default', 'break', 'continue', 'pass', 'do', 'then',
+  'end', 'endif', 'endfor', 'block', 'endblock', 'let', 'var', 'const', 'typeof', 'instanceof',
+]);
+const OTHER_CREDENTIAL_WORD = /pass|secret|key|auth|credential|bearer|jwt|session|access|refresh|csrf|api/i;
+
+function isLanguageToken(name: string, value: string): boolean {
+  if (!/token/i.test(name) || OTHER_CREDENTIAL_WORD.test(name)) return false;
+  const words = value.trim().split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.every((w) => LANGUAGE_WORDS.has(w.toLowerCase()) || /^[^\w\s]+$/.test(w));
+}
+
 function isStatementOrTemplate(value: string): boolean {
   return looksLikeSql(value) || /%\([A-Za-z_]\w*\)[sdr]/.test(value);
 }
@@ -164,7 +191,9 @@ export const hardcodedSecretRule: Rule = {
     'Also not reported: a value under a name ending in prefix, suffix or source; a value ' +
     'that is an SQL statement or a %(name)s template; and a lowercase snake_case value ' +
     'that names a key slot (`_password_reset_token`) - so a human-chosen secret spelled ' +
-    'like one, `my_secret_token`, would be missed.',
+    'like one, `my_secret_token`, would be missed. Nor a value under a name whose only ' +
+    'credential word is `token` when every word of it is a programming keyword or operator ' +
+    '(`token = "is not"` in a template lexer) - a secret made only of such words would be missed.',
   shapes: ['assignment', 'call'],
   support: {
     javascript: {
@@ -290,6 +319,7 @@ export const hardcodedSecretRule: Rule = {
     // credential. See echoesItsOwnName() - this was 152 findings on Keycloak.
     if (echoesItsOwnName(name, value)) return null;
     if (isStatementOrTemplate(value)) return null;
+    if (isLanguageToken(name, value)) return null;
 
     /* ---- Signal 2: the variable name says "credential". ---- */
     if (SECRET_NAME.test(name) && !NOT_A_SECRET.test(name)) {

@@ -702,7 +702,14 @@ const JAVA_DICTIONARY: TaintDictionary = {
       kinds: ['xss'],
       description: 'HTML escaping (Commons Text / Spring / ESAPI / Jenkins)',
     },
-    { names: ['escapeSql'], kinds: ['sql'], description: 'SQL escaping' },
+    {
+      // Commons Lang's escapeSql only doubles single quotes: a defence inside
+      // '...' and none outside. See onlyInsideQuotes in types.ts.
+      names: ['escapeSql'],
+      kinds: ['sql'],
+      onlyInsideQuotes: ['sql'],
+      description: 'SQL escaping - it protects a value inside quotes in the query, and nothing outside them',
+    },
     {
       names: ['parseInt', 'parseLong', 'parseDouble', 'parseFloat', 'parseShort'],
       kinds: ['sql', 'command', 'xss'],
@@ -1062,13 +1069,24 @@ const PHP_DICTIONARY: TaintDictionary = {
       description: 'conversion to a number',
     },
     {
-      names: ['real_escape_string', 'mysqli_real_escape_string', 'pg_escape_literal', 'quote'],
+      names: ['real_escape_string', 'mysqli_real_escape_string'],
       kinds: ['sql'],
       // Deliberately called escaping, not parameterisation. It IS weaker than a
       // prepared statement and gets the wrong answer under some charsets, but a
       // traced value that passes through it is not the same finding as one that
       // does not - so we stop the trace and say which one we saw.
-      description: 'database string escaping (weaker than a prepared statement, but applied)',
+      //
+      // And it only works INSIDE QUOTES. DVWA's sqli/source/medium.php escapes
+      // the id and then writes `WHERE user_id = $id` with no quotes, which this
+      // entry used to list as checked and cleared. See onlyInsideQuotes.
+      onlyInsideQuotes: ['sql'],
+      description: 'database string escaping - it protects a value inside quotes in the query, and nothing outside them',
+    },
+    {
+      // These two add the quotes themselves, so their result is safe anywhere.
+      names: ['pg_escape_literal', 'quote'],
+      kinds: ['sql'],
+      description: 'database quoting - the function escapes the value and adds the quotes itself',
     },
   ],
 
