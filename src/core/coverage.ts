@@ -20,6 +20,7 @@ import type { SupportStatus } from '../rules/contract.js';
 import { LANGUAGES, type LanguageId } from '../parse/languages.js';
 import { TAINT_COVERAGE_NOTES, TAINT_DICTIONARIES } from '../taint/dictionaries.js';
 import { ENGINE_CAPABILITIES } from './finding.js';
+import { RUNTIME_VERSION_RULE } from '../platform/runtime-version.js';
 
 export interface CoverageCell {
   readonly ruleId: string;
@@ -192,7 +193,18 @@ const PARTIAL_NOTES: Record<string, string> = {
   // ['session']))` is an ordinary source-to-sink flow with a source the engine
   // already tracked. The claim was an assumption dressed up as an analysis.
   'A08:2025': 'deserialization of untrusted input only - unsigned updates and CI/CD integrity are not checked',
+  'A03:2025':
+    'the PHP version a project declares (Dockerfile, compose, composer.json, .php-version), against php.net support dates and critical advisories only. The libraries a project installs are NOT checked.',
 };
+
+/**
+ * Checks that are not shape rules - they read declarations rather than code -
+ * but still land in an OWASP category. Listed here so the coverage table
+ * counts them; leaving them out would understate what a scan does.
+ */
+const PROJECT_CHECKS: readonly { id: string; owasp: string }[] = [
+  { id: RUNTIME_VERSION_RULE.id, owasp: RUNTIME_VERSION_RULE.owasp },
+];
 
 export function buildCoverageReport(unscannedExtensions: readonly string[] = []): CoverageReport {
   const matrix: CoverageCell[] = [];
@@ -237,7 +249,9 @@ export function buildCoverageReport(unscannedExtensions: readonly string[] = [])
     // Computed from the registry, so adding a rule quietly removes its category
     // from this list and nobody has to remember to update prose.
     owaspCoverage: OWASP_2025.map((category) => {
-      const rules = ALL_RULES.filter((rule) => rule.owasp.startsWith(category.id)).map((r) => r.id);
+      const rules = [...ALL_RULES, ...PROJECT_CHECKS]
+        .filter((rule) => rule.owasp.startsWith(category.id))
+        .map((r) => r.id);
       const partial = PARTIAL_NOTES[category.id];
       return {
         id: category.id,

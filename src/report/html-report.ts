@@ -38,6 +38,7 @@ import type { Finding, FlowStep, Severity } from '../core/finding.js';
 import { LICENCE_SPDX } from '../core/licence.js';
 import { LANGUAGES } from '../parse/languages.js';
 import { ALL_RULES } from '../rules/registry.js';
+import { readableDate, RUNTIME_VERSION_RULE } from '../platform/runtime-version.js';
 import { isTestPath } from '../rules/lib/strings.js';
 import { markSvg } from './mark.js';
 
@@ -272,7 +273,9 @@ export function renderHtmlReport(result: ScanResult, options: HtmlReportOptions)
             const tests = rows.filter((f) => isTestPath(f.location.file));
             return (
               `<div class="group" data-rule="${e(id)}"><h3><span class="dot dot-guess" aria-hidden="true"></span>${e(name)} <span class="count">${rows.length}</span></h3>` +
-              (rule ? `<p class="explain">${e(rule.explanation)}</p>` : '') +
+              ((rule?.explanation ?? (id === RUNTIME_VERSION_RULE.id ? RUNTIME_VERSION_RULE.explanation : undefined))
+                ? `<p class="explain">${e(rule?.explanation ?? RUNTIME_VERSION_RULE.explanation)}</p>`
+                : '') +
               `<p class="limits"><strong>What this check cannot tell:</strong> ${e(limits)}</p>` +
               (id === 'hardcoded-secret'
                 ? `<p class="hitnote">The values below are cut to their first three characters, so this report does not pass the secrets on. The full values are in the code, and in the scan's own output.</p>`
@@ -325,6 +328,24 @@ export function renderHtmlReport(result: ScanResult, options: HtmlReportOptions)
       `virtual environments and the like) are not scanned, and Defuse does not check whether the libraries the ` +
       `project uses have known vulnerabilities. That is a separate check, done by a dependency scanner.</li>`,
   );
+  /*
+   * The PHP version check reads declarations, which can differ from the server.
+   * Say what was read, and say it when nothing could be - a client must not
+   * take a missing runtime finding as "the PHP version is fine".
+   */
+  const runtime = result.runtimeVersions;
+  if (runtime && (runtime.declared.length > 0 || runtime.notes.length > 0)) {
+    notCheckedItems.push(
+      `<li><strong>The PHP version, as declared, not as running.</strong> Defuse compared the PHP versions this ` +
+        `project declares with php.net's support dates and critical advisories, checked ${e(readableDate(runtime.factsChecked))}. ` +
+        `What the server actually runs was not seen - confirm with <code>php -v</code> there.` +
+        (runtime.declared.length > 0
+          ? `<ul>${runtime.declared.map((d) => `<li>${where(d.file, d.line)} <code>${e(d.declared)}</code>: ${e(d.status)}</li>`).join('')}</ul>`
+          : '') +
+        (runtime.notes.length > 0 ? `<ul>${runtime.notes.map((n) => `<li>${e(n)}</li>`).join('')}</ul>` : '') +
+        `</li>`,
+    );
+  }
   if (options.intake?.trim()) {
     notCheckedItems.push(`<li><strong>How the files were gathered.</strong> ${e(options.intake.trim())}</li>`);
   }

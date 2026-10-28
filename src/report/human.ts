@@ -443,6 +443,23 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
     .map(([lang, count]) => `${lang} ${count}`)
     .join('  ');
   if (languageSummary) out.push(color.dim(`  languages: ${languageSummary}`));
+  /*
+   * Which PHP the project declares. Printed even when every declaration is
+   * fine, because "no runtime finding" means something only if the reader can
+   * see what was read - and printed as a note when nothing could be read.
+   */
+  const runtime = result.runtimeVersions;
+  if (runtime && (runtime.declared.length > 0 || runtime.notes.length > 0)) {
+    const shown = runtime.declared.slice(0, 5).map((d) => `${d.file}:${d.line} ${d.status}`);
+    const more = runtime.declared.length > shown.length ? ` ${g('middot')} ${runtime.declared.length - shown.length} more in --json` : '';
+    out.push(
+      color.dim(
+        `  php runtime (facts from php.net, checked ${runtime.factsChecked}): ` +
+          (shown.length > 0 ? shown.join(` ${g('middot')} `) + more : 'no version declared'),
+      ),
+    );
+    for (const note of runtime.notes) out.push(color.dim(`  note: ${note}`));
+  }
   // Build the list FIRST, then decide what to print. The earlier version tried
   // to do both in one expression:
   //

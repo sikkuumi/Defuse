@@ -64,6 +64,14 @@ import {
 import { renderSite } from '../src/report/site.js';
 import { plans, renderPricing } from '../src/report/pricing.js';
 import { looksLikeSql, matchKnownSecret, isTestPath } from '../src/rules/lib/strings.js';
+import { checkRuntimeVersions, parseComposerRange, readableDate, RUNTIME_VERSION_RULE } from '../src/platform/runtime-version.js';
+import { renderJson } from '../src/report/json.js';
+import {
+  PHP_ADVISORIES,
+  PHP_END_OF_LIFE,
+  PHP_FACTS_CHECKED,
+  PHP_SECURITY_UNTIL,
+} from '../src/platform/php-facts.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // dist/tests -> project root -> tests/fixtures (fixtures are never compiled)
@@ -2013,6 +2021,170 @@ async function main(): Promise<number> {
         console.log(`    ${color.red(g('cross'))} ${language.padEnd(11)} ${lacks}`);
       }
     }
+  }
+
+  /*
+   * ---- the PHP runtime version check ----
+   *
+   * The fixtures above prove the walker hands a Dockerfile to the check. These
+   * pin the decisions themselves, on inputs written here, with the scan date
+   * fixed so the answers do not move as the calendar does.
+   */
+  console.log(`\n${color.bold('  PHP runtime version check')}`);
+  {
+    const day = PHP_FACTS_CHECKED;
+    const run = (files: { path: string; text: string }[], today = day, phpFilesScanned = 1) =>
+      checkRuntimeVersions(files, { today, phpFilesScanned });
+    const one = (path: string, text: string, today = day) => run([{ path, text }], today);
+    const check = (label: string, ok: boolean, detail = ''): void => {
+      if (ok) {
+        passed++;
+        console.log(`    ${color.green(g('tick'))} ${label}`);
+      } else {
+        failed++;
+        console.log(`    ${color.red(g('cross'))} ${label}${detail ? color.dim(`  (${detail})`) : ''}`);
+      }
+    };
+    const sev = (r: ReturnType<typeof run>): string => r.findings.map((f) => f.severity).join(',') || 'none';
+
+    const pinnedOld = one('Dockerfile', 'FROM php:8.2.20-apache\n');
+    check(
+      'a pinned release older than the fix is critical, and names the fixing release',
+      sev(pinnedOld) === 'critical' && /8\.2\.35/.test(pinnedOld.findings[0]?.message ?? ''),
+      sev(pinnedOld),
+    );
+    const pinnedFixed = one('Dockerfile', 'FROM php:8.2.35-apache\n');
+    check(
+      'a pinned release with the fix is not reported, and its support end date is on the record',
+      pinnedFixed.findings.length === 0 && /31 Dec 2026/.test(pinnedFixed.declared[0]?.status ?? ''),
+      pinnedFixed.declared[0]?.status,
+    );
+    const afterEnd = one('Dockerfile', 'FROM php:8.2.35-apache\n', '2027-01-15');
+    check(
+      'the scan date, not the table date, decides when a branch goes out of support',
+      sev(afterEnd) === 'high' && afterEnd.findings[0]?.cwe === 'CWE-1104',
+      sev(afterEnd),
+    );
+    check('a floating branch tag is a low "rebuild" finding', sev(one('Dockerfile', 'FROM php:8.3-fpm\n')) === 'low');
+    check(
+      'a tag with no version follows the newest branch, and is read as floating',
+      sev(one('Dockerfile', 'FROM php:apache\n')) === 'low' && sev(one('Dockerfile', 'FROM php\n')) === 'low',
+    );
+    check('an out-of-support branch tag is critical when an advisory has no official fix in it', sev(one('Dockerfile', 'FROM php:7.4-apache\n')) === 'critical');
+    const digest = one('Dockerfile', 'FROM php@sha256:0123abcd\n');
+    check(
+      'an image pinned by digest only is listed as unreadable, not guessed at',
+      digest.findings.length === 0 && /digest/.test(digest.declared[0]?.status ?? ''),
+    );
+    const argNoDefault = one('Dockerfile', 'ARG V\nFROM php:${V}-cli\n');
+    check(
+      'a build argument with no default is listed as unreadable',
+      argNoDefault.findings.length === 0 && /build argument/.test(argNoDefault.declared[0]?.status ?? ''),
+    );
+    check(
+      'a build argument with a default is read',
+      sev(one('Dockerfile', 'ARG PHP_VERSION=8.1.2\nFROM php:${PHP_VERSION}-fpm\n')) === 'critical',
+    );
+    const stages = one(
+      'Dockerfile',
+      'FROM php:8.4.27 AS php\nFROM node:20\nFROM php\nFROM --platform=linux/amd64 public.ecr.aws/docker/library/php:8.1.2\n',
+    );
+    check(
+      'other images and earlier stages are not read - even a stage named php; a mirror of the official image is',
+      stages.declared.length === 2 && sev(stages) === 'critical',
+      `${stages.declared.length} declared, ${sev(stages)}`,
+    );
+    check(
+      'compose files: the image line is read',
+      sev(one('docker-compose.yml', 'services:\n  web:\n    image: "php:8.3.10-apache"\n  db:\n    image: mysql:8\n')) === 'critical',
+    );
+    const composer = (text: string) => one('composer.json', text);
+    check('composer.json: a range of out-of-support branches only is high', sev(composer('{"require":{"php":"^7.4"}}')) === 'high');
+    check('composer.json: alternatives that all end before support are high', sev(composer('{"require":{"php":"^7.4 || ~8.0.0"}}')) === 'high');
+    check(
+      'composer.json: a range that allows a supported branch is not reported',
+      sev(composer('{"require":{"php":">=7.4"}}')) === 'none' &&
+        sev(composer('{"require":{"php":"^8.1"}}')) === 'none' &&
+        sev(composer('{"require":{"php":"~8.2.0"}}')) === 'none',
+    );
+    const unreadable = composer('{"require":{"php":"latest-and-greatest"}}');
+    check(
+      'composer.json: an unreadable range is listed as unreadable',
+      unreadable.findings.length === 0 && /cannot read/.test(unreadable.declared[0]?.status ?? ''),
+    );
+    check('composer.json: config.platform is read as an exact release', sev(composer('{"config":{"platform":{"php":"8.1.2"}}}')) === 'critical');
+    const broken = composer('{"require": ');
+    check('composer.json that is not JSON leaves a note, not silence', broken.notes.some((n) => /not valid JSON/.test(n)));
+    check('.php-version is read, with or without a php- prefix', sev(one('.php-version', 'php-8.3.1\n')) === 'critical');
+    const future = one('.php-version', '8.6.0\n');
+    check(
+      'a branch newer than the table is listed as unknown, not judged',
+      future.findings.length === 0 && /newer than/.test(future.declared[0]?.status ?? ''),
+    );
+    check(
+      'PHP files with no declared version leave a note',
+      run([], day, 3).notes.some((n) => /declares no PHP version/.test(n)) && run([], day, 0).notes.length === 0,
+    );
+    check(
+      'a composer range alone leaves a note that the running release is not visible',
+      composer('{"require":{"php":"^8.2"}}').notes.some((n) => /does not say which release/.test(n)),
+    );
+    check(
+      'a declaration in a test path is ranked down like every other finding',
+      sev(one('tests/docker/Dockerfile', 'FROM php:8.2.20\n')) === 'medium',
+    );
+    const later = new Date(Date.parse(`${day}T00:00:00Z`) + 200 * 86_400_000).toISOString().slice(0, 10);
+    check(
+      'a table older than 180 days at scan time says so',
+      one('Dockerfile', 'FROM php:8.4.27\n', later).notes.some((n) => /days before this scan/.test(n)),
+    );
+    const all = run([
+      { path: 'Dockerfile', text: 'FROM php:8.2.20\nFROM php:7.4\nFROM php:8.3\n' },
+      { path: 'composer.json', text: '{"require":{"php":"^7.4"}}' },
+    ]).findings;
+    check(
+      'every runtime finding is signature-based, unverified, with no path - a declaration is not a proof',
+      all.length === 4 &&
+        all.every((f) => f.confidence === 'signature-based' && f.verified === false && f.flowPath === null) &&
+        all.every((f) => f.reasoning.includes(readableDate(PHP_FACTS_CHECKED)) && /php -v/.test(f.reasoning)),
+      `${all.length} findings`,
+    );
+    const branches = new Set([...Object.keys(PHP_SECURITY_UNTIL), ...Object.keys(PHP_END_OF_LIFE)]);
+    check(
+      'the facts table is consistent: no branch listed twice, every fix in a supported branch, ISO dates',
+      Object.keys(PHP_SECURITY_UNTIL).every((b) => !(b in PHP_END_OF_LIFE)) &&
+        PHP_ADVISORIES.every(
+          (a) => Object.keys(a.fixedIn).every((b) => b in PHP_SECURITY_UNTIL) && branches.has(a.oldestAffected),
+        ) &&
+        [...Object.values(PHP_SECURITY_UNTIL), ...Object.values(PHP_END_OF_LIFE), PHP_FACTS_CHECKED].every((d) =>
+          /^\d{4}-\d{2}-\d{2}$/.test(d),
+        ),
+    );
+    // Wired end to end: the fixture scan above carries the declarations into
+    // --json and the client report, where a reader can see what was read.
+    const runtimeJson = JSON.parse(renderJson(result)) as { diagnostics?: { runtimeVersions?: { declared?: { file: string }[] } } };
+    const runtimeHtml = renderHtmlReport(result, { generatedAt: new Date(0), root: FIXTURES });
+    check(
+      'the scan carries the declarations into --json and into the client report',
+      (runtimeJson.diagnostics?.runtimeVersions?.declared ?? []).some((d) => d.file.endsWith('php-runtime.dockerfile')) &&
+        runtimeHtml.includes('The PHP version, as declared') &&
+        runtimeHtml.includes(RUNTIME_VERSION_RULE.explanation.slice(0, 40)),
+    );
+    const range = (c: string, v: string): boolean => {
+      const parsed = parseComposerRange(c);
+      const [a, b, x] = v.split('.').map(Number);
+      return parsed !== null && parsed.some((alt) => alt.every(({ op, v: w }) => {
+        const d = (a ?? 0) - w[0] || (b ?? 0) - w[1] || (x ?? 0) - w[2];
+        return op === '>=' ? d >= 0 : op === '>' ? d > 0 : op === '<' ? d < 0 : op === '<=' ? d <= 0 : op === '=' ? d === 0 : d !== 0;
+      }));
+    };
+    check(
+      'composer ranges read the way Composer reads them',
+      range('~7.4.0', '7.4.33') && !range('~7.4.0', '7.5.0') && range('~7.4', '7.9.0') && !range('~7.4', '8.0.0') &&
+        range('^7.4', '7.9.9') && !range('^7.4', '8.0.0') && !range('^7.4', '7.3.9') &&
+        range('7.4.*', '7.4.1') && !range('7.4.*', '7.5.0') && range('7.4 - 8.1', '8.1.20') && !range('7.4 - 8.1', '8.2.0') &&
+        range('>=8.1 <8.3', '8.2.1') && !range('>=8.1 <8.3', '8.3.0') && parseComposerRange('nonsense') === null,
+    );
   }
 
   /*

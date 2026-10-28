@@ -140,6 +140,19 @@ export function renderJson(result: ScanResult, pretty = true): string {
       unreachableCodeSkipped: result.unreachableCode,
       collectionReadsResolved: result.collectionReadsResolved,
       tracesStoppedAtNewData: result.tracesStoppedAtNewData,
+      /*
+       * Which PHP the project declares (Dockerfile, compose, composer.json,
+       * .php-version) and what php.net's facts say about each - with the date
+       * those facts were checked, and notes for what could not be checked.
+       * Null when --only left the check out.
+       */
+      runtimeVersions: result.runtimeVersions
+        ? {
+            factsChecked: result.runtimeVersions.factsChecked,
+            declared: result.runtimeVersions.declared,
+            notes: result.runtimeVersions.notes,
+          }
+        : null,
       oversizedFilesSkipped: result.oversizedFiles,
       excludedByUser: result.excluded,
       /**

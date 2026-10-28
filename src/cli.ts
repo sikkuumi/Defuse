@@ -30,6 +30,7 @@ import { dumpAst } from './parse/astDump.js';
 import { detectLanguage, LANGUAGES } from './parse/languages.js';
 import { getLanguage, initEngine } from './parse/parser.js';
 import { parseFile, useNodeGrammars } from './parse/node-grammars.js';
+import { RUNTIME_VERSION_RULE } from './platform/runtime-version.js';
 import { ALL_RULES, validateRegistry } from './rules/registry.js';
 import { color, g, setAsciiMode, wrapText } from './report/colors.js';
 import { renderHuman } from './report/human.js';
@@ -291,9 +292,11 @@ async function commandScan(args: Args): Promise<number> {
     [];
 
   for (const id of only) {
-    if (!ALL_RULES.some((r) => r.id === id)) {
+    if (!ALL_RULES.some((r) => r.id === id) && id !== RUNTIME_VERSION_RULE.id) {
       console.error(
-        color.red(`error: unknown rule '${id}'. Known: ${ALL_RULES.map((r) => r.id).join(', ')}`),
+        color.red(
+          `error: unknown rule '${id}'. Known: ${[...ALL_RULES.map((r) => r.id), RUNTIME_VERSION_RULE.id].join(', ')}`,
+        ),
       );
       return 2;
     }

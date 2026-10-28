@@ -657,6 +657,35 @@ drifts - the counts in it are not maintained by hand.
 including exactly what each ◐ is missing. Those notes are also printed at the
 end of every scan — they are not buried in documentation.
 
+### The PHP version check (`runtime-version`)
+
+Every rule above reads code. PHP2Shell (CVE-2026-109618 and CVE-2026-109619,
+October 2026) was a flaw in PHP itself, so perfect code on PHP 8.2.20 was still
+a server an attacker could take over. Reading code cannot find that; reading
+the version a project declares can. Defuse reads:
+
+- `FROM` lines that use the official `php` Docker image (build arguments with
+  a default are filled in; other images and earlier build stages are skipped),
+- `image:` lines in docker-compose and compose files,
+- `composer.json` - `require.php` and `config.platform.php`,
+- `.php-version`.
+
+and compares each with a small table of php.net facts - support end dates and
+critical advisories - that carries the date it was checked
+(`src/platform/php-facts.ts`). A pinned release missing a fix is critical, a
+branch out of support is high, a floating tag like `php:8.3-fpm` is a low
+reminder to rebuild, and a composer range that allows only unsupported branches
+is high. Whether a branch is out of support is decided by the scan date, so
+8.2 turns unsupported on 1 January 2027 without an edit.
+
+Every result is **signature-based**: a declaration is not the server, and each
+message says which file it read and asks you to confirm with `php -v` where the
+code runs. A PHP project that declares no version gets a note saying the
+runtime was not checked, and a table older than 180 days at scan time says so.
+It does not read other images that bundle PHP, CI matrices or `php.ini`, and
+it is not a vulnerability database - it lists only critical, exploited issues.
+Command line and client report only, not the browser page.
+
 ---
 
 ## Output
@@ -741,7 +770,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 858 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 889 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.
@@ -1277,12 +1306,14 @@ and `npm test` fails if a phase number reappears anywhere a user can read it.
 | Analysis deck: file tree, code with four gutter states, linked flow hops | `verifiedClean` and `fileRoles` back every mark |
 | Three gauges that are never merged, each showing its arithmetic | a test fails if a combined risk score is ever exported |
 | Blind spots counted per scan, not disclaimed in general | `traceLimits` from the tracer's own truncation points |
+| PHP version check: Dockerfile, compose, composer.json, `.php-version` against dated php.net facts | `php-runtime.dockerfile`, and 27 checks that pin each decision with the scan date fixed |
 
 **Not built**
 
 | Next | Why it matters |
 |---|---|
 | Remediation: context-aware fixes and before/after diffs | a finding you can act on beats a finding you can read |
+| The same version check for Node and Python; library versions through OSV-Scanner | the language runtime is checked for PHP only, and installed libraries not at all |
 | Language expansion — 31 more grammars already ship in `tree-sitter-wasms` | the parser layer already supports them; the dictionaries do not |
 | Framework bindings still unread: Django URLconf kwargs, Spring `@ModelAttribute`, Pydantic/DTO object fields | each binds through a second file or an object’s fields, which the tracer does not follow |
 

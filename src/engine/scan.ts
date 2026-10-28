@@ -23,6 +23,7 @@ import { buildCoverageReport, type CoverageReport } from '../core/coverage.js';
 import type { Finding } from '../core/finding.js';
 import { SCANNABLE_EXTENSIONS } from '../parse/languages.js';
 import { useNodeGrammars } from '../parse/node-grammars.js';
+import { checkRuntimeVersions, RUNTIME_VERSION_RULE, type RuntimeCheckResult } from '../platform/runtime-version.js';
 import { collectFiles } from './walk.js';
 
 export type { FileParseProblem, Suppression } from '../core/analyze.js';
@@ -49,6 +50,11 @@ export interface ScanResult {
   readonly collectionReadsResolved: AnalysisResult['collectionReadsResolved'];
   /** Calls where a trace ended because the result is new data, not the argument. */
   readonly tracesStoppedAtNewData: AnalysisResult['tracesStoppedAtNewData'];
+  /**
+   * Which PHP the project declares, and what php.net's facts say about it -
+   * platform/runtime-version.ts. Null when --only left the check out.
+   */
+  readonly runtimeVersions: RuntimeCheckResult | null;
   /** Per-file participation, so a file a flow passes through is never "clean". */
   readonly fileRoles: AnalysisResult['fileRoles'];
   /** Where the tracer ran out, counted for this scan. */
@@ -122,13 +128,41 @@ export async function scan(target: string, options: ScanOptions = {}): Promise<S
     toDisplay: (absolutePath) => path.relative(process.cwd(), absolutePath) || absolutePath,
   });
 
+  /*
+   * THE RUNTIME VERSION CHECK reads declarations, not code, so it runs beside
+   * the analysis rather than inside it. Its findings join the same list - a
+   * PHP release with a known critical flaw belongs next to the code problems,
+   * not in a footnote - and they are all signature-based by construction.
+   */
+  const runtimeVersions =
+    !options.only || options.only.length === 0 || options.only.includes(RUNTIME_VERSION_RULE.id)
+      ? await (async () => {
+          const files = [];
+          for (const filePath of walk.runtimeFiles) {
+            try {
+              files.push({
+                path: path.relative(process.cwd(), filePath) || filePath,
+                text: await readFile(filePath, 'utf8'),
+              });
+            } catch {
+              // unreadable - same treatment as a source file
+            }
+          }
+          return checkRuntimeVersions(files, {
+            today: new Date().toISOString().slice(0, 10),
+            phpFilesScanned: result.byLanguage['php'] ?? 0,
+          });
+        })()
+      : null;
+
   return {
     target,
-    findings: result.findings,
+    findings: [...result.findings, ...(runtimeVersions?.findings ?? [])],
     verifiedClean: result.verifiedClean,
     unreachableCode: result.unreachableCode,
     collectionReadsResolved: result.collectionReadsResolved,
     tracesStoppedAtNewData: result.tracesStoppedAtNewData,
+    runtimeVersions,
     fileRoles: result.fileRoles,
     traceLimits: result.traceLimits,
     stats: {

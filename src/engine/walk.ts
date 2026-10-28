@@ -17,6 +17,7 @@
 
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { runtimeFileKind } from '../platform/runtime-version.js';
 
 const IGNORED_DIRECTORIES = new Set([
   '.git', '.hg', '.svn',
@@ -45,6 +46,14 @@ export interface WalkResult {
    * "0 files excluded" after skipping a whole tree would be its own small lie.
    */
   readonly excludedDirectories: readonly string[];
+  /**
+   * Files that declare which PHP the project runs on - Dockerfiles, compose
+   * files, composer.json, `.php-version`. Not source code, so not in `files`;
+   * the runtime version check reads them (platform/runtime-version.ts). The
+   * same directories are skipped as for code, so a dependency's composer.json
+   * under vendor/ is never mistaken for the project's own.
+   */
+  readonly runtimeFiles: readonly string[];
 }
 
 export interface WalkOptions {
@@ -102,6 +111,7 @@ export async function collectFiles(target: string, options: WalkOptions): Promis
   const files: string[] = [];
   const skipped = new Map<string, number>();
   const oversized: string[] = [];
+  const runtimeFiles: string[] = [];
 
   const info = await stat(target);
   if (info.isFile()) {
@@ -114,6 +124,7 @@ export async function collectFiles(target: string, options: WalkOptions): Promis
       oversizedFiles: oversized,
       excludedCount,
       excludedDirectories,
+      runtimeFiles: runtimeFileKind(path.basename(target)) ? [target] : [],
     };
   }
 
@@ -150,6 +161,8 @@ export async function collectFiles(target: string, options: WalkOptions): Promis
         continue;
       }
 
+      if (runtimeFileKind(entry.name)) runtimeFiles.push(full);
+
       const ext = path.extname(entry.name).toLowerCase();
       if (!scannable.has(ext)) {
         if (ext) skipped.set(ext, (skipped.get(ext) ?? 0) + 1);
@@ -178,5 +191,6 @@ export async function collectFiles(target: string, options: WalkOptions): Promis
     oversizedFiles: oversized,
     excludedCount,
     excludedDirectories,
+    runtimeFiles,
   };
 }
