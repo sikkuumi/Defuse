@@ -79,6 +79,14 @@ export function renderJson(result: ScanResult, pretty = true): string {
        * with the write that answers it.
        */
       collectionReadsResolved: result.stats.collectionReadsResolved,
+      /*
+       * Calls where a trace ENDED because the function returns new data - a
+       * database row, a file's contents - not its argument. Not a claim of
+       * safety: nothing is cleared by a stop, and a sink further on is still
+       * reported by its signature rule. Each is listed under
+       * diagnostics.tracesStoppedAtNewData with what the call returns instead.
+       */
+      tracesStoppedAtNewData: result.stats.tracesStoppedAtNewData,
       meaningOfConfidence: result.coverage.engine.meaningOfConfidence,
       notImplemented: result.coverage.engine.notImplemented,
       dataFlowCoverageByLanguage: result.coverage.taint,
@@ -131,6 +139,7 @@ export function renderJson(result: ScanResult, pretty = true): string {
       verifiedClean: result.verifiedClean,
       unreachableCodeSkipped: result.unreachableCode,
       collectionReadsResolved: result.collectionReadsResolved,
+      tracesStoppedAtNewData: result.tracesStoppedAtNewData,
       oversizedFilesSkipped: result.oversizedFiles,
       excludedByUser: result.excluded,
       /**

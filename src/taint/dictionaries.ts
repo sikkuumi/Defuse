@@ -715,6 +715,22 @@ const JAVA_DICTIONARY: TaintDictionary = {
       kinds: ['sql', 'command', 'xss'],
       description: 'conversion to a number',
     },
+    {
+      /*
+       * A NUMBER OR A TRUE/FALSE ANSWER ABOUT THE VALUE IS NOT THE VALUE.
+       *
+       * BenchmarkTest00036 writes `write(param.toCharArray(), 0, length)` with
+       * `length = param.length()`, and the engine reported a second path to it
+       * through length(). Right line, wrong reason: an int cannot carry a tag.
+       */
+      names: [
+        'length', 'size', 'indexOf', 'lastIndexOf', 'hashCode', 'compareTo', 'compareToIgnoreCase',
+        'equals', 'equalsIgnoreCase', 'isEmpty', 'isBlank', 'contains', 'containsKey',
+        'startsWith', 'endsWith', 'matches',
+      ],
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      description: 'returns a number or true/false - none of the text that went in',
+    },
   ],
 
   propagators: {
@@ -727,6 +743,13 @@ const JAVA_DICTIONARY: TaintDictionary = {
       'decode', 'encode',
       // Reading a value out of an enumeration/iterator/collection of dirty data.
       'nextElement', 'nextToken', 'next', 'readLine', 'get', 'getValue',
+      // Constructors and conversions that keep every character. Each was a
+      // guessed step on BenchmarkJava proofs, right every time it was made.
+      // Base64 DECODING is here and encoding is not: decoded bytes are whatever
+      // the attacker encoded, while encoded output is letters, digits and +/=,
+      // so calling encodeBase64() a carrier would be a claim, not a guess.
+      'String', 'StringBuilder', 'StringBuffer', 'toCharArray', 'copyValueOf', 'decodeBase64',
+      'ProcessBuilder',
     ],
   },
 };
@@ -1088,6 +1111,46 @@ const PHP_DICTIONARY: TaintDictionary = {
       kinds: ['sql'],
       description: 'database quoting - the function escapes the value and adds the quotes itself',
     },
+    /*
+     * OUTPUT THAT CANNOT CARRY THE INPUT'S TEXT.
+     *
+     * Not escapers: these return a number, true/false, or a fixed-alphabet
+     * digest, so nothing the attacker typed survives into the result. On DVWA
+     * the engine assumed md5() and isset() handed their argument back and
+     * published proofs through both - brute/source/impossible.php and
+     * bac/source/low.php - and both were wrong.
+     */
+    {
+      names: [
+        'isset', 'empty', 'is_numeric', 'is_int', 'is_integer', 'is_float', 'is_string', 'is_array',
+        'is_bool', 'is_null', 'ctype_digit', 'ctype_alpha', 'ctype_alnum', 'ctype_xdigit',
+        'strlen', 'mb_strlen', 'count', 'sizeof', 'strpos', 'stripos', 'strrpos', 'strcmp',
+        'strcasecmp', 'strncmp', 'strncasecmp', 'in_array', 'array_key_exists', 'preg_match',
+        'preg_match_all', 'password_verify', 'hash_equals', 'crc32', 'bin2hex',
+      ],
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      description: 'returns a number, true/false or hex digits - none of the text that went in',
+    },
+    {
+      // Hex digests - but only in the forms that return hex. Each has a
+      // trailing flag that switches to raw binary, which CAN contain a quote.
+      names: ['md5', 'sha1'],
+      maxArgs: 1,
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      description: 'returns a hex digest - none of the text that went in',
+    },
+    {
+      names: ['hash'],
+      maxArgs: 2,
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      description: 'returns a hex digest - none of the text that went in',
+    },
+    {
+      names: ['hash_hmac'],
+      maxArgs: 3,
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      description: 'returns a hex digest - none of the text that went in',
+    },
   ],
 
   propagators: {
@@ -1096,8 +1159,37 @@ const PHP_DICTIONARY: TaintDictionary = {
       'str_replace', 'substr', 'sprintf', 'implode', 'explode', 'json_encode',
       'urlencode', 'rawurlencode', 'str_pad', 'nl2br',
       'base64_decode', 'base64_encode', 'gzuncompress', 'gzinflate',
+      // Measured on DVWA, where each was a guessed step on a proof an AI
+      // review confirmed: they change the text and leave the attacker's part in.
+      'stripslashes', 'stripcslashes', 'basename', 'dirname', 'preg_replace', 'str_ireplace',
+      'ucwords', 'lcfirst', 'wordwrap', 'strrev', 'urldecode', 'rawurldecode',
+      'html_entity_decode', 'htmlspecialchars_decode', 'strstr', 'stristr', 'strrchr',
+      'mb_substr', 'mb_strtolower', 'mb_strtoupper',
     ],
   },
+
+  freshResults: [
+    {
+      // NOT the generic `query`: on a request object it is a source.
+      names: [
+        'mysqli_query', 'mysql_query', 'pg_query', 'pg_query_params', 'pg_execute',
+        'mysqli_fetch_assoc', 'mysqli_fetch_array', 'mysqli_fetch_row', 'mysqli_fetch_object',
+        'mysqli_fetch_all', 'mysql_fetch_assoc', 'mysql_fetch_array', 'mysql_fetch_row',
+        'mysql_fetch_object', 'pg_fetch_assoc', 'pg_fetch_array', 'pg_fetch_row', 'pg_fetch_object',
+        'pg_fetch_all', 'pg_fetch_result', 'fetch', 'fetchAll', 'fetchColumn', 'fetchObject',
+        'fetch_assoc', 'fetch_array', 'fetch_row', 'fetch_object', 'fetch_all',
+      ],
+      description: 'a database read - it returns rows stored in the database, not the query text that went in',
+      rowsFollowInjection: true,
+    },
+    {
+      names: ['file_get_contents', 'fread', 'fgets', 'fgetcsv', 'stream_get_contents'],
+      description:
+        'a file or URL read - it returns the contents of what the argument names, not the argument. ' +
+        'Whoever controls a whole URL can control what it returns, so a tainted URL here is a ' +
+        'separate question, asked by the SSRF check',
+    },
+  ],
 };
 
 /* ========================================================================== *

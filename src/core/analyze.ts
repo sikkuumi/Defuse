@@ -96,6 +96,8 @@ export interface AnalysisStats {
   readonly regionsProvedUnreachable: number;
   /** Reads from a local map or list answered by key or position rather than by the whole collection. */
   readonly collectionReadsResolved: number;
+  /** Traces ended at a read whose result is new data, not the argument (FreshResultSpec). */
+  readonly tracesStoppedAtNewData: number;
   readonly durationMs: number;
 }
 
@@ -170,6 +172,12 @@ export interface AnalysisResult {
   readonly unreachableCode: readonly UnreachableCode[];
   /** Map and list reads answered by key or position, each with the write that answers it. */
   readonly collectionReadsResolved: readonly UnreachableCode[];
+  /**
+   * Calls where a trace ended because the function returns new data - a
+   * database row, a file's contents - rather than its argument. Not a claim of
+   * safety: nothing is cleared by it. See FreshResultSpec in taint/types.ts.
+   */
+  readonly tracesStoppedAtNewData: readonly UnreachableCode[];
   /** Per-file participation, so "not listed" is never read as "clean". */
   readonly fileRoles: readonly FileRole[];
   /** Where the tracer ran out, counted for THIS scan rather than disclaimed. */
@@ -239,6 +247,7 @@ export async function analyze(
   const verifiedClean: VerifiedClean[] = [];
   const unreachableCode: UnreachableCode[] = [];
   const collectionReadsResolved: UnreachableCode[] = [];
+  const tracesStoppedAtNewData: UnreachableCode[] = [];
   /** One receipt per line per rule, however many shapes asked the same question. */
   const provedConstantKeys = new Set<string>();
   /** Summed across every file, so the report can say where the trace ran out. */
@@ -531,6 +540,13 @@ export async function analyze(
         file: read.filePath || displayPath,
         line: read.node.startPosition.row + 1,
         why: read.why,
+      });
+    }
+    for (const stop of trace.freshStops) {
+      tracesStoppedAtNewData.push({
+        file: stop.filePath || displayPath,
+        line: stop.node.startPosition.row + 1,
+        why: stop.why,
       });
     }
     for (const region of trace.unreachable) {
@@ -862,6 +878,7 @@ export async function analyze(
     verifiedClean,
     unreachableCode,
     collectionReadsResolved,
+    tracesStoppedAtNewData,
     fileRoles,
     traceLimits,
     stats: {
@@ -874,6 +891,7 @@ export async function analyze(
       signaturesProvedConstant: provedConstantKeys.size,
       regionsProvedUnreachable: unreachableCode.length,
       collectionReadsResolved: collectionReadsResolved.length,
+      tracesStoppedAtNewData: tracesStoppedAtNewData.length,
       durationMs: Date.now() - started,
     },
     byLanguage,

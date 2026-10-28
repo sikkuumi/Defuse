@@ -44,15 +44,15 @@ inside a single finding.
 <!-- derived:label-split -->
 | tier | TP | FP | FN | precision | recall | FPs that are decoys |
 |---|--:|--:|--:|--:|--:|--:|
-| `flow-verified only` | 562 | 0 | 82 | **100.0%** | 87.3% | 0 (0%) |
-| `signature-only` | 82 | 35 | 562 | **70.1%** | 12.7% | 0 (0%) |
+| `flow-verified only` | 602 | 0 | 42 | **100.0%** | 93.5% | 0 (0%) |
+| `signature-only` | 42 | 35 | 602 | **54.5%** | 6.5% | 0 (0%) |
 | `combined (published)` | 644 | 35 | 0 | **94.8%** | 100.0% | 0 (0%) |
 
-640 `flow-verified`, 1238 `signature-based` findings, on engine 0.5.0 (2026-10-15).
+658 `flow-verified`, 1198 `signature-based` findings, on engine 0.5.0 (2026-10-28).
 
-**The green label is worth 29.9 points.** `flow-verified` runs 100.0% against `signature-based` at 70.1%. The gap is the whole claim this tool makes; it is measured here rather than asserted.
+**The green label is worth 45.5 points.** `flow-verified` runs 100.0% against `signature-based` at 54.5%. The gap is the whole claim this tool makes; it is measured here rather than asserted.
 
-**No false positive carries the green label here.** All 562 `flow-verified` claims on this benchmark are real vulnerabilities. That is a statement about these scored test cases, not a promise about your code: a proof means the path exists in the source, and the ways that can still be wrong are the ones in the limitations list, which a synthetic benchmark does not exercise.
+**No false positive carries the green label here.** All 602 `flow-verified` claims on this benchmark are real vulnerabilities. That is a statement about these scored test cases, not a promise about your code: a proof means the path exists in the source, and the ways that can still be wrong are the ones in the limitations list, which a synthetic benchmark does not exercise.
 <!-- /derived -->
 
 <!-- derived:counts -->
@@ -603,6 +603,33 @@ this finding is wrong - check those hops first.
 
 That is the honest version of a guess: make it, then show your work.
 
+**Fewer guesses, by knowing what common functions return.** The guess was
+right for `stripslashes()` and wrong for a database read: `mysqli_query()` and
+`mysqli_fetch_assoc()` return stored rows, not the query text, and an AI review
+of Defuse's proofs on DVWA marked every path through them wrong. The
+dictionaries now say what such functions hand back:
+
+- functions that keep the attacker's text (`stripslashes`, `basename`,
+  `preg_replace`, `new String`, `toCharArray`, ...) carry it with no guess;
+- functions whose answer is a number, true/false or hex digits (`isset`,
+  `strlen`, `md5($x)` but not `md5($x, true)`, `length()`, `equals()`, ...)
+  cannot carry it, and a line they feed is cleared with a receipt;
+- reads whose result is new data (database rows, a file's contents) end the
+  trace. That clears nothing - the line is still reported by its pattern rule,
+  unproven - and every stop is listed in `--json` under
+  `tracesStoppedAtNewData`. The one exception: when the query itself is
+  injectable, the attacker chooses the rows (`UNION SELECT`), and the path says
+  so.
+
+On DVWA, six proofs the review called wrong are no longer proven, and all 34 it
+called real still are. Two older mistakes surfaced on the way and are fixed: a
+guessed step silently erased the note that a path rested on an unchecked
+branch, and code that escaped a value in only one arm of an if/else was listed
+as checked and cleared. And a clean write in the *other* arm of an if/else is
+no longer treated as an assumption, since at most one arm runs. Taken
+together, BenchmarkJava's proven tier went from 562 to 602 real
+vulnerabilities, still with no false proof.
+
 ## Signature rules
 
 <!-- derived:rule-matrix -->
@@ -714,7 +741,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 828 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 858 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.
@@ -859,7 +886,7 @@ an exam with an answer key, so here is the exam result, unedited:
 |---|--:|--:|--:|--:|--:|--:|--:|
 | **overall** | **1210** | **644** | **35** | **0** | **531** | **94.8%** | **100.0%** |
 
-2766 files, 0 parse errors, 33.5 seconds, on engine 0.5.0 (2026-10-15).
+2766 files, 0 parse errors, 18.1 seconds, on engine 0.5.0 (2026-10-28).
 
 **Precision is the weak side.** 35 false positives and no false negatives, so on this benchmark the cost of this engine is triage time, not missed bugs. That is a statement about these scored test cases, not about code in general - the limitations list is where the misses this benchmark cannot show are written down.
 

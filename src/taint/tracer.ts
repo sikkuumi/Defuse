@@ -1303,6 +1303,8 @@ export interface TraceOutcome {
   readonly unreachable: readonly UnreachableRegion[];
   /** Reads from a local map resolved to the one put that supplies them - see local-map.ts. */
   readonly resolvedReads: readonly UnreachableRegion[];
+  /** Traces ended at a read whose result is new data - see FreshResultSpec. */
+  readonly freshStops: readonly UnreachableRegion[];
   readonly limits: TraceLimits;
 }
 
@@ -1364,7 +1366,7 @@ export function traceFile(
     sourcesFound: seenSources.size,
   });
 
-  if (!dictionary) return { flows: [], sanitized: [], unreachable: [], resolvedReads: [], limits: limits() };
+  if (!dictionary) return { flows: [], sanitized: [], unreachable: [], resolvedReads: [], freshStops: [], limits: limits() };
 
   const functionTypes = new Set(FUNCTION_NODES[language] ?? []);
   const fileTypes = declaredTypes(file.root, language);
@@ -1393,6 +1395,19 @@ export function traceFile(
     if (resolvedSeen.has(key)) return;
     resolvedSeen.add(key);
     resolvedReads.push({ node, filePath: toDisplay(filePath), why });
+  };
+  /*
+   * Traces ended at a read whose result is new data (FreshResultSpec). The
+   * same reason as the two lists around it: a proof that used to be published
+   * and no longer is has to leave the decision on the record.
+   */
+  const freshStops: UnreachableRegion[] = [];
+  const freshSeen = new Set<string>();
+  const noteFreshStop = (node: Node, filePath: string, why: string): void => {
+    const key = `${filePath}\0${node.startIndex}:${node.endIndex}`;
+    if (freshSeen.has(key)) return;
+    freshSeen.add(key);
+    freshStops.push({ node, filePath: toDisplay(filePath), why });
   };
   const noteUnreachable = (node: Node, filePath: string, why: string): void => {
     const key = `${filePath}\0${node.startIndex}:${node.endIndex}`;
@@ -1651,6 +1666,10 @@ export function traceFile(
               origin: left.origin,
               unknownHops: [...left.unknownHops, ...right.unknownHops],
               quotePending: pendingBoth.length > 0 ? pendingBoth : undefined,
+              // Joined, the string is dirty for certain if EITHER side is - so
+              // an assumption survives only when both sides rest on one.
+              branchAssumed: left.branchAssumed && right.branchAssumed ? true : undefined,
+              containerGuess: left.containerGuess && right.containerGuess ? true : undefined,
             }
           : taint;
       return addStep(
@@ -1780,7 +1799,19 @@ export function traceFile(
         const taint = taken ? evaluate(taken, scope, depth + 1) : null;
         return taint ? addStep(taint, node, 'returned from one branch of a conditional') : null;
       }
-      for (const child of node.namedChildren) {
+      /*
+       * The VALUE of `c ? a : b` is a or b. This loop used to walk every child,
+       * the condition included, so `isset($_COOKIE['r']) ? $_COOKIE['r'] : 'x'`
+       * was proven through isset() - a true/false answer - and
+       * `strlen($q) > 9 ? 'long' : 'short'` could only ever be the two words.
+       * The one form whose condition IS the value, `$a ?: $b`, comes back from
+       * ternaryParts with the condition as its consequence.
+       *
+       * A shape ternaryParts cannot split keeps the old walk: carrying too much
+       * is the failure this engine prefers to carrying too little.
+       */
+      const branches = [parts.consequence, parts.alternative].filter((b): b is Node => b !== null);
+      for (const child of branches.length > 0 ? branches : node.namedChildren) {
         if (!child) continue;
         const taint = evaluate(child, scope, depth + 1);
         if (taint) return addStep(taint, node, 'returned from one branch of a conditional');
@@ -1908,9 +1939,21 @@ export function traceFile(
 
     // A sanitiser: the value stays traceable, but is marked washed for the
     // kinds this particular soap actually works on.
-    const sanitizer = dictionary.sanitizers.find((s) => s.names.includes(name));
+    // An entry with maxArgs does not describe a call that passes more - md5's
+    // raw flag - so that call falls through to the unmodelled-function rule.
+    const sanitizer = dictionary.sanitizers.find(
+      (s) => s.names.includes(name) && (s.maxArgs === undefined || args.length <= s.maxArgs),
+    );
     if (sanitizer) {
-      for (const arg of args) {
+      /*
+       * A method with NO arguments answers a question about its own object:
+       * `param.length()`, `name.isEmpty()`. The dirt is on the receiver, and
+       * the answer is washed all the same. Only with no arguments - when there
+       * are some, they are what the entry describes, and the receiver is
+       * usually a helper object (`$conn->real_escape_string($x)`).
+       */
+      const inputs: (Node | null)[] = args.length > 0 ? args : [receiver];
+      for (const arg of inputs) {
         const taint = evaluate(arg, scope, depth + 1);
         if (!taint) continue;
         const quoteDependent = sanitizer.onlyInsideQuotes ?? [];
@@ -1969,6 +2012,39 @@ export function traceFile(
     if (descended.handled) return descended.taint;
     const stoppedAt = descended.stopped;
 
+    /*
+     * A READ: the result is new data, not the argument - see FreshResultSpec.
+     * Checked only here, after the project's own functions have had their
+     * chance, so a project `fetch()` that returns its argument is followed.
+     * The trace ends, and the stop is put on the record when the input was
+     * dirty: a finding that would have existed must leave its reason behind.
+     */
+    const fresh = stoppedAt ? undefined : dictionary.freshResults?.find((f) => f.names.includes(name));
+    if (fresh) {
+      if (fresh.rowsFollowInjection) {
+        const sqlSink = dictionary.callSinks.find((s) => s.kind === 'sql' && s.methods.includes(name));
+        const watched =
+          sqlSink && sqlSink.argIndexes !== 'all'
+            ? sqlSink.argIndexes.map((i) => args[i]).filter((a): a is Node => a !== undefined)
+            : args;
+        for (const arg of watched) {
+          const taint = evaluate(arg, scope, depth + 1);
+          if (!taint || retracted(taint, arg, 'sql') !== null) continue;
+          return addStep(
+            taint,
+            node,
+            sqlSink
+              ? `the query text can be injected into (the SQL injection on this line), so the rows ` +
+                  `\`${name}()\` returns can be chosen by the attacker - for example with UNION SELECT`
+              : `read through \`${name}()\` from a result the attacker can choose the rows of`,
+          );
+        }
+      }
+      const input = [...args, receiver].some((n) => evaluate(n, scope, depth + 1) !== null);
+      if (input) noteFreshStop(node, scope.filePath, `\`${name}()\` is ${fresh.description}`);
+      return null;
+    }
+
     /* ---- A function we do not model. The hardest judgement call here. ----
      *
      * Two wrong answers were available:
@@ -2020,6 +2096,10 @@ export function traceFile(
     // A stop is already counted where it happened (depth / recursion).
     if (!stoppedAt) seenUnmodelled.add(siteOf(node, scope.filePath));
 
+    // A known name called with an option its entry does not cover.
+    const overArgs = dictionary.sanitizers.find(
+      (s) => s.names.includes(name) && s.maxArgs !== undefined && args.length > s.maxArgs,
+    );
     const hopText =
       stoppedAt === 'depth'
         ? `passed through \`${name}()\`, which we did NOT follow: the call chain reached ` +
@@ -2030,8 +2110,13 @@ export function traceFile(
             `being followed on this path - a recursive call, or a same-named method on ` +
             `another object. We did NOT follow it again and assume it preserves the value; ` +
             `if it actually sanitises, this trace is wrong`
-          : `passed through \`${name}()\`, which is NOT in our dictionary - we assume it ` +
-            `preserves the value; if it actually sanitises, this trace is wrong`;
+          : overArgs
+            ? `passed through \`${name}()\`, which is NOT in our dictionary in this form: it is ` +
+              `called with ${args.length} arguments and our entry covers at most ${overArgs.maxArgs}, ` +
+              `and an extra argument can change what comes back (md5's raw-binary flag does). ` +
+              `We assume it preserves the value; if it actually sanitises, this trace is wrong`
+            : `passed through \`${name}()\`, which is NOT in our dictionary - we assume it ` +
+              `preserves the value; if it actually sanitises, this trace is wrong`;
 
     return {
       steps: [...carried.steps, step('propagation', node, hopText)],
@@ -2041,6 +2126,16 @@ export function traceFile(
       quotePending: carried.quotePending,
       compartment,
       collectedMany: carried.collectedMany,
+      /*
+       * Carried, not rebuilt. This return used to list its fields by hand and
+       * left this one out, so a guessed hop ERASED the record that a branch had
+       * been assumed further back - and a path resting on two assumptions was
+       * published as a proof resting on one. Found when stripslashes() and
+       * new ProcessBuilder() became known functions: their paths went through
+       * addStep, kept the flag, and ten BenchmarkJava proofs that had never
+       * been entitled to the label lost it.
+       */
+      branchAssumed: carried.branchAssumed,
       /*
        * THE READ IS WHERE THE AMBIGUITY IS BORN, not the write.
        *
@@ -2622,6 +2717,130 @@ export function traceFile(
     return seen > 0;
   };
 
+  /*
+   * THE CLEAN WRITE AND THE DIRTY ONE ARE IN DIFFERENT ARMS OF ONE IF/ELSE.
+   *
+   *     if (values != null && values.length > 0) param = values[0];
+   *     else param = "";
+   *     ... param ...
+   *
+   * At most one arm runs, so the clean write never lands on top of the dirty
+   * one: after the if/else, on every run that took the first arm, `param` is
+   * the request value. Nothing is assumed there - the path is as proven as any
+   * other path through an `if` this engine does not evaluate. The opposite
+   * order (clean first, dirty in the else) never set the flag at all - see
+   * BranchAndContainer.java - so one decision was labelled two ways depending
+   * on which arm was written first.
+   *
+   * INSIDE the clean arm it is the other way round: after `param = ""` the
+   * value IS clean, and a sink there must not be proven (branch-assumed.py,
+   * from Django). So the flag is set as before, and taken off again only when
+   * the walk leaves the if/else - settleArms - and only if nothing has written
+   * the name since.
+   *
+   * Returns that if/else, or null. The dirty write is found by the last step
+   * of the kept taint, which is where it was stored. Every `if` around the
+   * clean write is tried, so an `else if` chain is covered: the clean write
+   * sits in one arm of the outer `if` even when nested in an inner one.
+   */
+  /** Per branch: what a name should hold once the walk leaves it, if nothing wrote it since. */
+  const armSettles = new Map<string, Array<{ target: string; inside: Taint; after: Taint }>>();
+  /** Kinds a value is washed for, counting escaping still waiting on its quotes as not washed. */
+  const washedKinds = (t: Taint): SinkKind[] =>
+    [...t.sanitizedFor].filter((k) => !(t.quotePending ?? []).includes(k));
+  const settleArms = (node: Node, scope: Scope): void => {
+    const key = spanKey(scope.filePath, node);
+    const pending = armSettles.get(key);
+    if (!pending) return;
+    armSettles.delete(key);
+    // Newest first: a second clean arm re-flags the first one's flagged value,
+    // and unwinding in reverse lands on the original. A name written again
+    // since is left alone. That is the cautious side, kept on purpose: every
+    // case worked through gives the same or a more guarded answer with it, so
+    // no fixture can tell it apart - it is the one check here no test pins.
+    // An assumption it keeps costs a proof; an assumption it lifted wrongly
+    // would publish one.
+    for (const { target, inside, after } of [...pending].reverse()) {
+      if (scope.env.get(target) === inside) scope.env.set(target, after);
+    }
+  };
+  /*
+   * The branch that can skip a write on a run where the dirty write it lands
+   * on happened: the first branch or loop around the write that does not also
+   * hold the dirty write - an `if` it sits in alone, the other arm of an
+   * if/else, a loop that may run no times. Null when there is none.
+   *
+   *     if (isset($_GET['q'])) {
+   *         $q = $_GET['q'];
+   *         $q = htmlspecialchars($q);    // same block: runs whenever the line above did
+   *         echo $q;
+   *     }
+   *
+   * That escape is certain, and the last write may win. Without this test the
+   * washed-write rule flagged it and took away a correct "cleared". A dirty
+   * write it cannot place - another file - counts as skippable by the
+   * outermost branch around the write.
+   */
+  const skippedBy = (write: Node, kept: Taint, body: Node, filePath: string): Node | null => {
+    const stored = kept.steps[kept.steps.length - 1]?.location;
+    const at = stored && stored.file === toDisplay(filePath)
+      ? { row: stored.startLine - 1, column: stored.startColumn - 1 }
+      : null;
+    let child: Node = write;
+    let current: Node | null = write.parent;
+    let outermost: Node | null = null;
+    while (current && current !== body) {
+      if (CONDITIONAL_NODES.has(current.type)) {
+        // The first branch around the write that the dirty write is not in.
+        if (at && !holds(child, at)) return current;
+        outermost = current;
+      }
+      child = current;
+      current = current.parent;
+    }
+    // A dirty write in another file: skippable by every branch around this one.
+    return at ? null : outermost;
+  };
+  /** Whether a 0-based position lies inside a node. */
+  const holds = (n: Node, at: { row: number; column: number }): boolean => {
+    const s = n.startPosition;
+    const e = n.endPosition;
+    const afterStart = at.row > s.row || (at.row === s.row && at.column >= s.column);
+    const beforeEnd = at.row < e.row || (at.row === e.row && at.column < e.column);
+    return afterStart && beforeEnd;
+  };
+  const inOtherArm = (clean: Node, kept: Taint, body: Node, filePath: string): Node | null => {
+    const stored = kept.steps[kept.steps.length - 1]?.location;
+    if (!stored || stored.file !== toDisplay(filePath)) return null;
+    const at = { row: stored.startLine - 1, column: stored.startColumn - 1 };
+    const contains = (n: Node): boolean => {
+      const s = n.startPosition;
+      const e = n.endPosition;
+      const afterStart = at.row > s.row || (at.row === s.row && at.column >= s.column);
+      const beforeEnd = at.row < e.row || (at.row === e.row && at.column < e.column);
+      return afterStart && beforeEnd;
+    };
+    let child: Node = clean;
+    let current: Node | null = clean.parent;
+    while (current && current !== body) {
+      if (current.type === 'if_statement' && contains(current)) {
+        const condition = current.childForFieldName('condition');
+        const sameAsChild = (n: Node): boolean => n.startIndex === child.startIndex && n.endIndex === child.endIndex;
+        const inCondition = condition !== null && sameAsChild(condition);
+        if (!inCondition) {
+          for (const arm of current.namedChildren) {
+            if (!arm || sameAsChild(arm)) continue;
+            if (condition && arm.startIndex === condition.startIndex && arm.endIndex === condition.endIndex) continue;
+            if (contains(arm)) return current;
+          }
+        }
+      }
+      child = current;
+      current = current.parent;
+    }
+    return null;
+  };
+
   // The constant folder lives in fold.ts now, shared with the signature rules.
   const { conditionTruth, ternaryParts, deadBranchOf, switchDecision } = createFolder(language);
 
@@ -2956,7 +3175,53 @@ export function traceFile(
 
         for (const targetName of targetNames) {
           if (!/^[A-Za-z_$][\w$]*$/.test(targetName)) continue;
-          if (taint) {
+          const before = scope.env.get(targetName);
+          if (
+            taint &&
+            before &&
+            !extendsTarget &&
+            washedKinds(taint).some((k) => !washedKinds(before).includes(k)) &&
+            underCondition(node, scope.body, scope.filePath) &&
+            skippedBy(node, before, scope.body, scope.filePath) !== null
+          ) {
+            /*
+             * A CONDITIONAL WRITE OF A WASHED VALUE OVER A DIRTY ONE.
+             *
+             *     if (raw) p = input; else p = escapeHtml(input);
+             *     out.println(p);
+             *
+             * This printed "checked and cleared": the last write wins in this
+             * engine, and the last write was the escaped one. On every run that
+             * takes the first arm the page gets the raw input. A conditional
+             * CLEAN write was already handled below - kept the dirt, flagged the
+             * assumption - but a washed value is not clean, it is a taint, so it
+             * took this branch and replaced the dirt outright.
+             *
+             * Inside the branch, after the write, the value IS the washed one -
+             * DVWA's sqli/source/impossible.php checks is_numeric(), calls
+             * intval() and prints, all in one block, and that stays cleared.
+             * When the walk leaves the branch that could skip the write, the
+             * name holds either value, so the old dirt comes back for every
+             * kind the new value does not wash. That is flagged as resting on a
+             * branch, like a skipped clean write - unless the dirty write sits
+             * in the other arm of one if/else (inOtherArm), where the run that
+             * took that arm certainly delivers it.
+             */
+            const stored = addStep(taint, parts.target, `stored in \`${targetName}\``);
+            scope.env.set(targetName, stored);
+            const block = skippedBy(node, before, scope.body, scope.filePath);
+            if (block) {
+              const pendingEither = [...new Set([...(before.quotePending ?? []), ...(taint.quotePending ?? [])])];
+              const either: Taint = {
+                ...before,
+                sanitizedFor: new Set([...before.sanitizedFor].filter((k) => taint.sanitizedFor.has(k))),
+                quotePending: pendingEither.length > 0 ? pendingEither : undefined,
+                branchAssumed: inOtherArm(node, before, scope.body, scope.filePath) ? before.branchAssumed : true,
+              };
+              const key = spanKey(scope.filePath, block);
+              armSettles.set(key, [...(armSettles.get(key) ?? []), { target: targetName, inside: stored, after: either }]);
+            }
+          } else if (taint) {
             scope.env.set(targetName, addStep(taint, parts.target, `stored in \`${targetName}\``));
           } else if (extendsTarget) {
             // Appending something clean to a dirty value leaves it dirty.
@@ -2970,7 +3235,15 @@ export function traceFile(
             const kept = scope.env.get(targetName);
             if (kept) {
               const certain = guardCannotCleanTarget(node, scope.body, targetName);
-              scope.env.set(targetName, certain ? kept : { ...kept, branchAssumed: true });
+              const assumed: Taint = { ...kept, branchAssumed: true };
+              scope.env.set(targetName, certain ? kept : assumed);
+              // Clean and dirty writes in different arms of one if/else: the
+              // assumption holds only until that if/else ends - see inOtherArm.
+              const shared = certain ? null : inOtherArm(node, kept, scope.body, scope.filePath);
+              if (shared) {
+                const key = spanKey(scope.filePath, shared);
+                armSettles.set(key, [...(armSettles.get(key) ?? []), { target: targetName, inside: assumed, after: kept }]);
+              }
             }
           } else {
             scope.env.delete(targetName); // reassigned to something clean
@@ -3050,6 +3323,7 @@ export function traceFile(
     for (const child of node.namedChildren) {
       if (child) walk(child, scope, depth + 1);
     }
+    if (armSettles.size > 0) settleArms(node, scope);
   };
 
   /* ---- following a value into another function ---- */
@@ -3317,7 +3591,7 @@ export function traceFile(
     }
   }
 
-  return { flows: results, sanitized, unreachable, resolvedReads, limits: limits() };
+  return { flows: results, sanitized, unreachable, resolvedReads, freshStops, limits: limits() };
 }
 
 export { type TaintDictionary };

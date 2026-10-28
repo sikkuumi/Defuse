@@ -236,7 +236,60 @@ export interface SanitizerSpec {
    * into the query. See `quotePending` in tracer.ts.
    */
   readonly onlyInsideQuotes?: readonly SinkKind[];
+  /**
+   * The entry holds only for calls with at most this many arguments.
+   *
+   * `md5($x)` returns 32 hex characters, which cannot carry a quote or a tag.
+   * `md5($x, true)` returns 16 RAW bytes, which can - `'ffifdyop'` hashes to a
+   * string containing `'or'6`, the well-known login bypass. Same name, one
+   * extra argument, opposite answer. A call with more arguments than this is
+   * not matched by the entry and is treated as a function we do not model.
+   */
+  readonly maxArgs?: number;
   readonly description: string;
+}
+
+/**
+ * Functions whose RESULT is new data rather than their argument.
+ *
+ * The default for a function this engine does not know is that it hands its
+ * argument back - right for `stripslashes()`, and how the tool finds anything
+ * at all in real code. It is wrong for a read: `mysqli_query($conn, $sql)`
+ * returns rows stored in the database, not the text of `$sql`, and a proof
+ * that runs from the request through the query into the printed row is a
+ * false statement about the code. An AI review of DVWA's published proofs
+ * marked every one of those paths wrong.
+ *
+ * The trace stops at these calls. That is NOT a claim the result is safe -
+ * stored data can be just as dangerous, it is just not THIS request's input -
+ * so nothing is cleared: a sink further on is still reported by its signature
+ * rule, unproven, and every stop is listed in diagnostics.tracesStoppedAtNewData.
+ *
+ * Consulted only for a call this engine cannot read: a function of the same
+ * name defined in the project is followed instead.
+ */
+export interface FreshResultSpec {
+  readonly names: readonly string[];
+  /** What comes back instead of the argument. Printed in the stop record. */
+  readonly description: string;
+  /**
+   * A database read, where an INJECTABLE query hands the attacker the rows.
+   *
+   * DVWA's brute/source/low.php puts the raw username into the query, then
+   * prints the avatar column of the row it returns. The row is not the
+   * username - but `' UNION SELECT ...` makes it whatever the attacker likes,
+   * and an AI review called that proof real for exactly that reason. The two
+   * DVWA levels that escape the username inside quotes return stored rows
+   * only, and the same review called those proofs wrong.
+   *
+   * So for these entries an ARGUMENT that is still dirty for SQL is carried
+   * into the result, with a step saying why. The query functions watch the
+   * same argument positions as their SQL sink entry; the row readers watch
+   * their arguments - a result handle - and never the receiver, because a
+   * statement dirtied by bindParam() holds bound parameters, which cannot
+   * inject anything.
+   */
+  readonly rowsFollowInjection?: boolean;
 }
 
 /** A function whose output is still dirty if its input was. */
@@ -411,4 +464,6 @@ export interface TaintDictionary {
    * the same thing.
    */
   readonly htmlReturnIsSink?: boolean;
+  /** Reads whose result is new data, not the argument - see FreshResultSpec. */
+  readonly freshResults?: readonly FreshResultSpec[];
 }

@@ -9,9 +9,9 @@
   "missedByCategory": {},
   "filesParsed": 2766,
   "parseErrors": 0,
-  "durationMs": 33482,
+  "durationMs": 18078,
   "decoyFalsePositives": 0,
   "decoyShare": "0%",
   "engineVersion": "0.5.0",
-  "measuredAt": "2026-10-15"
+  "measuredAt": "2026-10-28"
 }

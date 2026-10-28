@@ -539,6 +539,50 @@ async function main(): Promise<number> {
     );
   }
 
+  /* ---- a function the dictionary describes is not a guess ----
+   * known-functions.php and KnownFunctions.java prove flows through
+   * stripslashes(), basename(), preg_replace(), toCharArray() and new String().
+   * Those proofs pass whether the functions are known or guessed - a guess
+   * preserves the value too - so the annotations alone cannot tell the two
+   * apart. This can: the only guessed step allowed in those files is md5()
+   * called with its raw-binary flag, which the dictionary deliberately does not
+   * describe, and that one MUST still be declared a guess.                    */
+  {
+    const inKnown = flowFindings.filter((f) => /[\\/](known-functions\.php|KnownFunctions\.java)$/.test(f.location.file));
+    const guessed = inKnown.flatMap((f) => f.unmodelledHops.filter((n) => n !== 'md5'));
+    const rawFlag = inKnown.find((f) => f.ruleId === 'sql-injection' && f.unmodelledHops.includes('md5'));
+    if (inKnown.length >= 6 && guessed.length === 0 && rawFlag) {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} ${inKnown.length} proofs through known functions rest on no guess; ` +
+          `md5(..., true) still declares one`,
+      );
+    } else {
+      failed++;
+      console.log(
+        `    ${color.red(g('cross'))} known-function proofs: ${inKnown.length} found, guessed steps ` +
+          `[${guessed.join(', ')}], raw-flag md5 ${rawFlag ? 'declared' : 'NOT declared'} as a guess`,
+      );
+    }
+  }
+
+  /* ---- a trace ended at a database read leaves a record ----
+   * Stopping at mysqli_query() removes a proof the engine used to publish. A
+   * removal with no reason on record is a silent gap, so each stop is listed in
+   * tracesStoppedAtNewData - and this asserts the fixture's stop is there.    */
+  {
+    const stop = result.tracesStoppedAtNewData.find(
+      (s) => s.file.endsWith('known-functions.php') && s.line === 51 && /database read/.test(s.why),
+    );
+    if (stop) {
+      passed++;
+      console.log(`    ${color.green(g('tick'))} a trace ended at a database read is on the record: ${color.dim(stop.why.slice(0, 70))}`);
+    } else {
+      failed++;
+      console.log(`    ${color.red(g('cross'))} no tracesStoppedAtNewData entry for known-functions.php:51 - the stop is silent`);
+    }
+  }
+
   /* ---- a file a flow passes through is never "clean" ----
    * Findings are filed at the SINK, which is correct - that is where the
    * untrusted value gets executed. But in a cross-file flow the sink is often

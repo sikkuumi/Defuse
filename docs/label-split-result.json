@@ -1,43 +1,41 @@
 {
   "scored": 1210,
   "findingsByConfidence": {
-    "flow-verified": 640,
-    "signature-based": 1238
+    "flow-verified": 658,
+    "signature-based": 1198
   },
-  "casesWithBothLabels": 2,
+  "casesWithBothLabels": 0,
   "tiers": [
     {
       "label": "flow-verified only",
-      "tp": 562,
+      "tp": 602,
       "fp": 0,
-      "fn": 82,
+      "fn": 42,
       "tn": 566,
       "precision": "100.0%",
-      "recall": "87.3%",
+      "recall": "93.5%",
       "decoyFalsePositives": 0,
       "decoyShare": "0%",
       "nonDecoyFalsePositives": 0,
       "missedByCategory": {
-        "sqli": 62,
-        "xss": 14,
-        "cmdi": 6
+        "sqli": 42
       }
     },
     {
       "label": "signature-only",
-      "tp": 82,
+      "tp": 42,
       "fp": 35,
-      "fn": 562,
+      "fn": 602,
       "tn": 531,
-      "precision": "70.1%",
-      "recall": "12.7%",
+      "precision": "54.5%",
+      "recall": "6.5%",
       "decoyFalsePositives": 0,
       "decoyShare": "0%",
       "nonDecoyFalsePositives": 35,
       "missedByCategory": {
-        "cmdi": 120,
-        "sqli": 210,
-        "xss": 232
+        "cmdi": 126,
+        "sqli": 230,
+        "xss": 246
       }
     },
     {
@@ -56,5 +54,5 @@
   ],
   "reconciles": true,
   "engineVersion": "0.5.0",
-  "measuredAt": "2026-10-15"
+  "measuredAt": "2026-10-28"
 }

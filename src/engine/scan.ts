@@ -47,6 +47,8 @@ export interface ScanResult {
   readonly unreachableCode: AnalysisResult['unreachableCode'];
   /** Map and list reads answered by key or position, with the write that answers each. */
   readonly collectionReadsResolved: AnalysisResult['collectionReadsResolved'];
+  /** Calls where a trace ended because the result is new data, not the argument. */
+  readonly tracesStoppedAtNewData: AnalysisResult['tracesStoppedAtNewData'];
   /** Per-file participation, so a file a flow passes through is never "clean". */
   readonly fileRoles: AnalysisResult['fileRoles'];
   /** Where the tracer ran out, counted for this scan. */
@@ -126,6 +128,7 @@ export async function scan(target: string, options: ScanOptions = {}): Promise<S
     verifiedClean: result.verifiedClean,
     unreachableCode: result.unreachableCode,
     collectionReadsResolved: result.collectionReadsResolved,
+    tracesStoppedAtNewData: result.tracesStoppedAtNewData,
     fileRoles: result.fileRoles,
     traceLimits: result.traceLimits,
     stats: {

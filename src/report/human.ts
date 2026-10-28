@@ -410,7 +410,8 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
     result.stats.signaturesRetracted > 0 ||
     result.stats.signaturesProvedConstant > 0 ||
     result.stats.regionsProvedUnreachable > 0 ||
-    result.stats.collectionReadsResolved > 0
+    result.stats.collectionReadsResolved > 0 ||
+    result.stats.tracesStoppedAtNewData > 0
   ) {
     out.push(
       color.dim(
@@ -429,6 +430,11 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
           (result.stats.collectionReadsResolved > 0
             ? ` ${g('middot')} ${result.stats.collectionReadsResolved} collection read(s) answered by key or position ` +
               `(listed in --json under collectionReadsResolved)`
+            : '') +
+          (result.stats.tracesStoppedAtNewData > 0
+            ? ` ${g('middot')} ${result.stats.tracesStoppedAtNewData} trace(s) ended at a database or file read, ` +
+              `which returns stored data rather than its input - not cleared, just not followed ` +
+              `(listed in --json under tracesStoppedAtNewData)`
             : ''),
       ),
     );
