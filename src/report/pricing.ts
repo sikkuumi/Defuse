@@ -17,7 +17,9 @@ import { BASE_CSS, FOOTER_CSS, NAV_CSS, esc, siteFooter, siteNav } from './site.
  *     prose, so `npm test` fails if the page and the engine disagree.
  *   - No "most popular" badge. There is nothing to be popular among yet, and a
  *     badge that says otherwise is the kind of claim this project exists to
- *     refuse.
+ *     refuse. The cards do carry a badge, because the design has a place for
+ *     one - and it holds a FACT about the plan ("Open source", "5+ developers"),
+ *     never a ranking.
  *   - How buying works is said plainly: there is no checkout. A plan is set up
  *     by hand after someone asks.
  *
@@ -41,6 +43,11 @@ export interface Plan {
   /** Shown only for an available plan. */
   readonly price?: { readonly amount: string; readonly unit: string; readonly note?: string };
   readonly forWhom: string;
+  /**
+   * A fact about the plan, shown in the corner of its card. A fact, never a
+   * ranking: "open source", "from 5 developers". See the note above on badges.
+   */
+  readonly badge?: string;
   /** "Everything in Pro, and:" - the plan below this one. */
   readonly builds?: string;
   readonly features: readonly PlanFeature[];
@@ -70,6 +77,7 @@ export function plans(): Plan[] {
       status: 'available',
       price: { amount: 'Free', unit: 'for everyone, for good', note: 'Open source, AGPL-3.0' },
       forWhom: 'Anyone scanning their own code, on their own machine or in their own CI.',
+      badge: 'Open source',
       builds: 'Included:',
       features: [
         {
@@ -100,6 +108,7 @@ export function plans(): Plan[] {
       status: 'available',
       price: { amount: '$19', unit: 'per developer / month' },
       forWhom: 'One developer working through findings over time, on their own machine.',
+      badge: 'One developer',
       builds: 'Everything in Community, and:',
       features: [
         {
@@ -119,9 +128,10 @@ export function plans(): Plan[] {
       price: {
         amount: `$${TEAM_PRICE}`,
         unit: 'per developer / month',
-        note: `From ${TEAM_MIN_SEATS} developers ($${TEAM_PRICE * TEAM_MIN_SEATS} a month). 14-day trial on request.`,
+        note: `From ${TEAM_MIN_SEATS} developers ($${TEAM_PRICE * TEAM_MIN_SEATS} a month).`,
       },
       forWhom: 'A team that wants every pull request checked, and one shared record of what was decided.',
+      badge: `${TEAM_MIN_SEATS}+ developers`,
       builds: 'Everything in Pro, and:',
       features: [
         {
@@ -139,27 +149,25 @@ export function plans(): Plan[] {
       ],
       cta: { label: 'Ask for Team', href: enquiry('Team'), primary: true },
     },
-    {
-      name: 'Business',
-      status: 'coming-soon',
-      forWhom: 'Organisations that want one yearly price.',
-      features: [],
-      cta: { label: 'Tell us you need it', href: enquiry('Business') },
-    },
-    {
-      name: 'Enterprise',
-      status: 'coming-soon',
-      forWhom: 'Large organisations with their own terms and reviews.',
-      features: [],
-      cta: { label: 'Tell us you need it', href: enquiry('Enterprise') },
-    },
+    /*
+     * Business and Enterprise were listed here as "coming soon", each with a
+     * "Tell us you need it" button. Removed: a button for a plan that does not
+     * exist only brings requests nobody can fill. A plan is added back when it
+     * is built - and if one is listed before then, it is drawn as "coming
+     * soon", with no price and no features (planCard).
+     */
   ];
 }
+
+/** Lucide's "check" icon (ISC licence), inline so the page still calls nobody. */
+const CHECK_ICON =
+  '<svg class="tick" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.25" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
 
 function planCard(p: Plan): string {
   if (p.status === 'coming-soon') {
     return `      <div class="plan soon">
-        <div class="pname">${esc(p.name)}</div>
+        <h3 class="pname">${esc(p.name)}</h3>
         <div class="tag">Coming soon</div>
         <p class="who">${esc(p.forWhom)}</p>
         <p class="who">Not available yet. If you need it, say so - it will be shaped around real requests rather than guessed at.</p>
@@ -167,17 +175,22 @@ function planCard(p: Plan): string {
       </div>`;
   }
   const price = p.price!;
-  return `      <div class="plan glass">
-        <div class="pname">${esc(p.name)}</div>
+  // One card: a header (name, who it is for, a fact in the corner), the price
+  // on one line, the features as a checked list, and one full-width button.
+  // The plan whose button is the primary one gets a brand-coloured ring.
+  return `      <div class="plan glass${p.cta.primary ? ' featured' : ''}">
+        <div class="phead">
+          <h3 class="pname">${esc(p.name)}</h3>
+          ${p.badge ? `<span class="badge">${esc(p.badge)}</span>` : ''}
+          <p class="who">${esc(p.forWhom)}</p>
+        </div>
         <div class="pricebox">
-          <div class="amount">${esc(price.amount)}</div>
-          <div class="unit">${esc(price.unit)}</div>
+          <div class="priceline"><span class="amount">${esc(price.amount)}</span><span class="unit">${esc(price.unit)}</span></div>
           ${price.note ? `<div class="pnote">${esc(price.note)}</div>` : ''}
         </div>
-        <p class="who">${esc(p.forWhom)}</p>
         ${p.builds ? `<div class="builds">${esc(p.builds)}</div>` : ''}
         <ul class="feats">
-${p.features.map((f) => `          <li><b>${esc(f.name)}</b><span>${esc(f.detail)}</span></li>`).join('\n')}
+${p.features.map((f) => `          <li>${CHECK_ICON}<div><b>${esc(f.name)}</b><span>${esc(f.detail)}</span></div></li>`).join('\n')}
         </ul>
         <a class="pbtn${p.cta.primary ? ' primary' : ''}" href="${esc(p.cta.href)}">${esc(p.cta.label)}</a>
       </div>`;
@@ -210,39 +223,51 @@ ${NAV_CSS}
   h1{font-size:clamp(38px,6.4vw,72px);letter-spacing:-2px;margin:22px 0 0;max-width:17ch}
   .lede{margin-top:22px;font-size:clamp(16px,1.9vw,19px);font-weight:300;max-width:62ch}
 
-  /* ---------- the plans ---------- */
-  .plans{display:grid;grid-template-columns:1fr;gap:18px;margin-top:8px}
-  @media(min-width:960px){.plans{grid-template-columns:repeat(3,1fr);gap:20px}}
-  .plan{display:flex;flex-direction:column;padding:30px 28px 28px;border-radius:16px}
-  .pname{font-family:"IBM Plex Mono",monospace;font-size:13px;letter-spacing:2.2px;text-transform:uppercase;color:var(--white)}
-  .amount{margin-top:18px;font-weight:700;font-size:clamp(38px,4vw,48px);letter-spacing:-1.6px;line-height:1;color:var(--white)}
-  .unit{margin-top:8px;font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--mute)}
-  .pnote{margin-top:6px;font-size:13.5px;color:var(--mute)}
-  .who{margin-top:18px;font-size:15px;color:var(--mute)}
-  /* Side by side, the price blocks and the one-line descriptions are given the same height, so the
-     feature lists start on one line across the three cards. */
-  @media(min-width:960px){.plan.glass .pricebox{min-height:150px}.plan.glass .who{min-height:4.8em}}
-  .builds{margin-top:22px;padding-top:18px;border-top:1px solid var(--hair);font-family:"IBM Plex Mono",monospace;font-size:12px;letter-spacing:1px;color:var(--faint)}
-  .feats{list-style:none;margin:14px 0 26px;flex-grow:1}
-  .feats li{padding:12px 0;border-bottom:1px solid var(--hair)}
-  .feats li:last-child{border-bottom:0}
-  .feats b{display:block;font-weight:500;font-size:15px;color:var(--white)}
-  .feats span{display:block;margin-top:4px;font-size:14px;line-height:1.55;color:var(--mute)}
-  .pbtn{display:block;text-align:center;font-family:"IBM Plex Mono",monospace;font-size:14px;color:var(--white);
-    border:1px solid var(--line);border-radius:999px;padding:12px 20px;transition:background 220ms ease,border-color 220ms ease}
-  .pbtn:hover{background:var(--glass);border-color:var(--brand-lift);color:var(--white)}
+  /* ---------- the plans ----------
+     Card layout after shadcn's pricing card: a header with a fact badge in the
+     corner, the price on one line, a checked feature list, one full-width
+     button, and a ring on the plan whose button is the primary one. Drawn
+     with this site's own colours, fonts and glass surface - no framework. */
+  .plans{display:grid;grid-template-columns:1fr;gap:20px;margin-top:8px;max-width:420px;margin-left:auto;margin-right:auto}
+  @media(min-width:960px){.plans{grid-template-columns:repeat(3,minmax(0,1fr));gap:22px;max-width:none}}
+  .plan{position:relative;display:flex;flex-direction:column;border-radius:12px;box-shadow:0 1px 2px rgba(0,0,0,.25)}
+  .plan.featured{border-color:var(--brand);box-shadow:0 0 0 1px var(--brand),0 18px 50px -24px rgba(121,44,247,.55)}
+  .phead{position:relative;padding:24px 24px 0}
+  .pname{font-size:24px;font-weight:600;letter-spacing:-.4px;line-height:1.1;color:var(--white);padding-right:120px}
+  .badge{position:absolute;top:24px;right:24px;font-family:"IBM Plex Mono",monospace;font-size:11.5px;font-weight:500;letter-spacing:.3px;
+    color:var(--brand-soft);background:rgba(121,44,247,.14);border:1px solid rgba(121,44,247,.35);border-radius:999px;padding:3px 10px;white-space:nowrap}
+  .plan.featured .badge{color:var(--white);background:var(--brand);border-color:var(--brand)}
+  .who{margin-top:8px;font-size:14px;line-height:1.55;color:var(--mute)}
+  .pricebox{padding:22px 24px 0}
+  .priceline{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 8px}
+  .amount{font-weight:600;font-size:clamp(32px,3.2vw,38px);letter-spacing:-1.2px;line-height:1;color:var(--white);font-variant-numeric:tabular-nums}
+  .unit{font-size:14px;color:var(--mute)}
+  .pnote{margin-top:8px;font-size:13px;color:var(--faint)}
+  /* Side by side, the headers and price blocks are given the same height, so
+     the feature lists start on one line across the three cards. */
+  @media(min-width:960px){.plan .phead{min-height:130px}.plan .pricebox{min-height:92px}}
+  .builds{margin:20px 24px 0;padding-top:16px;border-top:1px solid var(--hair);font-family:"IBM Plex Mono",monospace;font-size:12px;letter-spacing:1px;color:var(--faint)}
+  .feats{list-style:none;margin:12px 24px 24px;flex-grow:1;display:flex;flex-direction:column;gap:14px}
+  .feats li{display:flex;gap:10px;align-items:flex-start}
+  .feats .tick{flex-shrink:0;margin-top:3px;color:var(--brand-soft)}
+  .feats b{display:block;font-weight:500;font-size:14.5px;color:var(--white)}
+  .feats span{display:block;margin-top:3px;font-size:13.5px;line-height:1.55;color:var(--mute)}
+  .pbtn{display:flex;align-items:center;justify-content:center;height:42px;margin:0 24px 24px;font-size:14px;font-weight:500;color:var(--white);
+    background:var(--glass);border:1px solid var(--line);border-radius:8px;padding:0 16px;transition:background 200ms ease,border-color 200ms ease}
+  .pbtn:hover{background:rgba(245,245,245,.07);border-color:var(--brand-lift);color:var(--white)}
   .pbtn.primary{background:var(--brand);border-color:var(--brand)}
-  .pbtn.primary:hover{background:var(--brand-lift)}
+  .pbtn.primary:hover{background:var(--brand-lift);border-color:var(--brand-lift)}
   .pbtn:focus-visible{outline:2px solid var(--brand-soft);outline-offset:3px}
 
-  /* Not built yet: drawn as an outline with no price, so it cannot be mistaken for something on sale. */
+  /* Not built yet: drawn as an outline with no price, so it cannot be mistaken
+     for something on sale. None are listed today - see plans(). */
   .soonrow{display:grid;grid-template-columns:1fr;gap:18px;margin-top:18px}
   @media(min-width:760px){.soonrow{grid-template-columns:1fr 1fr;gap:20px}}
-  .plan.soon{border:1px solid var(--hair);background:transparent;padding:26px 28px}
-  .plan.soon .pname{color:var(--mute)}
-  .plan.soon .who{margin-top:10px;font-size:14.5px}
-  .plan.soon .pbtn{margin-top:20px;align-self:flex-start;color:var(--mute)}
-  .tag{margin-top:14px;align-self:flex-start;font-family:"IBM Plex Mono",monospace;font-size:11.5px;letter-spacing:1.4px;text-transform:uppercase;color:var(--mute);border:1px solid var(--line);border-radius:6px;padding:4px 9px}
+  .plan.soon{border:1px solid var(--hair);border-radius:12px;background:transparent;padding:24px;box-shadow:none}
+  .plan.soon .pname{color:var(--mute);font-size:20px;padding-right:0}
+  .plan.soon .who{margin-top:10px}
+  .plan.soon .pbtn{margin:20px 0 0;align-self:flex-start;color:var(--mute)}
+  .tag{margin-top:12px;align-self:flex-start;font-family:"IBM Plex Mono",monospace;font-size:11.5px;letter-spacing:1.4px;text-transform:uppercase;color:var(--mute);border:1px solid var(--line);border-radius:6px;padding:4px 9px}
 
   /* ---------- promises, effort, buying ---------- */
   .three{display:grid;grid-template-columns:1fr;gap:18px;margin-top:40px}
@@ -279,10 +304,7 @@ ${siteNav('pricing')}
     <div class="plans">
 ${available.map(planCard).join('\n')}
     </div>
-    <div class="soonrow">
-${soon.map(planCard).join('\n')}
-    </div>
-    <p class="mono" style="margin-top:22px;font-size:12.5px;color:var(--faint);max-width:none">Prices in US dollars.
+${soon.length > 0 ? `    <div class="soonrow">\n${soon.map(planCard).join('\n')}\n    </div>\n` : ''}    <p class="mono" style="margin-top:22px;font-size:12.5px;color:var(--faint);max-width:none">Prices in US dollars.
       There is no checkout yet - see how buying works below.</p>
   </div>
 </section>

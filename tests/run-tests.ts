@@ -2766,8 +2766,7 @@ async function main(): Promise<number> {
       const soonCards = soonRow.split('<div class="plan soon">').slice(1);
       pricingChecks.push([
         'a plan that is not built shows no price and no features, only "coming soon"',
-        soon.length === 2 &&
-          soonCards.length === soon.length &&
+        soonCards.length === soon.length &&
           soon.every((p, i) => !p.price && p.features.length === 0 && soonCards[i]!.includes(`>${p.name}<`)) &&
           soonCards.every((c) => c.includes('Coming soon') && !/\$\d/.test(c) && !c.includes('class="feats"')),
       ]);
@@ -2778,6 +2777,14 @@ async function main(): Promise<number> {
       pricingChecks.push([
         'no "most popular" or "best value" badge - nothing has been bought yet',
         !/most popular|best value|recommended/i.test(onDisk),
+      ]);
+      // Each card's badge is a fact about that plan, and nothing is offered
+      // that someone has to deliver by hand before anyone has paid.
+      pricingChecks.push([
+        'card badges state facts, and no free trial is offered by hand',
+        all.filter((p) => p.status === 'available').every((p) => !!p.badge && onDisk.includes(`<span class="badge">${p.badge}</span>`)) &&
+          !/popular|favourite|favorite|best/i.test(all.map((p) => p.badge ?? '').join(' ')) &&
+          !/trial/i.test(onDisk),
       ]);
       const precisions = (JSON.parse(split) as LabelSplitResult).tiers.map((t) => t.precision);
       pricingChecks.push([

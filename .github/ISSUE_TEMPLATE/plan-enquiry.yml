@@ -1,5 +1,5 @@
 name: Ask about a plan
-description: Ask for Defuse Pro or Team, a Team trial, or tell us you need Business or Enterprise. This form is PUBLIC.
+description: Ask for Defuse Pro or Team. This form is PUBLIC.
 title: "Plan enquiry"
 labels: ["plan-enquiry"]
 body:
@@ -18,9 +18,6 @@ body:
       options:
         - Pro ($19 per developer / month)
         - Team ($49 per developer / month, from 5 developers)
-        - Team - 14-day trial first
-        - Business (coming soon)
-        - Enterprise (coming soon)
     validations:
       required: true
   - type: input
