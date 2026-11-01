@@ -80,26 +80,6 @@ export const esc = (s: string): string =>
 export const INSTALL_COMMAND = 'npx github:Sikkuumi/Defuse scan .';
 
 /**
- * THE PAID CHECK, in one place.
- *
- * The scanner is free; a check is the scanner run on someone's code, read by a
- * person, and handed over as the client report (`--report`). Contact goes
- * through a GitHub request form for now - .github/ISSUE_TEMPLATE/
- * security-check.yml - and that form is PUBLIC, so the page and the form both
- * say not to put code or secrets in it. When there is a private address,
- * `contactUrl` and `contactLabel` are the only lines to change.
- */
-export const SERVICE = {
-  price: 'From ₹9,999',
-  priceNote: 'per project, for code up to about 25,000 lines. Larger projects are quoted before any work starts.',
-  by: 'Sikkuumiii',
-  contactUrl: 'https://github.com/Sikkuumi/Defuse/issues/new?template=security-check.yml',
-  contactLabel: 'Request a check on GitHub',
-  contactNote:
-    'The request form is public. Write only the language, the rough size and how to reach you privately - never code, keys or company details.',
-} as const;
-
-/**
  * WHAT EVERY PAGE OF THE SITE SHARES - the fonts, the colours, the base type,
  * the glass surface, the navigation bar and the footer - so the landing page
  * and the pricing page cannot drift apart in the brand they wear.
@@ -197,7 +177,6 @@ export function siteNav(page: 'home' | 'pricing'): string {
     ['#labels', 'The labels'],
     ['#numbers', 'Measurements'],
     ['#gaps', 'Gaps'],
-    ['#check', 'Get it checked'],
   ];
   const links = sections.map(([href, label]) => `        <a href="${base}${href}">${label}</a>`);
   links.push(`        <a href="pricing.html"${page === 'pricing' ? ' aria-current="page" style="color:var(--white)"' : ''}>Pricing</a>`);
@@ -457,19 +436,6 @@ ${NAV_CSS}  .hero{position:relative;padding-top:clamp(38px,6vw,84px)}
   .langs{margin-top:22px;display:flex;flex-wrap:wrap;gap:9px}
   .langs span{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--mute);border:1px solid var(--hair);border-radius:7px;padding:7px 12px}
 
-  /* ---------- the paid check ---------- */
-  .check{display:grid;grid-template-columns:1fr;gap:14px;margin-top:40px}
-  @media(min-width:900px){.check{grid-template-columns:minmax(220px,.8fr) 1.6fr 1.4fr;gap:18px}}
-  .check .glass{padding:24px 22px}
-  .price b{display:block;font-weight:700;font-size:clamp(28px,2.6vw,34px);letter-spacing:-1px;color:var(--white);white-space:nowrap}
-  .price span{display:block;margin-top:8px;color:var(--mute);font-size:14px}
-  .gets ol,.isnt ul{margin:14px 0 0 18px;color:var(--mute);font-size:14.5px}
-  .gets li,.isnt li{margin:8px 0}
-  .gets strong{color:var(--white);font-weight:500}
-  .cta{margin-top:30px;display:flex;flex-wrap:wrap;gap:16px 22px;align-items:center}
-  .ctabtn{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:14px;color:var(--white);background:var(--brand);border:1px solid var(--brand);border-radius:999px;padding:13px 24px;transition:background 220ms ease}
-  .ctabtn:hover{background:var(--brand-lift);color:var(--white)}
-
 ${FOOTER_CSS}</style>
 </head>
 <body>
@@ -723,50 +689,6 @@ ${siteNav('home')}
       commercial licence can be discussed.</p>
     <p style="margin-top:14px">The scanner is the whole of the free plan, not a trial of it. Tools for working
       through findings over time, and across a team, are paid - <a href="pricing.html">see plans and pricing</a>.</p>
-  </div>
-</section>
-
-<section id="check">
-  <div class="wrap">
-    <div class="kicker">If you would rather not run it yourself</div>
-    <h2>Your code, scanned<br>and read by a person.</h2>
-    <p style="margin-top:20px">${esc(SERVICE.by)}, who builds Defuse, runs it on your code, reads every finding,
-      and hands back the report in a form your team can act on. The same two labels apply: what was proven
-      comes with its path, what was only matched is said to be unproven, and what was not checked is written
-      down.</p>
-
-    <div class="check">
-      <div class="price glass">
-        <b>${esc(SERVICE.price)}</b>
-        <span>${esc(SERVICE.priceNote)}</span>
-      </div>
-      <div class="gets glass">
-        <div class="kicker">What you get</div>
-        <ol>
-          <li><strong>The client report.</strong> Proven problems with the path behind each, what to review,
-            what was checked and cleared, and what was not checked - one file that prints to PDF.</li>
-          <li><strong>A written summary.</strong> Which findings matter first, which matched lines are false
-            alarms and why, and what to fix.</li>
-          <li><strong>A 30-minute call</strong> to walk your team through it.</li>
-        </ol>
-      </div>
-      <div class="isnt glass">
-        <div class="kicker">What it is not</div>
-        <ul>
-          <li>Not a penetration test. Defuse reads source code; it does not attack the running application,
-            so neither label proves a problem can be exploited in production.</li>
-          <li>Not a dependency audit. The libraries your project uses are not checked for known
-            vulnerabilities.</li>
-          <li>Not a guarantee of safety. Section 4 of every report lists what was not checked, and that list
-            is part of the answer.</li>
-        </ul>
-      </div>
-    </div>
-
-    <div class="cta">
-      <a class="ctabtn" href="${esc(SERVICE.contactUrl)}">${esc(SERVICE.contactLabel)}</a>
-      <p class="mono" style="font-size:12.5px;color:var(--faint);max-width:62ch">${esc(SERVICE.contactNote)}</p>
-    </div>
   </div>
 </section>
 

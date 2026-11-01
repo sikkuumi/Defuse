@@ -1,7 +1,7 @@
 import { ALL_RULES } from '../rules/registry.js';
 import { LANGUAGES } from '../parse/languages.js';
 import type { BenchmarkResult } from './coverage-table.js';
-import { BASE_CSS, FOOTER_CSS, NAV_CSS, SERVICE, esc, siteFooter, siteNav } from './site.js';
+import { BASE_CSS, FOOTER_CSS, NAV_CSS, esc, siteFooter, siteNav } from './site.js';
 
 /**
  * THE PRICING PAGE
@@ -339,8 +339,6 @@ ${soon.map(planCard).join('\n')}
     </ol>
     <p style="margin-top:20px">The request form is public. Write only the plan, the number of developers and
       how to reach you privately - never code, keys or company details.</p>
-    <p style="margin-top:14px">Would rather have a person run it for you? The security check is
-      ${esc(SERVICE.price.toLowerCase())} per project - <a href="index.html#check">see what it includes</a>.</p>
   </div>
 </section>
 
