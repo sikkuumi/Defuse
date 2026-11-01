@@ -160,6 +160,19 @@ interface Taint {
    * builder), so it is neither cleared nor called proven - see quoteUnknown.
    */
   readonly quotePending?: readonly SinkKind[] | undefined;
+  /**
+   * What comes BEFORE this value in the string it has been spliced into, with
+   * every clean part written as CLEAN_PART - `https://api.example.com/users/`,
+   * `<clean>/orders/`, `./`. Undefined means the value starts its string: the
+   * attacker writes the beginning, scheme and host included.
+   *
+   * Only the SSRF sink reads it (fixedDestination). Losing it on a path this
+   * engine rebuilds field by field falls back to "starts the string", which is
+   * the old answer - a lost prefix can keep a proof, never clear a line.
+   */
+  readonly urlPrefix?: string | undefined;
+  /** The value came from a browser-only source (SourceSpec.browserOnly). */
+  readonly fromBrowser?: boolean | undefined;
 }
 
 /**
@@ -206,8 +219,116 @@ export interface FlowResult {
    * quoted is unknown. Reported, not certified - and not cleared either.
    */
   readonly quoteUnknown?: boolean;
+  /**
+   * An SSRF flow whose request cannot go where the attacker chooses: the value
+   * sits after a fixed start of the address (`path`, with that start), or the
+   * code runs in a browser, so the request is the user's own (`browser`).
+   * Reported as a guess with the reason, never as proven SSRF and never cleared.
+   */
+  readonly fixedDestination?: { readonly kind: 'path' | 'browser'; readonly before: string } | undefined;
   /** The file the sink is in - may not be the file being scanned. */
   readonly filePath: string;
+}
+
+/** How a clean part of a string is written in a urlPrefix. */
+export const CLEAN_PART = '\u0001';
+
+/**
+ * Does the text before a value pin the destination of the address it is part
+ * of? Only when a path, query or fragment has already begun - after a host
+ * (`https://api.example.com/`), after a clean base (`${base}/`), or in a
+ * relative path (`./`, `../`, `/api/`, `docs/`).
+ *
+ * NOT pinned, and each is a real SSRF shape: nothing before the value; a
+ * scheme with the host still open (`https://`); a host with no slash after it
+ * (`https://api.example.com` + `@evil.example`); a clean base with nothing
+ * after it, which may itself end without a slash; `https:///`, where URL
+ * parsers skip the extra slash and the value becomes the host.
+ *
+ * One shape it cannot see: a clean base holding only a scheme with no slashes
+ * (`https:`) followed by `/` and the value - parsers read `https:/evil` as
+ * host `evil`. A configuration value shaped like that is rare enough to
+ * accept, and it is written down here rather than discovered later.
+ */
+export function destinationPinned(before: string): boolean {
+  if (before === '') return false;
+  const scheme = before.indexOf('://');
+  if (scheme < 0 && !before.startsWith('//') && /^(\.{1,2}[/\\]|\/(?!\/))/.test(before)) return true;
+  const rest = scheme >= 0 ? before.slice(scheme + 3) : before.startsWith('//') ? before.slice(2) : before;
+  return rest.search(/[/?#]/) > 0;
+}
+
+/**
+ * The text a string-building expression contributes, clean parts written as
+ * CLEAN_PART. Like literalTextOf, except a variable or call is not nothing -
+ * it is SOMETHING, unknown but not the attacker's, and where it sits matters.
+ */
+function shapeOf(node: Node | null): string {
+  if (!node) return '';
+  if (STRING_NODES.has(node.type)) {
+    const content = stringContent(node.text);
+    const splices = node.namedChildren.filter(
+      (c): c is Node => c !== null && (INTERPOLATION_NODES.has(c.type) || VARIABLE_NODES.has(c.type) || MEMBER_NODES.has(c.type)),
+    );
+    if (splices.length === 0) return content;
+    const last = splices[splices.length - 1];
+    return last ? templateShapeBefore(node, last) + CLEAN_PART + afterSplice(node, last) : content;
+  }
+  if (node.type === 'parenthesized_expression') {
+    return shapeOf(node.namedChildren.find((c): c is Node => c !== null) ?? null);
+  }
+  if (node.type === 'binary_expression' || node.type === 'binary_operator') {
+    const operator = node.childForFieldName('operator')?.text ?? '';
+    if (operator === '+' || operator === '.') {
+      return shapeOf(node.childForFieldName('left')) + shapeOf(node.childForFieldName('right'));
+    }
+  }
+  return CLEAN_PART;
+}
+
+/** The literal text of a template after a splice, up to its closing delimiter. */
+function afterSplice(template: Node, splice: Node): string {
+  const from = splice.endIndex - template.startIndex;
+  const tail = template.text.slice(from);
+  const close = template.text.match(/["'`]+$/)?.[0]?.length ?? 0;
+  // PHP's closing brace of `"{$x}"`, the twin of the one templateShapeBefore drops.
+  return tail.slice(0, Math.max(0, tail.length - close)).replace(/^\}/, '');
+}
+
+/**
+ * Whether an SSRF flow can send the request where the attacker chooses. See
+ * FlowResult.fixedDestination and destinationPinned.
+ */
+function fixedDestinationOf(taint: Taint, kind: SinkKind): FlowResult['fixedDestination'] {
+  if (kind !== 'ssrf') return undefined;
+  if (taint.fromBrowser) return { kind: 'browser', before: taint.urlPrefix ?? '' };
+  if (taint.urlPrefix !== undefined && destinationPinned(taint.urlPrefix)) {
+    return { kind: 'path', before: taint.urlPrefix };
+  }
+  return undefined;
+}
+
+/**
+ * What precedes one splice inside a template literal or interpolated string:
+ * its literal text, with every earlier splice written as CLEAN_PART (the
+ * first dirty splice is the one being placed, so the earlier ones are clean).
+ */
+function templateShapeBefore(template: Node, splice: Node): string {
+  let out = '';
+  let cursor = 0;
+  const head = afterOpening(template.text);
+  const opening = template.text.length - head.length;
+  for (const child of template.namedChildren) {
+    if (!child) continue;
+    if (child.startIndex >= splice.startIndex) break;
+    if (!(INTERPOLATION_NODES.has(child.type) || VARIABLE_NODES.has(child.type) || MEMBER_NODES.has(child.type))) continue;
+    const start = child.startIndex - template.startIndex - opening;
+    if (start < cursor) continue;
+    out += head.slice(cursor, start) + CLEAN_PART;
+    cursor = child.endIndex - template.startIndex - opening;
+  }
+  // PHP's `"{$x}"` keeps its brace in the literal text; it is syntax, not part of the address.
+  return (out + head.slice(cursor, splice.startIndex - template.startIndex - opening)).replace(/\{$/, '');
 }
 
 /* -------------------------------------------------------------------------- *
@@ -1510,6 +1631,7 @@ export function traceFile(
         sanitizedFor: new Set(),
         origin: expression.slice(0, 60),
         unknownHops: [],
+        ...(source.browserOnly ? { fromBrowser: true } : {}),
       };
     }
     return null;
@@ -1525,6 +1647,8 @@ export function traceFile(
     containerGuess: taint.containerGuess,
     collectedMany: taint.collectedMany,
     quotePending: taint.quotePending,
+    urlPrefix: taint.urlPrefix,
+    fromBrowser: taint.fromBrowser,
   });
 
   /**
@@ -1670,10 +1794,25 @@ export function traceFile(
               // an assumption survives only when both sides rest on one.
               branchAssumed: left.branchAssumed && right.branchAssumed ? true : undefined,
               containerGuess: left.containerGuess && right.containerGuess ? true : undefined,
+              urlPrefix: left.urlPrefix,
+              // The joined string is browser-only only if both halves are.
+              fromBrowser: left.fromBrowser && right.fromBrowser ? true : undefined,
             }
           : taint;
+      /*
+       * Where the dirty part now sits. A dirty left side starts the string and
+       * keeps what it had; a dirty right side has everything on the left in
+       * front of it. `%` formats rather than joins, so the position inside the
+       * format string is not known - and unknown means "starts the string".
+       */
+      const urlPrefix =
+        operator !== '+' && operator !== '.'
+          ? undefined
+          : left
+            ? left.urlPrefix
+            : shapeOf(leftNode) + (right?.urlPrefix ?? '');
       return addStep(
-        merged,
+        { ...merged, urlPrefix },
         node,
         operator === '%'
           ? 'formatted into a larger string with %'
@@ -1716,12 +1855,20 @@ export function traceFile(
           // in this literal. If the offsets do not line up with the text, the
           // position is unknown and the value is treated as unquoted.
           let placed = taint;
+          const offset = child.startIndex - node.startIndex;
+          const lined = node.text.slice(offset, offset + child.text.length) === child.text;
           if (taint.quotePending?.length) {
-            const offset = child.startIndex - node.startIndex;
-            const lined = node.text.slice(offset, offset + child.text.length) === child.text;
             placed = placeInString(taint, lined && opensAQuote(afterOpening(node.text.slice(0, offset))), node);
           }
-          return addStep(placed, node, 'interpolated into a string template');
+          // What precedes the value in this literal. If the offsets do not
+          // line up with the text, where it sits is unknown: treated as the
+          // start of the string, which keeps the old answer.
+          const before = lined ? templateShapeBefore(node, child) : undefined;
+          return addStep(
+            { ...placed, urlPrefix: before === undefined ? undefined : before + (placed.urlPrefix ?? '') },
+            node,
+            'interpolated into a string template',
+          );
         }
       }
       return null;
@@ -2300,6 +2447,7 @@ export function traceFile(
       branchAssumed: taint.branchAssumed ?? false,
       containerGuess: taint.containerGuess ?? false,
       quoteUnknown: taint.quotePending?.includes(kind) ?? false,
+      fixedDestination: fixedDestinationOf(taint, kind),
       filePath: toDisplay(currentPath),
     });
   };
@@ -2627,6 +2775,7 @@ export function traceFile(
           branchAssumed: taint.branchAssumed ?? false,
           containerGuess: taint.containerGuess ?? false,
           quoteUnknown: taint.quotePending?.includes(sink.kind) ?? false,
+          fixedDestination: fixedDestinationOf(taint, sink.kind),
           filePath: toDisplay(currentPath),
         });
       }
@@ -2660,6 +2809,7 @@ export function traceFile(
         branchAssumed: taint.branchAssumed ?? false,
         containerGuess: taint.containerGuess ?? false,
         quoteUnknown: taint.quotePending?.includes(sink.kind) ?? false,
+        fixedDestination: fixedDestinationOf(taint, sink.kind),
         filePath: toDisplay(currentPath),
       });
     }

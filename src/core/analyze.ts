@@ -48,7 +48,7 @@ import {
   type IndexedFileInput,
   type ProjectIndexStats,
 } from '../taint/project.js';
-import { traceFile, type TraceLimits } from '../taint/tracer.js';
+import { CLEAN_PART, traceFile, type TraceLimits } from '../taint/tracer.js';
 
 /** A file's text, already loaded by whichever shell is in charge of loading. */
 export interface SourceFile {
@@ -671,6 +671,52 @@ export async function analyze(
        * outside, none. Clearing the line would claim the first, proving it would
        * claim the second, and neither was seen. So it is reported as a guess.
        */
+      /*
+       * THE FOURTH: A REQUEST THAT CANNOT GO WHERE THE ATTACKER CHOOSES.
+       *
+       * Server-side request forgery is the attacker picking the server a
+       * request goes to. When the value sits after a fixed start of the
+       * address, or the code runs in the user's own browser, that choice is
+       * not theirs. An AI review of DVWA's proven SSRF called all eight wrong
+       * for the first reason, and Juice Shop's Angular services were four more
+       * for the second. What is left - part of a path, a request from a
+       * browser - can still matter, so it is reported, as what it is.
+       */
+      if (flow.fixedDestination && !flow.branchAssumed && !flow.containerGuess && !flow.quoteUnknown) {
+        const shown = flow.fixedDestination.before.split(CLEAN_PART).join('...');
+        const browser = flow.fixedDestination.kind === 'browser';
+        const downgraded = signatureFinding({
+          ruleId: rule.id,
+          ruleName: rule.name,
+          cwe: rule.cwe,
+          owasp: rule.owasp,
+          severity: browser ? 'low' : 'medium',
+          message: browser
+            ? `Data from \`${flow.origin}\` steers a request the user's own browser makes - not server-side request forgery`
+            : `Data from \`${flow.origin}\` sets part of the path of a request whose address is fixed (\`${shown}\`)`,
+          location,
+          reasoning: browser
+            ? `A value from \`${flow.origin}\` reaches ${flow.sinkDescription}, but that source only exists ` +
+              `in a web browser, so this code runs in the user's own browser and the request is sent by the ` +
+              `user's browser, not by a server. Server-side request forgery needs a server to make the ` +
+              `request. Someone who can set this value - through a crafted link, or a script already on the ` +
+              `page - can still point the user's own requests somewhere else; check whether that matters here.`
+            : `A value from \`${flow.origin}\` reaches ${flow.sinkDescription}, but only AFTER a fixed start ` +
+              `of the address: \`${shown}\` (\`...\` is a value from the code, not from the request). The ` +
+              `request still goes where the code says, so this is not a request to a server the attacker picks. ` +
+              `What the attacker does control is the rest of the path or query: with \`../\` or an encoded ` +
+              `slash it may reach another endpoint on the same server, or another file for a file read. ` +
+              `Worth a look, not a proof of server-side request forgery.`,
+          limitations: rule.limitations,
+        });
+        const key = dedupeKey(downgraded);
+        if (!seenFlows.has(key)) {
+          seenFlows.add(key);
+          flowFindings.push(downgraded);
+          recordFlowRanges(flow, flowFile);
+        }
+        continue;
+      }
       if (flow.branchAssumed || flow.containerGuess || flow.quoteUnknown) {
         const downgraded = signatureFinding({
             ruleId: rule.id,

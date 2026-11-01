@@ -630,6 +630,17 @@ no longer treated as an assumption, since at most one arm runs. Taken
 together, BenchmarkJava's proven tier went from 562 to 602 real
 vulnerabilities, still with no false proof.
 
+**SSRF is about who picks the server.** A value spliced in after a fixed start
+of the address - `https://api.example.com/users/${id}`, `${base}/orders/`,
+`./${page}` - cannot send the request anywhere the code did not already
+choose, and a value read from the address bar or browser storage is in code
+that runs in the user's own browser, where no server makes the request. Both
+used to be proven SSRF: eight on DVWA, all called wrong by the AI review, and
+four in Juice Shop's Angular services. They are now reported as to review, with
+the reason and the fixed start printed, because part of a path can still reach
+another endpoint. The value's position travels with it through variables and
+concatenation, and losing track of it keeps the old answer, never clears a line.
+
 ## Signature rules
 
 <!-- derived:rule-matrix -->
@@ -770,7 +781,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 889 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 908 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.

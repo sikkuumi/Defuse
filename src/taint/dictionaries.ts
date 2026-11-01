@@ -65,10 +65,11 @@ const JS_DICTIONARY: TaintDictionary = {
     {
       pattern: /\b(location|document\.location|window\.location)\.(search|hash|href|pathname)\b/,
       description: 'the browser address bar - fully attacker-controllable via a link',
+      browserOnly: true,
     },
-    { pattern: /\bdocument\.referrer\b/, description: 'the HTTP Referer header' },
-    { pattern: /\bwindow\.name\b/, description: 'window.name, settable by any page that opened this one' },
-    { pattern: /\bdocument\.cookie\b/, description: 'document.cookie' },
+    { pattern: /\bdocument\.referrer\b/, description: 'the HTTP Referer header', browserOnly: true },
+    { pattern: /\bwindow\.name\b/, description: 'window.name, settable by any page that opened this one', browserOnly: true },
+    { pattern: /\bdocument\.cookie\b/, description: 'document.cookie', browserOnly: true },
     {
       pattern: /\bsearchParams\.get\s*\(/,
       description: 'a URL query parameter read via URLSearchParams',
@@ -77,6 +78,7 @@ const JS_DICTIONARY: TaintDictionary = {
     {
       pattern: /\b(localStorage|sessionStorage)\.getItem\s*\(/,
       description: 'browser storage, which any script on the page can write',
+      browserOnly: true,
     },
   ],
 

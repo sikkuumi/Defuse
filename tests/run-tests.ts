@@ -66,6 +66,7 @@ import { plans, renderPricing } from '../src/report/pricing.js';
 import { looksLikeSql, matchKnownSecret, isTestPath } from '../src/rules/lib/strings.js';
 import { checkRuntimeVersions, parseComposerRange, readableDate, RUNTIME_VERSION_RULE } from '../src/platform/runtime-version.js';
 import { renderJson } from '../src/report/json.js';
+import { CLEAN_PART, destinationPinned } from '../src/taint/tracer.js';
 import {
   PHP_ADVISORIES,
   PHP_END_OF_LIFE,
@@ -2185,6 +2186,56 @@ async function main(): Promise<number> {
         range('7.4.*', '7.4.1') && !range('7.4.*', '7.5.0') && range('7.4 - 8.1', '8.1.20') && !range('7.4 - 8.1', '8.2.0') &&
         range('>=8.1 <8.3', '8.2.1') && !range('>=8.1 <8.3', '8.3.0') && parseComposerRange('nonsense') === null,
     );
+  }
+
+  /*
+   * ---- SSRF: who chooses where the request goes ----
+   *
+   * The fixtures prove the end-to-end labels; this pins the one decision
+   * underneath them, case by case, because every row is a real SSRF shape or
+   * a real false alarm and a regex edit could swap one for the other.
+   */
+  console.log(`\n${color.bold('  SSRF: is the destination fixed?')}`);
+  {
+    const C = CLEAN_PART;
+    const cases: [string, boolean, string][] = [
+      ['', false, 'nothing before the value: the attacker writes the whole address'],
+      ['https://', false, 'a scheme with the host still open'],
+      ['https://api.example.com', false, 'a host with no slash after it (`@evil.example` moves it)'],
+      [C, false, 'a clean base with nothing after it, which may end without a slash'],
+      [`${C}://`, false, 'a clean scheme, then the host'],
+      ['https:///', false, 'an empty host: URL parsers skip the extra slash'],
+      ['https://api.example.com@', false, 'userinfo: the host comes after the @'],
+      ['http:', false, 'a scheme with no slashes yet'],
+      ['https://api.example.com/users/', true, 'a path has begun after the host'],
+      ['https://api.example.com?u=', true, 'a query has begun after the host'],
+      [`${C}/orders/`, true, 'a clean base, then a slash'],
+      ['./', true, 'a relative path'],
+      ['../vulnerabilities/', true, 'a parent-relative path'],
+      ['/api/', true, 'an absolute path on the same origin'],
+      ['docs/', true, 'a relative directory'],
+      ['//', false, 'protocol-relative, host still open'],
+      ['//cdn.example.com/', true, 'protocol-relative with a fixed host and a path'],
+    ];
+    const wrong = cases.filter(([before, pinned]) => destinationPinned(before) !== pinned);
+    if (wrong.length === 0) {
+      passed++;
+      console.log(`    ${color.green(g('tick'))} ${cases.length} address shapes decided as expected`);
+    } else {
+      failed++;
+      for (const [before, pinned, why] of wrong) {
+        console.log(`    ${color.red(g('cross'))} \`${before.split(C).join('...')}\` should be ${pinned ? 'pinned' : 'open'}: ${why}`);
+      }
+    }
+    // The text a reader sees: PHP's `"{$x}"` braces are syntax, not address.
+    const php = findings.find((f) => f.location.file.endsWith('ssrf-destination.php') && f.location.startLine === 8);
+    if (php?.message.includes('(`./`)')) {
+      passed++;
+      console.log(`    ${color.green(g('tick'))} the fixed start is shown as written, without interpolation syntax`);
+    } else {
+      failed++;
+      console.log(`    ${color.red(g('cross'))} ssrf-destination.php:8 should show \`./\` as the fixed start, got: ${php?.message ?? 'no finding'}`);
+    }
   }
 
   /*

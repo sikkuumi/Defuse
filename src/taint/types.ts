@@ -105,6 +105,13 @@ export interface SourceSpec {
    * make it dirty either. Keep these exact: anything not listed stays a source.
    */
   readonly except?: RegExp;
+  /**
+   * A source that exists only in a web browser - the address bar, browser
+   * storage, document.cookie. Code that reads one runs in the user's own
+   * browser, so a request it makes is the browser's, not a server's, and
+   * cannot be server-side request forgery. See `fixedDestination` in tracer.ts.
+   */
+  readonly browserOnly?: boolean;
 }
 
 /** A call that does something dangerous with a string. */

@@ -56,8 +56,12 @@ export const ssrfRule: Rule = {
   limitations:
     'FLOW-VERIFIED ONLY: this rule has no pattern pass, because "makes an HTTP ' +
     'request" describes almost every server and would report every API client in ' +
-    'the codebase. A finding here always carries a traced path from a request value ' +
-    'to the fetch. DELIBERATE GAP: we cannot see a host allowlist. Code that ' +
+    'the codebase. A finding here always comes from a traced path from a request ' +
+    'value to the fetch. Only one that can choose the DESTINATION is proven: a value ' +
+    'spliced in after a fixed start of the address (`https://host/path/`, `${base}/`, ' +
+    '`./`), or one read from a browser-only source (the address bar, browser storage), ' +
+    'cannot send the request to a server the attacker picks, and is reported as to ' +
+    'review with that reason instead. DELIBERATE GAP: we cannot see a host allowlist. Code that ' +
     'correctly resolves the URL and checks the hostname against a fixed set is ' +
     'still reported, because recognising a correct allowlist means understanding ' +
     'what the check compares and what it does on failure - which is beyond what ' +
