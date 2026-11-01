@@ -239,7 +239,7 @@ export const sqlInjectionRule: Rule = {
          * command injection, and reporting it was the seventh time this project
          * punished a corrected file. See lib/guards.ts for how narrow the list is.
          */
-        if (partsAreGuarded(arg, built.dynamicParts, language)) continue;
+        if (partsAreGuarded(arg, built.dynamicParts, language, 'sql')) continue;
         // `${new Array(n).fill('(?,?)').join(',')}` expands to placeholders,
         // never to data. Reporting it punishes the correct bulk-insert form.
         if (built.dynamicParts.every((part) => expandsOnlyPlaceholders(part))) continue;
@@ -282,7 +282,7 @@ export const sqlInjectionRule: Rule = {
         if (buildProof.reasoned) ctx.noteClean?.('sql-injection', assignment.node, buildProof.reason);
         return null;
       }
-      if (partsAreGuarded(assignment.value, built.dynamicParts, language)) return null;
+      if (partsAreGuarded(assignment.value, built.dynamicParts, language, 'sql')) return null;
       if (built.dynamicParts.every((part) => expandsOnlyPlaceholders(part))) return null;
 
       return {

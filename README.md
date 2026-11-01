@@ -670,6 +670,38 @@ the reason and the fixed start printed, because part of a path can still reach
 another endpoint. The value's position travels with it through variables and
 concatenation, and losing track of it keeps the old answer, never clears a line.
 
+**Allow-lists are read where the program stands after them.** All seven wrong
+DVWA proofs left on the scoreboard were one kind of mistake: a check that only
+lets safe values through, not read. `if (!preg_match('/^\d+$/', $id)) { error }
+else { query }`, an extension compared to `jpg`/`jpeg`/`png`, four octets each
+passed through `is_numeric`. Defuse now reads such a check on the side where
+it holds - the true branch, the else of a negated check, after
+`if (!check) { exit; }`, the matching arm of a ternary - for as long as the
+value is not written again, and the value comes out of it washed like the
+output of a sanitiser. What counts, in PHP, JavaScript and Python: the
+`is_numeric`/`ctype_*`/`isdigit()` family, a regex that pins the WHOLE value
+to digits, letters and underscores (`/^\d+$/`, `/^(asc|desc)$/i`,
+`re.fullmatch`), membership in a literal list, and `===` against a literal.
+What does not: an unanchored or multi-line pattern, a top-level `|` (it splits
+the anchors), `\s` (a newline), `preg_match(...) !== 0` (preg_match returns
+FALSE on an error, and that would pass), a loose list of numbers (PHP 7's
+`"abc" == 0`), and a bare word in SQL outside quotes, which is a column name.
+Each of those is a fixture that must still be reported
+(`allow-list-fence.*`), and each rule was switched off to watch a test fail.
+
+Two older mistakes went with it, both of the kind this project treats as the
+worst: lines printed as **checked and cleared** that were real injections.
+The first version of these checks read the sink's text, skipped every string
+node, and let a check on one value vouch for a query built from another. And
+a string with several values spliced in - `"VALUES ({$id}, '{$ip}')"` - took
+the FIRST value's washing as its own, so an `intval`'d id in front of a raw
+`X-Forwarded-For` header made the whole INSERT look clean. DVWA has exactly
+that: `bac/low.php` printed its log query as cleared, and `bac/medium.php`
+proved it through the checked id instead of the header. Both are now proven
+through the header, and the finding names it rather than the number beside
+it. DVWA's scoreboard went from 46 proofs with 7 wrong to 41 with none wrong
+(3 still unsure); BenchmarkJava and Juice Shop did not change by one finding.
+
 ## Signature rules
 
 <!-- derived:rule-matrix -->
@@ -810,7 +842,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 924 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 966 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.

@@ -56,7 +56,7 @@
 import type { Node } from 'web-tree-sitter';
 import type { FlowStep } from '../core/finding.js';
 import type { LanguageId } from '../parse/languages.js';
-import { expressionIsFullyGuarded } from '../rules/lib/guards.js';
+import { describeFact, guardClears, guardFactsAt, guardsApply, normalizeExpression, type GuardFact } from '../rules/lib/guards.js';
 import { nodeLocation } from '../parse/location.js';
 import type { ParsedFile } from '../parse/parser.js';
 import { analyzeStringExpression, looksLikeHtml, looksLikeSql } from '../rules/lib/strings.js';
@@ -73,6 +73,8 @@ interface InternalStep extends FlowStep {
   readonly sanitizesKinds?: readonly SinkKind[];
   /** A sanitiser whose protection depends on landing inside quotes - see SanitizerSpec.onlyInsideQuotes. */
   readonly quoteDependent?: boolean;
+  /** A validation check rather than a function the value went through - see `guarded`. */
+  readonly guard?: boolean;
 }
 
 interface Taint {
@@ -1662,6 +1664,115 @@ export function traceFile(
     fromBrowser: taint.fromBrowser,
   });
 
+  /*
+   * A CHECK IS READ WHERE THE VALUE IS READ, not where it is used.
+   *
+   * The first version of validation guards lived at the sink: it took the
+   * text of the sink's argument, broke it into pieces, and asked whether each
+   * piece had been checked. Text is not a value. `$q = "... '$b'"` had no
+   * pieces at all - string nodes were skipped whole - so a check on `$a`
+   * vouched for `$b`, and DVWA-shaped code printed "checked and cleared" over
+   * a real injection. A call was worse: its arguments were the pieces, so a
+   * function returning request data looked like the checked value it was
+   * handed.
+   *
+   * Here a read of `$_GET['id']` inside `if (ctype_digit($_GET['id']))` comes
+   * back WASHED, like the output of a sanitiser, and everything built from it
+   * inherits that through the ordinary machinery - concatenation keeps only
+   * what both sides washed, so an unchecked value beside it stays dirty. The
+   * check becomes a step on the path, so a sink it does not cover (a URL host,
+   * which digits do not make safe) says so in words.
+   *
+   * VALUES BUILT BEFORE THE CHECK. DVWA's upload/impossible.php builds the
+   * file name from the extension FIRST and checks the extension after:
+   *
+   *     $name = bin2hex(random_bytes(16)) . '.' . $ext;
+   *     if (strtolower($ext) == 'jpg' || ...) { echo "<a href='$name'>"; }
+   *
+   * The check limits `$ext`, so it limits `$name` - but only while `$ext`
+   * still holds the very value `$name` was built from, and only if `$name`
+   * was built by joining strings, which keeps every character. `throughOf`
+   * records the variables a value was joined through, and `bindingOf` which
+   * assignment a variable's current value came from. Both live in WeakMaps
+   * and are set in exactly two places (a plain assignment, and string
+   * joining), so every other way of making a value - a call, a decode, a
+   * conditional write, a copy with one flag changed - silently has neither,
+   * and is never cleared this way. Absence is the safe default.
+   */
+  const guardOn = guardsApply(language);
+  const throughOf = new WeakMap<Taint, ReadonlySet<string>>();
+  const bindingOf = new WeakMap<Taint, string>();
+
+  const guarded = (taint: Taint, node: Node, expression: string, scope: Scope): Taint => {
+    if (!guardOn) return taint;
+    const facts = guardFactsAt(node, language);
+    if (facts.size === 0) return taint;
+    let fact: GuardFact | undefined = facts.get(normalizeExpression(expression));
+    let via: string | null = null;
+    if (!fact) {
+      const through = throughOf.get(taint);
+      if (through) {
+        for (const [checked, candidate] of facts) {
+          const current = scope.env.get(checked);
+          const binding = current ? bindingOf.get(current) : undefined;
+          if (binding && through.has(binding)) {
+            fact = candidate;
+            via = checked;
+            break;
+          }
+        }
+      }
+    }
+    if (!fact) return taint;
+    const { kinds, insideQuotesOnly } = guardClears(fact);
+    const unconditional = kinds.filter((k) => !insideQuotesOnly.includes(k));
+    const before = taint.quotePending ?? [];
+    const added = kinds.filter((k) => !taint.sanitizedFor.has(k) || before.includes(k));
+    if (added.length === 0) return taint;
+    // A kind washed for good leaves the quote question; a word adds SQL to it
+    // unless SQL was already washed for good by something earlier.
+    const pending = [
+      ...new Set([
+        ...before.filter((k) => !unconditional.includes(k)),
+        ...insideQuotesOnly.filter((k) => !taint.sanitizedFor.has(k) || before.includes(k)),
+      ]),
+    ];
+    const what = describeFact(fact);
+    return {
+      ...taint,
+      steps: [
+        ...taint.steps,
+        {
+          ...step(
+            'sanitizer',
+            node,
+            via
+              ? `built by joining strings from \`${via}\`, which still holds that same value here and was ${what}`
+              : what,
+            kinds,
+          ),
+          ...(insideQuotesOnly.length > 0 ? { quoteDependent: true } : {}),
+          guard: true,
+        },
+      ],
+      sanitizedFor: new Set([...taint.sanitizedFor, ...kinds]),
+      quotePending: pending.length > 0 ? pending : undefined,
+    };
+  };
+
+  /** What both joined values passed through - see `throughOf`. */
+  const joinedThrough = (left: Taint | null, right: Taint | null): ReadonlySet<string> | undefined => {
+    if (left && right) {
+      const a = throughOf.get(left);
+      const b = throughOf.get(right);
+      if (!a || !b) return undefined;
+      const both = new Set([...a].filter((k) => b.has(k)));
+      return both.size > 0 ? both : undefined;
+    }
+    const only = left ?? right;
+    return only ? throughOf.get(only) : undefined;
+  };
+
   /**
    * WHERE AN ESCAPED VALUE IS SPLICED DECIDES WHETHER THE ESCAPING COUNTS.
    *
@@ -1681,8 +1792,11 @@ export function traceFile(
         step(
           'propagation',
           node,
-          'placed OUTSIDE quotes in the string it is built into, where the escaping applied earlier ' +
-            'protects nothing - escaping only works on a value inside quotes',
+          taint.steps.some((s) => s.quoteDependent && !s.guard)
+            ? 'placed OUTSIDE quotes in the string it is built into, where the escaping applied earlier ' +
+                'protects nothing - escaping only works on a value inside quotes'
+            : 'placed OUTSIDE quotes in the string it is built into, where a word the check let through ' +
+                'is read as SQL - a column name or a keyword - rather than as data',
         ),
       ],
       sanitizedFor: new Set([...taint.sanitizedFor].filter((k) => !pending.includes(k))),
@@ -1725,16 +1839,15 @@ export function traceFile(
     }
 
     if (VARIABLE_NODES.has(node.type)) {
-      const known = scope.env.get(expression);
-      if (known) return known;
-      return sourceTaint(node, expression);
+      const found = scope.env.get(expression) ?? sourceTaint(node, expression);
+      return found ? guarded(found, node, expression, scope) : null;
     }
 
     if (MEMBER_NODES.has(node.type)) {
       if (exceptedSource(expression)) return null;
       // `req.query.id` matches a source pattern as a whole.
       const direct = sourceTaint(node, expression);
-      if (direct) return direct;
+      if (direct) return guarded(direct, node, expression, scope);
       // Otherwise dirt flows outward: if `data` is dirty, so is `data.name`.
       const object =
         node.childForFieldName('object') ??
@@ -1742,7 +1855,9 @@ export function traceFile(
         node.namedChildren.find((c): c is Node => c !== null) ??
         null;
       const inner = evaluate(object, scope, depth + 1);
-      return inner ? addStep(inner, node, `read out of a tainted value as \`${expression.slice(0, 50)}\``) : null;
+      return inner
+        ? guarded(addStep(inner, node, `read out of a tainted value as \`${expression.slice(0, 50)}\``), node, expression, scope)
+        : null;
     }
 
     if (node.type === 'binary_expression' || node.type === 'binary_operator') {
@@ -1791,14 +1906,16 @@ export function traceFile(
       if (!taint) return null;
       // If both sides are dirty, keep the union of what has been washed.
       const pendingBoth = [...new Set([...(left?.quotePending ?? []), ...(right?.quotePending ?? [])])];
+      // Told through the less-washed side - see the note on template parts.
+      const narrator = left && right && right.sanitizedFor.size < left.sanitizedFor.size ? right : left;
       const merged: Taint =
         left && right
           ? {
-              steps: left.steps,
+              steps: narrator!.steps,
               sanitizedFor: new Set(
                 [...left.sanitizedFor].filter((k) => right!.sanitizedFor.has(k)),
               ),
-              origin: left.origin,
+              origin: narrator!.origin,
               unknownHops: [...left.unknownHops, ...right.unknownHops],
               quotePending: pendingBoth.length > 0 ? pendingBoth : undefined,
               // Joined, the string is dirty for certain if EITHER side is - so
@@ -1822,13 +1939,16 @@ export function traceFile(
           : left
             ? left.urlPrefix
             : shapeOf(leftNode) + (right?.urlPrefix ?? '');
-      return addStep(
+      const joined = addStep(
         { ...merged, urlPrefix },
         node,
         operator === '%'
           ? 'formatted into a larger string with %'
           : `concatenated into a larger string with ${operator}`,
       );
+      const through = guardOn ? joinedThrough(left, right) : undefined;
+      if (through) throughOf.set(joined, through);
+      return joined;
     }
 
     if (CONTAINER_NODES.has(node.type)) {
@@ -1847,7 +1967,24 @@ export function traceFile(
     }
 
     if (STRING_NODES.has(node.type)) {
-      // A template literal or f-string: the dirt is inside the ${...} / {...}.
+      /*
+       * A template literal or f-string: the dirt is inside the ${...} / {...}.
+       *
+       * EVERY PART, NOT THE FIRST DIRTY ONE. This loop used to return on the
+       * first part that carried taint, so the string took that part's washing
+       * as its own:
+       *
+       *     $a = intval($_GET['a']);
+       *     $q = "INSERT INTO t VALUES ({$a}, '{$ip}')";   // $ip is a header
+       *
+       * `$a` came first, `$a` was washed for SQL, and the query was printed as
+       * "checked and cleared" with the X-Forwarded-For header spliced into it
+       * raw. Concatenation with `.` already kept only what BOTH sides washed;
+       * interpolation is the same operation written differently and now gets
+       * the same answer. Found in DVWA's bac/medium.php, where the first part
+       * became washed once validation checks were read.
+       */
+      const parts: Taint[] = [];
       for (const child of node.namedChildren) {
         if (!child) continue;
         // PHP splices a variable into a double-quoted string with no wrapper
@@ -1875,14 +2012,41 @@ export function traceFile(
           // line up with the text, where it sits is unknown: treated as the
           // start of the string, which keeps the old answer.
           const before = lined ? templateShapeBefore(node, child) : undefined;
-          return addStep(
-            { ...placed, urlPrefix: before === undefined ? undefined : before + (placed.urlPrefix ?? '') },
-            node,
-            'interpolated into a string template',
-          );
+          const shaped: Taint = { ...placed, urlPrefix: before === undefined ? undefined : before + (placed.urlPrefix ?? '') };
+          if (throughOf.has(placed)) throughOf.set(shaped, throughOf.get(placed)!);
+          parts.push(shaped);
         }
       }
-      return null;
+      if (parts.length === 0) return null;
+      const first = parts[0]!;
+      // The path is told through the least-washed part, so a reader sees the
+      // value that is actually dangerous rather than its cleaned neighbour.
+      const narrator = parts.reduce((a, b) => (b.sanitizedFor.size < a.sanitizedFor.size ? b : a));
+      const pending = [...new Set(parts.flatMap((p) => p.quotePending ?? []))];
+      const merged: Taint =
+        parts.length === 1
+          ? first
+          : {
+              ...narrator,
+              sanitizedFor: new Set([...first.sanitizedFor].filter((k) => parts.every((p) => p.sanitizedFor.has(k)))),
+              unknownHops: [...new Set(parts.flatMap((p) => p.unknownHops))],
+              quotePending: pending.length > 0 ? pending : undefined,
+              branchAssumed: parts.every((p) => p.branchAssumed) ? true : undefined,
+              containerGuess: parts.every((p) => p.containerGuess) ? true : undefined,
+              collectedMany: parts.some((p) => p.collectedMany) ? true : undefined,
+              // Where the FIRST dirty part starts is where the attacker's text starts.
+              urlPrefix: first.urlPrefix,
+              fromBrowser: parts.every((p) => p.fromBrowser) ? true : undefined,
+            };
+      const result = addStep(merged, node, 'interpolated into a string template');
+      if (guardOn) {
+        const sets = parts.map((p) => throughOf.get(p));
+        if (sets.every((t): t is ReadonlySet<string> => t !== undefined)) {
+          const shared = new Set([...sets[0]!].filter((k) => sets.every((t) => t.has(k))));
+          if (shared.size > 0) throughOf.set(result, shared);
+        }
+      }
+      return result;
     }
 
     /*
@@ -2358,9 +2522,11 @@ export function traceFile(
         return {
           kind: 'propagation',
           location: s.location,
-          description:
-            `${s.description} - NOTE: this value is not inside quotes where it is used, ` +
-            `so the escaping does not protect it`,
+          description: s.guard
+            ? `${s.description} - NOTE: this value is not inside quotes where it is used, and ` +
+              `outside quotes a word is still SQL - a column name or a keyword - so the check does not protect it`
+            : `${s.description} - NOTE: this value is not inside quotes where it is used, ` +
+              `so the escaping does not protect it`,
         };
       }
       if (coversThisKind) {
@@ -2401,7 +2567,7 @@ export function traceFile(
    * Every reason to NOT report belongs here, and `npm test` fails if a
    * `results.push` appears in this file without a `retracted()` guarding it.
    */
-  const retracted = (taint: Taint, valueNode: Node, kind: SinkKind): 'sanitised' | null => {
+  const retracted = (taint: Taint, _valueNode: Node, kind: SinkKind): 'sanitised' | null => {
     /*
      * WE ASSUMED A BRANCH. THAT IS NOT A PROOF.
      *
@@ -2419,11 +2585,10 @@ export function traceFile(
      */
     // Escaping whose protection depends on quotes, on a value whose place in
     // the query was never seen, proves nothing either way - see quoteUnknown.
+    // That includes cleanliness established by the control flow: a value read
+    // inside `if (is_numeric($octet[0]) && ...)` arrives here already washed -
+    // see `guarded`, which replaced a text check that used to sit on this line.
     if (taint.sanitizedFor.has(kind) && !taint.quotePending?.includes(kind)) return 'sanitised';
-    // Cleanliness established by the control flow rather than by transforming
-    // the value: inside `if (is_numeric($octet[0]) && ...)` the value provably
-    // holds no metacharacter. See rules/lib/guards.ts.
-    if (expressionIsFullyGuarded(valueNode, language)) return 'sanitised';
     return null;
   };
 
@@ -3396,7 +3561,15 @@ export function traceFile(
               armSettles.set(key, [...(armSettles.get(key) ?? []), { target: targetName, inside: stored, after: either }]);
             }
           } else if (taint) {
-            scope.env.set(targetName, addStep(taint, parts.target, `stored in \`${targetName}\``));
+            const stored = addStep(taint, parts.target, `stored in \`${targetName}\``);
+            // The value now has a name - see `throughOf`. Not for `.=`/`+=`,
+            // whose result also holds whatever the name held before.
+            if (guardOn && !extendsTarget && targetNames.length === 1) {
+              const binding = `${scope.filePath}#${node.id}#${targetName}`;
+              bindingOf.set(stored, binding);
+              throughOf.set(stored, new Set([...(throughOf.get(taint) ?? []), binding]));
+            }
+            scope.env.set(targetName, stored);
           } else if (extendsTarget) {
             // Appending something clean to a dirty value leaves it dirty.
             continue;

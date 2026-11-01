@@ -394,7 +394,7 @@ export const xssRule: Rule = {
        * it. See lib/guards.ts - the predicate list is deliberately tiny, because
        * a guard rule that fires too often costs silence rather than precision.
        */
-      if (partsAreGuarded(assignment.value, built.dynamicParts, language)) return null;
+      if (partsAreGuarded(assignment.value, built.dynamicParts, language, 'xss')) return null;
 
       /*
        * `echo $x` IS NOT `innerHTML = x`, AND THEY HAD THE SAME SEVERITY.

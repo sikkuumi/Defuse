@@ -67,6 +67,7 @@ import { looksLikeSql, matchKnownSecret, isTestPath } from '../src/rules/lib/str
 import { checkRuntimeVersions, parseComposerRange, readableDate, RUNTIME_VERSION_RULE } from '../src/platform/runtime-version.js';
 import { renderJson } from '../src/report/json.js';
 import { CLEAN_PART, destinationPinned } from '../src/taint/tracer.js';
+import { guardClears, regexAllowList } from '../src/rules/lib/guards.js';
 import {
   PHP_ADVISORIES,
   PHP_END_OF_LIFE,
@@ -2244,6 +2245,91 @@ async function main(): Promise<number> {
     } else {
       failed++;
       console.log(`    ${color.red(g('cross'))} ssrf-destination.php:8 should show \`./\` as the fixed start, got: ${php?.message ?? 'no finding'}`);
+    }
+  }
+
+  /*
+   * ---- allow-list checks: what does a regex let through? ----
+   *
+   * A check that counts SILENCES lines, so the one decision under every
+   * preg_match / .test() / re.fullmatch is pinned here row by row. Each "no"
+   * row is a pattern that looks like an allow-list and lets a metacharacter,
+   * a newline or the whole value past its anchors.
+   */
+  console.log(`\n${color.bold('  Allow-list checks: what a regex lets through')}`);
+  {
+    type L = 'php' | 'javascript' | 'python';
+    const cases: [string, string, L, string | null, string][] = [
+      ['^\\d+$', '', 'php', 'digits', 'the DVWA check'],
+      ['\\A[0-9]{1,6}\\z', '', 'php', 'digits', '\\A and \\z, a counted repeat'],
+      ['^[[:digit:]]+$', '', 'php', 'digits', 'a POSIX class, which PHP knows'],
+      ['^[[:digit:]]+$', '', 'python', null, 'Python has no POSIX classes: that is a set holding [ : d i g t'],
+      ['^[a-z0-9_]+$', 'iD', 'php', 'word', 'letters, digits, underscore'],
+      ['^\\w+$', 'u', 'php', 'word', '\\w is a word character, even Unicode ones'],
+      ['^(?:asc|desc)$', 'i', 'php', 'fixed', 'a list of words is a fixed list'],
+      ['^png$', '', 'javascript', 'fixed', 'one word'],
+      ['\\d+', '', 'php', null, 'no anchors: "1; id" contains a digit'],
+      ['^\\d+', '', 'php', null, 'start only: digits, then anything'],
+      ['\\d+$', '', 'php', null, 'end only'],
+      ['^\\d+$', 'm', 'php', null, 'multi-line: "1\\nid" has a line of digits'],
+      ['^\\d+$', 'm', 'javascript', null, 'multi-line in JavaScript too'],
+      ['^\\d+|x$', '', 'php', null, 'top-level | splits the anchors'],
+      ['^[\\w\\s]+$', '', 'php', null, '\\s includes a newline'],
+      ['^[\\w.-]+$', '', 'php', null, 'a dot and a hyphen: `..` and `--`'],
+      ['^[^<>]+$', '', 'php', null, 'a negated class lets quotes through'],
+      ['^.+$', '', 'php', null, 'a dot is anything'],
+      ['^\\d+\\z', '', 'javascript', null, 'JavaScript has no \\z: it means a literal z'],
+      ['^\\d+\\s*$', '', 'php', null, '\\s outside a class is a newline too'],
+      ['^\\S+$', '', 'php', null, '\\S is everything that is not a space'],
+      ['^(?=\\d)\\w+$', '', 'php', null, 'a lookahead is not understood, so not counted'],
+      ['^[A-z]+$', '', 'php', null, 'a range across groups covers [ \\ ] ^ _ `'],
+      ['^\\d+$', 'x', 'php', null, 'extended mode changes what the pattern means'],
+    ];
+    const wrong = cases.filter(([source, flags, language, expected]) => {
+      const got = regexAllowList(source, { flags, language });
+      return (got?.strength ?? null) !== expected;
+    });
+    if (wrong.length === 0) {
+      passed++;
+      console.log(`    ${color.green(g('tick'))} ${cases.length} patterns decided as expected`);
+    } else {
+      failed++;
+      for (const [source, flags, language, expected, why] of wrong) {
+        const got = regexAllowList(source, { flags, language })?.strength ?? null;
+        console.log(`    ${color.red(g('cross'))} /${source}/${flags} (${language}) should be ${expected ?? 'not counted'}, got ${got ?? 'not counted'}: ${why}`);
+      }
+    }
+    // `$` in PHP lets one line break through after the value; with D it does not.
+    const tail = regexAllowList('^(a|b)$', { language: 'php' })?.newlineTail === true &&
+      regexAllowList('^(a|b)$', { flags: 'D', language: 'php' })?.newlineTail !== true &&
+      regexAllowList('^(a|b)$', { language: 'javascript' })?.newlineTail !== true;
+    if (tail) {
+      passed++;
+      console.log(`    ${color.green(g('tick'))} the line break PHP's \`$\` allows is recorded, and not with D or in JavaScript`);
+    } else {
+      failed++;
+      console.log(`    ${color.red(g('cross'))} newlineTail should be set for PHP \`$\` only`);
+    }
+    // A washed value beside a dirty one: the finding names the dirty one,
+    // whether they were joined by interpolation (line 13) or by `.` (line 23).
+    for (const line of [13, 23]) {
+      const told = findings.find((f) => f.location.file.endsWith('washed-neighbour.php') && f.location.startLine === line);
+      if (told?.message.includes('HTTP_X_FORWARDED_FOR')) {
+        passed++;
+        console.log(`    ${color.green(g('tick'))} washed-neighbour.php:${line} - a washed number beside a raw header is told through the header`);
+      } else {
+        failed++;
+        console.log(`    ${color.red(g('cross'))} washed-neighbour.php:${line} should name the header, got: ${told?.message ?? 'no finding'}`);
+      }
+    }
+    // A fixed list that may carry a trailing line break is not vouched for in a URL.
+    const listed = guardClears({ strength: 'fixed', values: ['localhost'], newlineTail: true, check: undefined as unknown as never });
+    if (!listed.kinds.includes('ssrf') && listed.kinds.includes('sql')) {
+      passed++;
+      console.log(`    ${color.green(g('tick'))} a list check that \`$\` lets a line break follow clears a query but not a URL`);
+    } else {
+      failed++;
+      console.log(`    ${color.red(g('cross'))} newlineTail should take ssrf (only) out of what a fixed list clears`);
     }
   }
 

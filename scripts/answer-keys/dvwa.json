@@ -22,8 +22,8 @@
    "rule": "sql-injection",
    "file": "vulnerabilities/bac/source/medium.php",
    "line": 73,
-   "verdict": "wrong",
-   "cause": "allow-list check not read (preg_match digits)"
+   "verdict": "real",
+   "note": "Re-checked 2026-11-01 (AI, reading the source). The first proof on this line went through the digits-checked user_id and was wrong - the allow-list check was not read. With that check read, the line is still injectable: $ip is the X-Forwarded-For header, placed inside quotes in the INSERT with no escaping."
   },
   {
    "rule": "sql-injection",
@@ -390,6 +390,13 @@
    "line": 15,
    "verdict": "real",
    "note": "Added 2026-11-01: the same unquoted shape as sqli/source/medium.php."
+  },
+  {
+   "rule": "sql-injection",
+   "file": "vulnerabilities/bac/source/low.php",
+   "line": 81,
+   "verdict": "real",
+   "note": "Added 2026-11-01 (AI, reading the source): $ip is the X-Forwarded-For header, placed inside quotes in the INSERT with no escaping. Before this date the line was printed as checked and cleared, because the intval'd id in front of it made the whole string look washed."
   }
  ]
 }

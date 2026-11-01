@@ -272,7 +272,7 @@ export const commandInjectionRule: Rule = {
        * project punished a corrected file, and the last one still showing in the
        * instrument panel. lib/guards.ts documents why the predicate list is tiny.
        */
-      if (partsAreGuarded(arg, built.dynamicParts, language)) continue;
+      if (partsAreGuarded(arg, built.dynamicParts, language, 'command')) continue;
 
       const callLine = arg.startPosition.row + 1;
       const where = builtOnLine === null || builtOnLine === callLine ? '' : ` on line ${builtOnLine}`;
