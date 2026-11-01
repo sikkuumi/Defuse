@@ -61,10 +61,19 @@ const HTML_SINK_PROPERTIES: Record<LanguageId, readonly string[]> = {
   php: ['echo', 'print'],
 };
 
+/**
+ * Angular's DomSanitizer bypass calls. Angular escapes everything it renders
+ * unless told not to, and these are how code tells it not to. Juice Shop's two
+ * marked XSS lines are this call; neither was found before it was listed.
+ */
+const ANGULAR_BYPASS = [
+  'bypassSecurityTrustHtml', 'bypassSecurityTrustScript', 'bypassSecurityTrustUrl', 'bypassSecurityTrustResourceUrl', 'bypassSecurityTrustStyle',
+] as const;
+
 /** Calls that write raw HTML, or that switch a template engine's escaping OFF. */
 const HTML_SINK_CALLS: Record<LanguageId, readonly string[]> = {
-  javascript: ['write', 'writeln', 'insertAdjacentHTML', 'html', 'append', 'prepend', 'after', 'before'],
-  typescript: ['write', 'writeln', 'insertAdjacentHTML', 'html', 'append', 'prepend', 'after', 'before'],
+  javascript: ['write', 'writeln', 'insertAdjacentHTML', 'html', 'append', 'prepend', 'after', 'before', ...ANGULAR_BYPASS],
+  typescript: ['write', 'writeln', 'insertAdjacentHTML', 'html', 'append', 'prepend', 'after', 'before', ...ANGULAR_BYPASS],
   python: ['mark_safe', 'Markup', 'HttpResponse', 'render_template_string', 'format_html'],
   java: ['print', 'println', 'write', 'printf', 'format', 'append'],
   go: ['HTML', 'HTMLAttr', 'JS', 'Write', 'Fprintf', 'Fprint', 'Fprintln'],
@@ -116,11 +125,12 @@ const CONSTANT_NODES = new Set([
   'decimal_floating_point_literal',
 ]);
 
-const ESCAPE_HATCHES = new Set([
+const ESCAPE_HATCHES = new Set<string>([
   'mark_safe',
   'Markup',
   'render_template_string',
   'insertAdjacentHTML',
+  ...ANGULAR_BYPASS,
 ]);
 
 /**
@@ -312,7 +322,7 @@ export const xssRule: Rule = {
   support: {
     javascript: {
       status: 'implemented',
-      note: 'Covers innerHTML/outerHTML/srcdoc assignment, document.write, insertAdjacentHTML, jQuery .html/.append, and React dangerouslySetInnerHTML.',
+      note: "Covers innerHTML/outerHTML/srcdoc assignment, document.write, insertAdjacentHTML, jQuery .html/.append, React dangerouslySetInnerHTML, and Angular's bypassSecurityTrust* calls.",
     },
     typescript: {
       status: 'implemented',

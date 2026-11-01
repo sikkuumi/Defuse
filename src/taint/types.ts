@@ -253,6 +253,17 @@ export interface SanitizerSpec {
    * not matched by the entry and is treated as a function we do not model.
    */
   readonly maxArgs?: number;
+  /**
+   * The entry holds only when the FIRST argument's text matches. Node's
+   * `hash.digest('hex')` returns hex digits; `hash.digest()` returns raw bytes,
+   * which can hold any character at all. Same name, the argument decides.
+   */
+  readonly argumentPattern?: RegExp;
+  /**
+   * The value being washed is the RECEIVER and the arguments are options:
+   * `crypto.createHash(...).update(dirty).digest('hex')`.
+   */
+  readonly fromReceiver?: boolean;
   readonly description: string;
 }
 

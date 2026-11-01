@@ -167,6 +167,63 @@ function literalOf(node: Node, language: LanguageId): LiteralValue | null {
   return { node, text };
 }
 
+/**
+ * PUBLIC BY DESIGN: a blockchain address, or a file name.
+ *
+ * Juice Shop's Web3 pages produced twenty "credentials": contract and wallet
+ * ADDRESSES - `BeeTokenAddress = '0x3643...'`, Bitcoin `address: '1AbK...'` -
+ * which are published on a public ledger and are the opposite of secret, and a
+ * map of Solidity compiler file names. An address is only let off when the
+ * name says address or does not say credential at all: `secretKey = '0x' + 40
+ * hex digits` still reports. A wallet's PRIVATE key is 64 hex digits, not 40,
+ * so it never matches here (tests/fixtures/vulnerable/secret-arguments.js).
+ */
+const ETH_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const BASE58_ADDRESS = /^(?:[13][1-9A-HJ-NP-Za-km-z]{25,34}|X[1-9A-HJ-NP-Za-km-z]{33}|(?:bc|tb)1[02-9ac-hj-np-z]{11,71})$/;
+const ADDRESS_NAME = /address|addr|wallet|contract|recipient|payee/i;
+const FILE_NAME = /^[\w.+@-]+\.(?:js|mjs|cjs|json|wasm|css|map|html?|png|jpe?g|gif|svg|ico|txt|md|xml|ya?ml|zip|gz|tgz|tar|pdf|woff2?|ttf)$/i;
+function isPublicIdentifier(name: string, value: string): boolean {
+  if (FILE_NAME.test(value)) return true;
+  const addressShaped = ETH_ADDRESS.test(value) || BASE58_ADDRESS.test(value);
+  return addressShaped && (ADDRESS_NAME.test(name) || !SECRET_NAME.test(name));
+}
+
+/**
+ * A KEY HANDED STRAIGHT TO THE FUNCTION THAT USES IT.
+ *
+ * Every other path in this rule needs a NAME - `const key = '...'`. Juice
+ * Shop's lib/insecurity.ts writes `crypto.createHmac('sha256', 'pa4q...')`:
+ * no name at all, and it was missed. These are the calls whose argument at
+ * that position IS a key; a string literal there is a key written in the code.
+ * A placeholder-looking value is still reported - `jwt.sign(p, 'secret')` is
+ * a real key, just a weak one - but a template reference (`${KEY}`) is not.
+ */
+type KeySlot = { readonly callee: string; readonly receiver?: RegExp; readonly index: number };
+const JS_KEY_ARGUMENTS: readonly KeySlot[] = [
+    { callee: 'createHmac', index: 1 },
+    { callee: 'createCipheriv', index: 1 },
+    { callee: 'createDecipheriv', index: 1 },
+    { callee: 'createSecretKey', index: 0 },
+    { callee: 'sign', receiver: /^(jwt|jsonwebtoken)$/i, index: 1 },
+    { callee: 'verify', receiver: /^(jwt|jsonwebtoken)$/i, index: 1 },
+];
+const KEY_ARGUMENTS: Partial<Record<LanguageId, readonly KeySlot[]>> = {
+  javascript: JS_KEY_ARGUMENTS,
+  typescript: JS_KEY_ARGUMENTS,
+  python: [
+    { callee: 'new', receiver: /^hmac$/, index: 0 },
+    { callee: 'encode', receiver: /^jwt$/, index: 1 },
+    { callee: 'decode', receiver: /^jwt$/, index: 1 },
+  ],
+  php: [
+    { callee: 'hash_hmac', index: 2 },
+    { callee: 'openssl_encrypt', index: 2 },
+    { callee: 'openssl_decrypt', index: 2 },
+    { callee: 'encode', receiver: /(^|\\)JWT$/, index: 1 },
+  ],
+};
+const TEMPLATE_REFERENCE = /^\$\{?\w+\}?$|^%\(\w+\)s$|^<[^>]+>$|^\{\{.*\}\}$/;
+
 export const hardcodedSecretRule: Rule = {
   id: 'hardcoded-secret',
   name: 'Credential written directly into source code',
@@ -193,7 +250,12 @@ export const hardcodedSecretRule: Rule = {
     'that names a key slot (`_password_reset_token`) - so a human-chosen secret spelled ' +
     'like one, `my_secret_token`, would be missed. Nor a value under a name whose only ' +
     'credential word is `token` when every word of it is a programming keyword or operator ' +
-    '(`token = "is not"` in a template lexer) - a secret made only of such words would be missed.',
+    '(`token = "is not"` in a template lexer) - a secret made only of such words would be missed. ' +
+    'Nor a blockchain address (`0x` and 40 hex digits, or a Bitcoin-style address) under a name that ' +
+    'says address or does not say credential, nor a value that is a file name (`soljson-v0.8.21.js`): ' +
+    'both are public by design. A key passed straight to a call is reported only for the calls listed ' +
+    'in KEY_ARGUMENTS (createHmac, createCipheriv, jwt.sign / verify, hmac.new, jwt.encode / decode, ' +
+    'hash_hmac, openssl_encrypt / decrypt, JWT::encode); any other function that takes a key is not read.',
   shapes: ['assignment', 'call'],
   support: {
     javascript: {
@@ -278,6 +340,25 @@ export const hardcodedSecretRule: Rule = {
             testNote,
         };
       }
+      for (const slot of KEY_ARGUMENTS[language] ?? []) {
+        if (call.calleeName !== slot.callee) continue;
+        if (slot.receiver && !slot.receiver.test(call.receiverText)) continue;
+        const arg = call.args[slot.index];
+        if (!arg || !isStringLiteral(arg, language)) continue;
+        const value = unquote((arg.text ?? '').trim());
+        if (value.length < 4 || TEMPLATE_REFERENCE.test(value)) continue;
+        return {
+          node: arg,
+          severity: downgrade('high'),
+          message: `Key written into the code, passed straight to ${call.calleeText}()`,
+          reasoning:
+            `Argument ${slot.index + 1} of \`${call.calleeText}()\` is the key it signs, encrypts or ` +
+            `verifies with, and here it is a fixed string literal (${value.length} characters) rather ` +
+            `than a value read from the environment or a secrets manager. Anyone who can read the ` +
+            `code - or its git history - can forge what this key protects.` +
+            testNote,
+        };
+      }
       return null;
     }
 
@@ -320,6 +401,7 @@ export const hardcodedSecretRule: Rule = {
     if (echoesItsOwnName(name, value)) return null;
     if (isStatementOrTemplate(value)) return null;
     if (isLanguageToken(name, value)) return null;
+    if (isPublicIdentifier(name, value)) return null;
 
     /* ---- Signal 2: the variable name says "credential". ---- */
     if (SECRET_NAME.test(name) && !NOT_A_SECRET.test(name)) {

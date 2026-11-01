@@ -2227,6 +2227,15 @@ async function main(): Promise<number> {
         console.log(`    ${color.red(g('cross'))} \`${before.split(C).join('...')}\` should be ${pinned ? 'pinned' : 'open'}: ${why}`);
       }
     }
+    // A Python bytes key is measured without its b"..." wrapping.
+    const pyKey = findings.find((f) => f.location.file.endsWith('secret_arguments.py') && f.location.startLine === 10);
+    if (pyKey?.reasoning.includes('(24 characters)')) {
+      passed++;
+      console.log(`    ${color.green(g('tick'))} a key passed as a Python bytes literal is measured without its prefix`);
+    } else {
+      failed++;
+      console.log(`    ${color.red(g('cross'))} secret_arguments.py:10 should describe a 24-character key, got: ${pyKey?.reasoning.slice(0, 160) ?? 'no finding'}`);
+    }
     // The text a reader sees: PHP's `"{$x}"` braces are syntax, not address.
     const php = findings.find((f) => f.location.file.endsWith('ssrf-destination.php') && f.location.startLine === 8);
     if (php?.message.includes('(`./`)')) {

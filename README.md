@@ -112,6 +112,7 @@ npm run git-install-check                      # does a clone of this repo build
 npm run memory                                 # what does a scan cost per byte of source?
 npm run identity                               # did a refactor move any answer?
 npm run review-reasons -- scan.json .          # why is each "to review" finding still open? (a sorting aid)
+npm run scoreboard                              # every practice app with an answer key: mistakes grouped by cause
 ```
 
 `npm run identity` is the one to run before and after anything that is *meant*
@@ -630,6 +631,34 @@ no longer treated as an assumption, since at most one arm runs. Taken
 together, BenchmarkJava's proven tier went from 562 to 602 real
 vulnerabilities, still with no false proof.
 
+**One scoreboard instead of one app at a time.** `npm run scoreboard` scans
+every practice app that comes with an answer key - BenchmarkJava (OWASP's
+verdict for every case), DVWA (an AI review of every proof, plus DVWA's own
+fixed `impossible.php` files, in `scripts/answer-keys/`) and OWASP Juice Shop
+(its own `vuln-code-snippet` markers and coding-challenge answers) - checks
+every proof against its key, and prints the mistakes grouped by cause, false
+claims first. A proof the key does not cover is "not in the key", never
+"right", and a real proof that disappears is listed as lost. Its first run
+drove the next three fixes:
+
+- **What JavaScript reads and hashes return.** An ORM read (`findByPk`,
+  `findOne`, `findMany`, ...) returns stored rows, not the id that picked them,
+  so Juice Shop's `userProfile.ts` eval - a real bug, but second-order - is no
+  longer a false proof that "the cookie reaches eval". `digest('hex')`,
+  Python's `hexdigest()` and Java's `DigestUtils.*Hex` return hex digits.
+  And a call chained onto a call that takes the request - `escape(req.query.x)
+  .trim()` - was being read as the request value itself, skipping the
+  escaping in the middle; sources are now matched by the names a call is
+  reached through, never by what is passed along the way.
+- **Angular XSS.** `bypassSecurityTrustHtml` and its siblings turn Angular's
+  escaping off, and `route.snapshot.queryParams` is the address bar. Juice
+  Shop's search-box XSS and its True-Client-IP header XSS are now proven; seven
+  more bypass calls on stored data are to review.
+- **Secrets.** Blockchain addresses and file names are public by design (20
+  false alarms in Juice Shop); a key passed straight into `createHmac()`,
+  `jwt.sign()`, `hmac.new()` or `hash_hmac()` is now found, where before only a
+  NAMED key was.
+
 **SSRF is about who picks the server.** A value spliced in after a fixed start
 of the address - `https://api.example.com/users/${id}`, `${base}/orders/`,
 `./${page}` - cannot send the request anywhere the code did not already
@@ -781,7 +810,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 908 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 924 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.

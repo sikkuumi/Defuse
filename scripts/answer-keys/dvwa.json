@@ -1,0 +1,395 @@
+{
+ "app": "DVWA",
+ "repository": "https://github.com/digininja/DVWA",
+ "commit": "b496a5d3de6b967410155e1b7d3e51e9d035eb22",
+ "source": "Every finding Defuse labelled proven on 2026-10-18 was read against the DVWA source by an AI review (one reviewer per finding, asked to break the path). \"real\": the path holds. \"wrong\": a hop or the sink does not hold - `cause` says which. \"unsure\": the reviewer could not decide. This is an AI review, not a human audit: it is the best key available, and a disagreement with it is a reason to look, not proof either way.",
+ "entries": [
+  {
+   "rule": "sql-injection",
+   "file": "vulnerabilities/bac/source/medium.php",
+   "line": 22,
+   "verdict": "wrong",
+   "cause": "allow-list check not read (preg_match digits)"
+  },
+  {
+   "rule": "sql-injection",
+   "file": "vulnerabilities/bac/source/medium.php",
+   "line": 29,
+   "verdict": "wrong",
+   "cause": "allow-list check not read (preg_match digits)"
+  },
+  {
+   "rule": "sql-injection",
+   "file": "vulnerabilities/bac/source/medium.php",
+   "line": 73,
+   "verdict": "wrong",
+   "cause": "allow-list check not read (preg_match digits)"
+  },
+  {
+   "rule": "sql-injection",
+   "file": "vulnerabilities/brute/source/low.php",
+   "line": 13,
+   "verdict": "real"
+  },
+  {
+   "rule": "command-injection",
+   "file": "vulnerabilities/exec/source/high.php",
+   "line": 26,
+   "verdict": "real"
+  },
+  {
+   "rule": "command-injection",
+   "file": "vulnerabilities/exec/source/high.php",
+   "line": 30,
+   "verdict": "real"
+  },
+  {
+   "rule": "command-injection",
+   "file": "vulnerabilities/exec/source/low.php",
+   "line": 10,
+   "verdict": "real"
+  },
+  {
+   "rule": "command-injection",
+   "file": "vulnerabilities/exec/source/low.php",
+   "line": 14,
+   "verdict": "real"
+  },
+  {
+   "rule": "command-injection",
+   "file": "vulnerabilities/exec/source/medium.php",
+   "line": 19,
+   "verdict": "real"
+  },
+  {
+   "rule": "command-injection",
+   "file": "vulnerabilities/exec/source/medium.php",
+   "line": 23,
+   "verdict": "real"
+  },
+  {
+   "rule": "sql-injection",
+   "file": "vulnerabilities/sqli_blind/source/high.php",
+   "line": 13,
+   "verdict": "real"
+  },
+  {
+   "rule": "sql-injection",
+   "file": "vulnerabilities/sqli_blind/source/low.php",
+   "line": 13,
+   "verdict": "real"
+  },
+  {
+   "rule": "sql-injection",
+   "file": "vulnerabilities/sqli/source/low.php",
+   "line": 11,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/brute/source/high.php",
+   "line": 28,
+   "verdict": "unsure",
+   "cause": "output guarded by a successful login against the stored user"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/brute/source/high.php",
+   "line": 29,
+   "verdict": "wrong",
+   "cause": "database read treated as the request value"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/brute/source/impossible.php",
+   "line": 67,
+   "verdict": "unsure",
+   "cause": "output guarded by a successful login against the stored user"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/brute/source/impossible.php",
+   "line": 68,
+   "verdict": "wrong",
+   "cause": "database read treated as the request value"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/brute/source/impossible.php",
+   "line": 73,
+   "verdict": "wrong",
+   "cause": "database read treated as the request value"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/brute/source/low.php",
+   "line": 21,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/brute/source/low.php",
+   "line": 22,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/brute/source/medium.php",
+   "line": 23,
+   "verdict": "unsure",
+   "cause": "output guarded by a successful login against the stored user"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/brute/source/medium.php",
+   "line": 24,
+   "verdict": "wrong",
+   "cause": "database read treated as the request value"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/captcha/source/low.php",
+   "line": 28,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/captcha/source/medium.php",
+   "line": 28,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/api/source/low.php",
+   "line": 18,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/api/source/medium.php",
+   "line": 6,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/bac/source/low.php",
+   "line": 90,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/bac/source/medium.php",
+   "line": 33,
+   "verdict": "wrong",
+   "cause": "allow-list check not read (preg_match digits)",
+   "note": "The rows printed here come from a query the engine thinks is injectable - only because it does not read the digits-only check on line 14."
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/bac/source/medium.php",
+   "line": 43,
+   "verdict": "wrong",
+   "cause": "allow-list check not read (preg_match digits)"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/csp/source/jsonp.php",
+   "line": 12,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/xss_r/source/high.php",
+   "line": 11,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/xss_r/source/low.php",
+   "line": 8,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/xss_r/source/medium.php",
+   "line": 11,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/exec/source/high.php",
+   "line": 34,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/exec/source/impossible.php",
+   "line": 30,
+   "verdict": "wrong",
+   "cause": "allow-list check not read (is_numeric on each part)"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/exec/source/low.php",
+   "line": 18,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/exec/source/medium.php",
+   "line": 27,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/sqli/source/low.php",
+   "line": 20,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/sqli/source/low.php",
+   "line": 47,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/sqli/source/medium.php",
+   "line": 21,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/sqli/source/medium.php",
+   "line": 43,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/upload/source/high.php",
+   "line": 26,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/upload/source/impossible.php",
+   "line": 45,
+   "verdict": "wrong",
+   "cause": "allow-list check not read (extension compared to a fixed list)"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/upload/source/low.php",
+   "line": 15,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "vulnerabilities/upload/source/medium.php",
+   "line": 24,
+   "verdict": "real"
+  },
+  {
+   "rule": "code-injection",
+   "file": "vulnerabilities/view_help.php",
+   "line": 20,
+   "verdict": "wrong",
+   "cause": "file read treated as the request value"
+  },
+  {
+   "rule": "code-injection",
+   "file": "vulnerabilities/view_help.php",
+   "line": 22,
+   "verdict": "wrong",
+   "cause": "file read treated as the request value"
+  },
+  {
+   "rule": "xss",
+   "file": "dvwa/includes/dvwaPage.inc.php",
+   "line": 389,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "dvwa/includes/dvwaPage.inc.php",
+   "line": 461,
+   "verdict": "real"
+  },
+  {
+   "rule": "xss",
+   "file": "dvwa/includes/dvwaPage.inc.php",
+   "line": 497,
+   "verdict": "real"
+  },
+  {
+   "rule": "ssrf",
+   "file": "vulnerabilities/view_help.php",
+   "line": 20,
+   "verdict": "wrong",
+   "cause": "SSRF behind a fixed start of the address"
+  },
+  {
+   "rule": "ssrf",
+   "file": "vulnerabilities/view_help.php",
+   "line": 22,
+   "verdict": "wrong",
+   "cause": "SSRF behind a fixed start of the address"
+  },
+  {
+   "rule": "ssrf",
+   "file": "vulnerabilities/view_source_all.php",
+   "line": 14,
+   "verdict": "wrong",
+   "cause": "SSRF behind a fixed start of the address"
+  },
+  {
+   "rule": "ssrf",
+   "file": "vulnerabilities/view_source_all.php",
+   "line": 18,
+   "verdict": "wrong",
+   "cause": "SSRF behind a fixed start of the address"
+  },
+  {
+   "rule": "ssrf",
+   "file": "vulnerabilities/view_source_all.php",
+   "line": 22,
+   "verdict": "wrong",
+   "cause": "SSRF behind a fixed start of the address"
+  },
+  {
+   "rule": "ssrf",
+   "file": "vulnerabilities/view_source_all.php",
+   "line": 26,
+   "verdict": "wrong",
+   "cause": "SSRF behind a fixed start of the address"
+  },
+  {
+   "rule": "ssrf",
+   "file": "vulnerabilities/view_source.php",
+   "line": 63,
+   "verdict": "wrong",
+   "cause": "SSRF behind a fixed start of the address"
+  },
+  {
+   "rule": "ssrf",
+   "file": "vulnerabilities/view_source.php",
+   "line": 68,
+   "verdict": "wrong",
+   "cause": "SSRF behind a fixed start of the address"
+  },
+  {
+   "rule": "sql-injection",
+   "file": "vulnerabilities/sqli/source/medium.php",
+   "line": 12,
+   "verdict": "real",
+   "note": "Added 2026-11-01: escaped, then placed in the query WITHOUT quotes, so `1 OR 1=1` passes. DVWA marks medium as vulnerable."
+  },
+  {
+   "rule": "sql-injection",
+   "file": "vulnerabilities/sqli_blind/source/medium.php",
+   "line": 15,
+   "verdict": "real",
+   "note": "Added 2026-11-01: the same unquoted shape as sqli/source/medium.php."
+  }
+ ]
+}

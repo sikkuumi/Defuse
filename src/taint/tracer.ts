@@ -295,6 +295,17 @@ function afterSplice(template: Node, splice: Node): string {
   return tail.slice(0, Math.max(0, tail.length - close)).replace(/^\}/, '');
 }
 
+/** `a.b(x, y).c(z).d` -> `a.b().c().d`: a callee chain with every argument list emptied. */
+function withoutCallArguments(callee: string): string {
+  let out = callee;
+  for (let i = 0; i < 8; i++) {
+    const next = out.replace(/\((?:[^()]|\(\))*\)/g, '()');
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
 /**
  * Whether an SSRF flow can send the request where the attacker chooses. See
  * FlowResult.fixedDestination and destinationPinned.
@@ -1986,7 +1997,17 @@ export function traceFile(
     // vulnerability. A source is about where a value comes FROM, not about what
     // characters appear anywhere inside the expression.
     if (exceptedSource(text(node))) return null;
-    const asSource = sourceTaint(node, `${calleeText}(`);
+    /*
+     * ...AND NOT THE ARGUMENTS OF CALLS IN THE RECEIVER CHAIN EITHER. The callee
+     * of `crypto.createHash('sha256').update(req.query.text).digest('hex')` is
+     * everything before the last `(`, which contains `req.query` - so the digest
+     * call was treated as a SOURCE, and every sanitiser between the request and
+     * the end of the chain was skipped: `escape(req.query.q).trim()` was the
+     * raw request value. Calls in the chain are emptied before the test, so a
+     * source is matched by the names it is reached through, never by what is
+     * passed to something on the way.
+     */
+    const asSource = sourceTaint(node, `${withoutCallArguments(calleeText)}(`);
     if (asSource) return asSource;
 
     /*
@@ -2089,7 +2110,10 @@ export function traceFile(
     // An entry with maxArgs does not describe a call that passes more - md5's
     // raw flag - so that call falls through to the unmodelled-function rule.
     const sanitizer = dictionary.sanitizers.find(
-      (s) => s.names.includes(name) && (s.maxArgs === undefined || args.length <= s.maxArgs),
+      (s) =>
+        s.names.includes(name) &&
+        (s.maxArgs === undefined || args.length <= s.maxArgs) &&
+        (s.argumentPattern === undefined || (args[0] !== undefined && s.argumentPattern.test(text(args[0])))),
     );
     if (sanitizer) {
       /*
@@ -2099,7 +2123,7 @@ export function traceFile(
        * are some, they are what the entry describes, and the receiver is
        * usually a helper object (`$conn->real_escape_string($x)`).
        */
-      const inputs: (Node | null)[] = args.length > 0 ? args : [receiver];
+      const inputs: (Node | null)[] = sanitizer.fromReceiver ? [receiver] : args.length > 0 ? args : [receiver];
       for (const arg of inputs) {
         const taint = evaluate(arg, scope, depth + 1);
         if (!taint) continue;

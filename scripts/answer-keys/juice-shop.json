@@ -1,0 +1,95 @@
+{
+ "app": "OWASP Juice Shop",
+ "repository": "https://github.com/juice-shop/juice-shop",
+ "commit": "717f5efa886b0417eeecb52378b03cf10567b7e2",
+ "source": "Three keys in one. (1) Juice Shop marks its own vulnerable lines with `// vuln-code-snippet vuln-line <challenge>`; `challengeRules` maps the challenges whose kind of problem Defuse checks, and every other marked challenge is out of scope. (2) data/static/codefixes holds the snippets its coding challenges show players: a file ending `_correct` is the fixed version, every other variant is vulnerable by Juice Shop's own answer. (3) `entries`: proofs outside those, read against the source by Claude on 2026-10-31.",
+ "challengeRules": {
+  "unionSqlInjectionChallenge": "sql-injection",
+  "dbSchemaChallenge": "sql-injection",
+  "loginAdminChallenge": "sql-injection",
+  "loginBenderChallenge": "sql-injection",
+  "loginJimChallenge": "sql-injection",
+  "localXssChallenge": "xss",
+  "xssBonusChallenge": "xss",
+  "restfulXssChallenge": "xss"
+ },
+ "expectProof": [
+  "unionSqlInjectionChallenge",
+  "dbSchemaChallenge",
+  "loginAdminChallenge",
+  "loginBenderChallenge",
+  "loginJimChallenge",
+  "localXssChallenge"
+ ],
+ "expectProofWhy": "restfulXssChallenge prints a product description read back from the API - stored data, so a fair guess is the right label and a proof is not expected.",
+ "entries": [
+  {
+   "rule": "sql-injection",
+   "file": "routes/login.ts",
+   "line": 34,
+   "verdict": "real"
+  },
+  {
+   "rule": "sql-injection",
+   "file": "routes/search.ts",
+   "line": 23,
+   "verdict": "real"
+  },
+  {
+   "rule": "ssrf",
+   "file": "routes/profileImageUrlUpload.ts",
+   "line": 24,
+   "verdict": "real"
+  },
+  {
+   "rule": "code-injection",
+   "file": "routes/userProfile.ts",
+   "line": 65,
+   "verdict": "wrong",
+   "cause": "database read treated as the request value",
+   "note": "The line is a real bug - Juice Shop's SSTI challenge, a username saved earlier and evaluated here - but the proof says the login cookie reaches eval, through findByPk(). The value that arrives is a stored username: second-order, which this engine does not follow."
+  },
+  {
+   "rule": "ssrf",
+   "file": "frontend/src/app/Services/basket.service.ts",
+   "line": 45,
+   "verdict": "wrong",
+   "cause": "SSRF claimed for code running in the browser"
+  },
+  {
+   "rule": "ssrf",
+   "file": "frontend/src/app/Services/basket.service.ts",
+   "line": 49,
+   "verdict": "wrong",
+   "cause": "SSRF claimed for code running in the browser"
+  },
+  {
+   "rule": "ssrf",
+   "file": "frontend/src/app/Services/basket.service.ts",
+   "line": 65,
+   "verdict": "wrong",
+   "cause": "SSRF claimed for code running in the browser"
+  },
+  {
+   "rule": "ssrf",
+   "file": "frontend/src/app/Services/delivery.service.ts",
+   "line": 37,
+   "verdict": "wrong",
+   "cause": "SSRF claimed for code running in the browser"
+  },
+  {
+   "rule": "xss",
+   "file": "frontend/src/app/search-result/search-result.component.ts",
+   "line": 146,
+   "verdict": "real",
+   "note": "localXssChallenge: the search query from the address bar, passed to bypassSecurityTrustHtml. Proven since Angular's route parameters and bypass calls were added (2026-11-01)."
+  },
+  {
+   "rule": "xss",
+   "file": "frontend/src/app/last-login-ip/last-login-ip.component.ts",
+   "line": 40,
+   "verdict": "real",
+   "note": "httpHeaderXssChallenge: the True-Client-IP header is saved at login (routes/saveLoginIp.ts), travels back in the JWT kept in localStorage, and is printed through bypassSecurityTrustHtml. The proof starts at localStorage - where the value comes from in the browser; the attacker writes it through the header."
+  }
+ ]
+}

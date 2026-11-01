@@ -80,6 +80,15 @@ const JS_DICTIONARY: TaintDictionary = {
       description: 'browser storage, which any script on the page can write',
       browserOnly: true,
     },
+    {
+      // Angular's ActivatedRoute: the address bar, read through the router.
+      // `this.route.snapshot.queryParams.q` is Juice Shop's search box. The
+      // observable form - `route.queryParams.subscribe(p => p.q)` - hands the
+      // value to a callback parameter and is NOT recognised.
+      pattern: /\b(route|activatedRoute|activeRoute)\.(snapshot\.)?(queryParams|params|queryParamMap|paramMap|fragment)\b/,
+      description: "an Angular route's URL parameters - the address bar, set by whoever wrote the link",
+      browserOnly: true,
+    },
   ],
 
   callSinks: [
@@ -232,6 +241,17 @@ const JS_DICTIONARY: TaintDictionary = {
     },
     {
       kind: 'xss',
+      // Angular escapes everything it renders unless told not to - and these
+      // tell it not to. The names are Angular's own and nothing else uses them.
+      methods: [
+        'bypassSecurityTrustHtml', 'bypassSecurityTrustScript', 'bypassSecurityTrustUrl',
+        'bypassSecurityTrustResourceUrl', 'bypassSecurityTrustStyle',
+      ],
+      argIndexes: [0],
+      description: "Angular's DomSanitizer bypass, which marks the value as trusted and turns Angular's escaping off",
+    },
+    {
+      kind: 'xss',
       methods: ['html', 'append', 'prepend'],
       // jQuery-style insertion, and ONLY that. `formData.append(k, v)`,
       // `headers.append(...)` and `searchParams.append(...)` are the same word
@@ -276,6 +296,15 @@ const JS_DICTIONARY: TaintDictionary = {
       kinds: ['command'],
       description: 'shell quoting',
     },
+    {
+      // Node's hash and HMAC objects. Only the encodings that return a fixed
+      // alphabet: no argument returns a raw Buffer, which can hold anything.
+      names: ['digest'],
+      argumentPattern: /^['"`](hex|base64|base64url)['"`]$/,
+      fromReceiver: true,
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      description: 'a hash digest as hex or base64 - letters, digits and +/=, none of the text that went in',
+    },
   ],
 
   propagators: {
@@ -287,6 +316,25 @@ const JS_DICTIONARY: TaintDictionary = {
       'JSON.stringify', 'stringify',
     ],
   },
+
+  /*
+   * ORM READS RETURN STORED ROWS. Juice Shop's userProfile.ts picks a user by
+   * the login cookie with findByPk() and evaluates the username saved on an
+   * earlier request: a real bug, and a false proof - "the cookie reaches eval".
+   * ORMs bind their arguments, so unlike a raw query string an argument here
+   * does not let the attacker choose the rows. `find` is NOT listed: it is also
+   * Array.prototype.find, which hands back an element of a dirty array.
+   */
+  freshResults: [
+    {
+      names: [
+        'findByPk', 'findOne', 'findAll', 'findAndCountAll', 'findOrCreate', 'findById',
+        'findMany', 'findFirst', 'findUnique', 'findOneBy', 'findBy',
+        'getOne', 'getMany', 'getRawOne', 'getRawMany',
+      ],
+      description: 'an ORM or database read - it returns stored rows, not the arguments that picked them',
+    },
+  ],
 };
 
 /* ========================================================================== *
@@ -419,6 +467,14 @@ const PYTHON_DICTIONARY: TaintDictionary = {
   assignSinks: [],
 
   sanitizers: [
+    {
+      // hashlib's and hmac's text form: hex digits, whatever went in. The
+      // bytes form, .digest(), is not listed - raw bytes can hold anything.
+      names: ['hexdigest'],
+      fromReceiver: true,
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      description: 'a hex digest - none of the text that went in',
+    },
     {
       names: ['escape', 'clean', 'conditional_escape', 'escapejs'],
       kinds: ['xss'],
@@ -732,6 +788,12 @@ const JAVA_DICTIONARY: TaintDictionary = {
       ],
       kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
       description: 'returns a number or true/false - none of the text that went in',
+    },
+    {
+      // Apache Commons Codec's DigestUtils: hex digits, whatever went in.
+      names: ['md5Hex', 'sha1Hex', 'sha256Hex', 'sha384Hex', 'sha512Hex', 'sha3_256Hex', 'sha3_512Hex'],
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      description: 'a hex digest - none of the text that went in',
     },
   ],
 

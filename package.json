@@ -33,7 +33,8 @@
     "identity": "npm run build --silent && node scripts/identity.mjs",
     "label-split": "npm run build --silent && node scripts/label-split.mjs",
     "build:site": "npm run build --silent && node scripts/build-site.mjs",
-    "review-reasons": "node scripts/review-reasons.mjs"
+    "review-reasons": "node scripts/review-reasons.mjs",
+    "scoreboard": "npm run build --silent && node scripts/scoreboard.mjs"
   },
   "dependencies": {
     "tree-sitter-wasms": "0.1.13",
