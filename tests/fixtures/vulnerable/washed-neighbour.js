@@ -8,4 +8,14 @@ function logAccess(req) {
   return db.query(`INSERT INTO log VALUES (${a}, '${req.query.note}')`);
 }
 
-module.exports = { logAccess };
+// A container literal had the same habit: `[shellQuote(a), b]` was the
+// quoted `a`, so the command was printed as checked and cleared with `b` raw.
+const { exec } = require('child_process');
+
+function listBoth(req) {
+  const args = [shellQuote(req.query.a), req.query.b];
+  // EXPECT-FLOW command-injection
+  exec('ls ' + args.join(' '));
+}
+
+module.exports = { logAccess, listBoth };

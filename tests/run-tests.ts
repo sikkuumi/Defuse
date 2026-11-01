@@ -36,6 +36,7 @@
  */
 
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -168,6 +169,35 @@ async function readExpectations(dir: string): Promise<FileExpectations[]> {
  */
 const WINDOW = 3;
 
+/**
+ * THE RECEIPT HAS TO NAME SOMETHING THAT IS ACTUALLY THERE.
+ *
+ * A cleared line used to be explained, in the client report, by one sentence
+ * written for every line alike - "a sanitiser was proven to run" - including
+ * lines no sanitiser had touched. So EXPECT-CLEAN now asks two things of the
+ * receipt, not one: that it exists, and that its reason quotes something
+ * written in the fixture - the function that cleaned the value, the check, the
+ * variable a constant proof is about, `usedforsecurity=False`. A generic
+ * sentence quotes nothing and fails. Text the engine shortened with `...` is
+ * matched up to the cut; whitespace is compared collapsed, because the engine
+ * prints a multi-line check on one line.
+ */
+function reasonNamesTheSource(reason: string | undefined, source: string): string | null {
+  if (!reason) return null;
+  const flat = source.replace(/\s+/g, ' ');
+  const candidates = [
+    ...[...reason.matchAll(/`([^`]+)`/g)].map((m) => m[1] ?? ''),
+    ...[...reason.matchAll(/[A-Za-z_]\w*=\w+/g)].map((m) => m[0]),
+  ];
+  for (const raw of candidates) {
+    let quoted = raw.replace(/\s+/g, ' ').trim();
+    if (quoted.endsWith('...')) quoted = quoted.slice(0, -3);
+    if (quoted.endsWith('()')) quoted = quoted.slice(0, -2);
+    if (quoted.length >= 2 && flat.includes(quoted)) return raw;
+  }
+  return null;
+}
+
 function findingsNear(
   findings: readonly Finding[],
   relativeFile: string,
@@ -202,6 +232,35 @@ async function main(): Promise<number> {
   /** Checks that could not run. Never folded into "passed". */
   let skipped = 0;
   const unexpected: Finding[] = [];
+
+  /** The second half of EXPECT-CLEAN - see reasonNamesTheSource. */
+  const sources = new Map<string, string>();
+  const checkReason = (
+    receipt: { readonly reason?: string | undefined },
+    file: string,
+    short: string,
+    line: number,
+  ): void => {
+    let source = sources.get(file);
+    if (source === undefined) {
+      source = readFileSync(file, 'utf8');
+      sources.set(file, source);
+    }
+    const named = reasonNamesTheSource(receipt.reason, source);
+    if (named) {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} ${short.padEnd(14)} line ${String(line + 1).padStart(3)}  ` +
+          `${color.dim('the receipt names'.padEnd(20))} ${color.dim(`\`${named.length > 50 ? `${named.slice(0, 47)}...` : named}\``)}`,
+      );
+    } else {
+      failed++;
+      console.log(
+        `    ${color.red(`${g('cross')} NO REASON`)} ${short.padEnd(14)} line ${String(line + 1).padStart(3)}  ` +
+          `the receipt does not name anything written in the file: ${receipt.reason ?? '(no reason at all)'}`,
+      );
+    }
+  };
 
   /* ---- vulnerable fixtures: every annotation must be matched ---- */
   console.log(color.bold('  Detection tests (vulnerable fixtures)'));
@@ -239,6 +298,7 @@ async function main(): Promise<number> {
             `    ${color.green(g('tick'))} ${short.padEnd(14)} line ${String(expectation.line + 1).padStart(3)}  ` +
               `${color.dim(expectation.ruleId.padEnd(20))} ${color.green('proved clean')}`,
           );
+          checkReason(receipt, file.file, short, expectation.line);
         } else {
           failed++;
           for (const hit of stillReported) claimed.add(hit);
@@ -298,6 +358,36 @@ async function main(): Promise<number> {
   for (const file of safe) {
     const short = path.basename(file.file);
     const hits = findings.filter((f) => f.location.file.endsWith(short));
+    /*
+     * EXPECT-CLEAN IN A SAFE FILE WAS NEVER CHECKED. "Nothing fired in this
+     * file" was the whole test here, so a cleared line in a safe fixture that
+     * went silent for any other reason - a rule that stopped matching, a parse
+     * failure - passed as a proof. Silence is not a proof here either.
+     */
+    for (const expectation of file.expectations) {
+      if (!expectation.requireClean) continue;
+      const receipt = result.verifiedClean.find(
+        (c) =>
+          c.ruleId === expectation.ruleId &&
+          c.file.endsWith(short) &&
+          c.line > expectation.line &&
+          c.line <= expectation.line + WINDOW,
+      );
+      if (receipt) {
+        passed++;
+        console.log(
+          `    ${color.green(g('tick'))} ${short.padEnd(14)} line ${String(expectation.line + 1).padStart(3)}  ` +
+            `${color.dim(expectation.ruleId.padEnd(20))} ${color.green('proved clean')}`,
+        );
+        checkReason(receipt, file.file, short, expectation.line);
+      } else {
+        failed++;
+        console.log(
+          `    ${color.red(`${g('cross')} NOT CLEAN`)} ${short.padEnd(14)} line ${String(expectation.line + 1).padStart(3)}  ` +
+            `${color.red(expectation.ruleId)} is silent but left NO proved-clean record - silence is not a proof`,
+        );
+      }
+    }
     if (hits.length === 0) {
       passed++;
       console.log(`    ${color.green(g('tick'))} ${short.padEnd(14)} clean, as required`);
@@ -2330,6 +2420,91 @@ async function main(): Promise<number> {
     } else {
       failed++;
       console.log(`    ${color.red(g('cross'))} newlineTail should take ssrf (only) out of what a fixed list clears`);
+    }
+  }
+
+  /*
+   * ---- receipts: what a cleared line rests on ----
+   *
+   * EXPECT-CLEAN checks that every receipt names something real. These pin
+   * the parts a reader is asked to trust: which functions Defuse took on
+   * trust AFTER the cleaning (and not before it), the quote note only where
+   * quotes are the reason, and the client report printing all of it.
+   */
+  console.log(`\n${color.bold('  Receipts for cleared lines')}`);
+  {
+    const receiptAt = (file: string, line: number, ruleId: string) =>
+      result.verifiedClean.find((c) => c.file.endsWith(file) && c.line === line && c.ruleId === ruleId);
+    const cases: [string, boolean, string][] = [
+      [
+        'a function nobody models, run BEFORE the escaping, is not an assumption',
+        (() => { const r = receiptAt('receipts.php', 20, 'xss'); return !!r && !r.assumes; })(),
+        'receipts.php:20 should carry no assumption',
+      ],
+      [
+        'the same function run AFTER the escaping is named as an assumption',
+        receiptAt('receipts.php', 28, 'xss')?.assumes?.join(',') === 'format_name',
+        `receipts.php:28 should assume format_name, got ${JSON.stringify(receiptAt('receipts.php', 28, 'xss')?.assumes)}`,
+      ],
+      [
+        "DVWA's ping output names shell_exec() as what it was cleared on trust of",
+        receiptAt('allow-list-guards.php', 106, 'xss')?.assumes?.join(',') === 'shell_exec',
+        `allow-list-guards.php:106 should assume shell_exec, got ${JSON.stringify(receiptAt('allow-list-guards.php', 106, 'xss')?.assumes)}`,
+      ],
+      [
+        'escaping that needs quotes says the value is inside them',
+        /inside quotes/.test(receiptAt('receipts.php', 36, 'sql-injection')?.reason ?? ''),
+        `receipts.php:36 should mention quotes: ${receiptAt('receipts.php', 36, 'sql-injection')?.reason}`,
+      ],
+      [
+        'a word cleared for a SHELL says nothing about quotes - that only matters to SQL',
+        !!receiptAt('allow-list-guards.php', 38, 'command-injection') &&
+          !/quotes/.test(receiptAt('allow-list-guards.php', 38, 'command-injection')?.reason ?? 'quotes'),
+        `allow-list-guards.php:38 should not mention quotes: ${receiptAt('allow-list-guards.php', 38, 'command-injection')?.reason}`,
+      ],
+      [
+        'four checked octets joined into one address say there were several',
+        /several values/.test(receiptAt('allow-list-guards.php', 104, 'command-injection')?.reason ?? ''),
+        `allow-list-guards.php:104 should say it was joined: ${receiptAt('allow-list-guards.php', 104, 'command-injection')?.reason}`,
+      ],
+      [
+        'two cleaned values joined, the function before the escaping: nothing taken on trust',
+        (() => { const r = receiptAt('receipts.php', 47, 'xss'); return !!r && !r.assumes; })(),
+        `receipts.php:47 should carry no assumption, got ${JSON.stringify(receiptAt('receipts.php', 47, 'xss')?.assumes)}`,
+      ],
+      [
+        'two cleaned values joined, the function after the RIGHT one: it is listed',
+        receiptAt('receipts.php', 56, 'xss')?.assumes?.join(',') === 'format_name',
+        `receipts.php:56 should assume format_name, got ${JSON.stringify(receiptAt('receipts.php', 56, 'xss')?.assumes)}`,
+      ],
+      [
+        'a prepared statement is named, not called a sanitiser',
+        /`ps` is a prepared statement/.test(receiptAt('safe.java', 10, 'sql-injection')?.reason ?? ''),
+        `safe.java:10 should name the prepared statement: ${receiptAt('safe.java', 10, 'sql-injection')?.reason}`,
+      ],
+    ];
+    for (const [what, ok, why] of cases) {
+      if (ok) {
+        passed++;
+        console.log(`    ${color.green(g('tick'))} ${what}`);
+      } else {
+        failed++;
+        console.log(`    ${color.red(g('cross'))} ${what}: ${why}`);
+      }
+    }
+    // The client report prints the reason and the assumption, and the old
+    // one-size sentence is gone - it was the claim this fixes.
+    const html = renderHtmlReport(result, { generatedAt: new Date(0), root: FIXTURES });
+    const printed =
+      html.includes('<strong>Assumes</strong> format_name() hands back what it was given.') &&
+      html.includes(escapeHtml('Passed through `htmlspecialchars()`')) &&
+      !html.includes('A sanitiser for this kind of problem was proven to run');
+    if (printed) {
+      passed++;
+      console.log(`    ${color.green(g('tick'))} the client report prints each receipt and its assumption, and no stock sentence`);
+    } else {
+      failed++;
+      console.log(`    ${color.red(g('cross'))} the client report should print receipts and assumptions, without the old stock sentence`);
     }
   }
 

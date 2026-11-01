@@ -405,6 +405,8 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
       ),
     );
   }
+  // Cleared lines whose receipt rests on a function Defuse does not model.
+  const onTrust = result.verifiedClean.filter((c) => (c.assumes?.length ?? 0) > 0).length;
   if (
     result.stats.flowsVerified > 0 ||
     result.stats.signaturesRetracted > 0 ||
@@ -418,6 +420,10 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
         `  data flow: ${result.stats.flowsVerified} verified ${g('middot')} ` +
           `${result.stats.signaturesUpgraded} guess(es) superseded by a proof ${g('middot')} ` +
           `${result.stats.signaturesRetracted} withdrawn as provably sanitised` +
+          (onTrust > 0
+            ? ` ${g('middot')} ${onTrust} cleared line(s) rest on a function Defuse does not model, taken to hand back ` +
+              `what it was given (listed in --json under verifiedClean[].assumes)`
+            : '') +
           (result.stats.signaturesProvedConstant > 0
             ? ` ${g('middot')} ${result.stats.signaturesProvedConstant} withdrawn as provably ` +
               `constant (listed in --json under verifiedClean, with the reason)`

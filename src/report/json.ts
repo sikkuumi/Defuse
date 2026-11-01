@@ -136,6 +136,13 @@ export function renderJson(result: ScanResult, pretty = true): string {
       filesByLanguage: result.byLanguage,
       parseProblems: result.parseProblems,
       suppressions: result.suppressions,
+      /*
+       * Every line proved clean, each with `reason` - what cleaned it and on
+       * which line - and, when there were any, `assumes`: functions Defuse
+       * does not model that the value went through AFTER it was cleaned, each
+       * taken to hand back what it was given. A tool reading this file can
+       * hold the receipts that rest on trust to a different standard.
+       */
       verifiedClean: result.verifiedClean,
       unreachableCodeSkipped: result.unreachableCode,
       collectionReadsResolved: result.collectionReadsResolved,

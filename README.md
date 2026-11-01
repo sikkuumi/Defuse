@@ -702,6 +702,34 @@ through the header, and the finding names it rather than the number beside
 it. DVWA's scoreboard went from 46 proofs with 7 wrong to 41 with none wrong
 (3 still unsure); BenchmarkJava and Juice Shop did not change by one finding.
 
+**Every cleared line carries a receipt.** The report's "Checked and cleared"
+section used to explain every line the data-flow engine cleared with the same
+sentence - "a sanitiser for this kind of problem was proven to run" - including
+lines no sanitiser had touched. Each one now says what cleaned the value and
+on which line (`passed through htmlspecialchars() (line 8)`, `checked by
+preg_match('/^\d+$/', $id) on line 12: only digits can pass`, `` `ps` is a
+prepared statement``), that the value sits inside quotes when that is half the
+reason, and that it was one of several values when it was. And it names what
+it **took on trust**: any function Defuse does not model that the value went
+through AFTER it was cleaned, which was assumed to hand back what it was given.
+DVWA's ping output is cleared only because the ping's address was checked and
+`shell_exec()` was trusted, and `sqli/impossible.php` prints database rows
+cleared on trust of `execute()` and `fetchArray()` - the report now says so,
+in a line marked **Assumes**. A function that ran BEFORE the cleaning is not
+an assumption and is not listed (OWASP BenchmarkJava has 24 of those, a file
+read through unmodelled classes and then escaped).
+
+`npm test` now asks two things of every `EXPECT-CLEAN` line: that the receipt
+exists, and that its reason quotes something actually written in that file -
+a stock sentence quotes nothing and fails. It also found that `EXPECT-CLEAN`
+in the SAFE fixtures had never been checked at all: "nothing fired in this
+file" was the whole test, so a line that went silent for any other reason
+passed as proved. And it found one more of last round's kind: a container
+literal, like a template, took its FIRST element's cleaning as its own, so
+`[shellQuote(a), b]` was printed as checked and cleared with `b` raw in the
+command line. Findings and cleared lines on all three practice apps are
+unchanged.
+
 ## Signature rules
 
 <!-- derived:rule-matrix -->
@@ -842,7 +870,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 966 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 1097 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.

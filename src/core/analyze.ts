@@ -122,11 +122,18 @@ export interface VerifiedClean {
   readonly ruleId: string;
   readonly kind: string;
   /**
-   * Why the line is clean, when a signature rule withdrew its own guess on a
-   * reasoned proof (see RuleContext.noteClean). Absent for the tracer's
-   * sanitiser retractions, whose reason is the sanitiser step on the path.
+   * Why the line is clean. A signature rule's reasoned proof (see
+   * RuleContext.noteClean), or the tracer's receipt: the step that washed the
+   * value for this kind of sink, and the line it was on (see cleanReason in
+   * taint/tracer.ts). Optional only for records written before receipts.
    */
   readonly reason?: string;
+  /**
+   * Functions Defuse does not model that the cleaned value went through after
+   * it was cleaned, each assumed to hand back what it was given. Present only
+   * when there were any: a receipt resting on an assumption says so.
+   */
+  readonly assumes?: readonly string[];
 }
 
 /**
@@ -566,6 +573,8 @@ export async function analyze(
         line: clean.sinkNode.startPosition.row + 1,
         ruleId: clean.ruleId,
         kind: clean.kind,
+        reason: clean.reason,
+        ...(clean.assumes ? { assumes: clean.assumes } : {}),
       });
       cleanRanges.push({
         ruleId: clean.ruleId,

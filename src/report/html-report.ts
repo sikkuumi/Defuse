@@ -92,6 +92,11 @@ export function escapeHtml(text: string): string {
 
 const e = escapeHtml;
 
+/** A receipt starts lower-case so it reads inside a sentence; a table cell starts a sentence. */
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
 }
@@ -292,7 +297,8 @@ export function renderHtmlReport(result: ScanResult, options: HtmlReportOptions)
   const clearedSection =
     `<section id="cleared"><h2><span class="secnum">3</span>Checked and cleared</h2>` +
     `<p class="lead">These lines looked like a problem, and Defuse proved they are not - a value that is fixed on every path, a sanitiser that is shown to run, or the code's own statement of purpose. ` +
-    `Each reason is the claim it rests on.` +
+    `Each reason is the claim it rests on. A row marked <strong>assumes</strong> also rests on a function Defuse does not model, ` +
+    `which the value went through after it was cleaned and which was taken to hand back what it was given - if that function undoes the cleaning, the row is wrong.` +
     (result.stats.regionsProvedUnreachable > 0
       ? ` Separately, ${plural(result.stats.regionsProvedUnreachable, 'branch', 'branches')} were skipped because a fixed condition means they cannot run.`
       : '') +
@@ -303,7 +309,12 @@ export function renderHtmlReport(result: ScanResult, options: HtmlReportOptions)
           .map(
             (c) =>
               `<tr class="cleared"><td>${where(c.file, c.line)}</td><td>${e(rules.get(c.ruleId)?.name ?? c.ruleId)}</td>` +
-              `<td>${e(c.reason ?? 'A sanitiser for this kind of problem was proven to run on the path into this line.')}</td></tr>`,
+              `<td>${e(capitalise(c.reason ?? 'no reason was recorded for this line'))}` +
+              (c.assumes && c.assumes.length > 0
+                ? `<br><strong>Assumes</strong> ${e(c.assumes.map((n) => `${n}()`).join(', '))} ` +
+                  `${c.assumes.length === 1 ? 'hands' : 'hand'} back what ${c.assumes.length === 1 ? 'it was' : 'they were'} given.`
+                : '') +
+              `</td></tr>`,
           )
           .join('') +
         `</tbody></table>`

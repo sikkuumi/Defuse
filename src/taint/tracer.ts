@@ -75,6 +75,10 @@ interface InternalStep extends FlowStep {
   readonly quoteDependent?: boolean;
   /** A validation check rather than a function the value went through - see `guarded`. */
   readonly guard?: boolean;
+  /** A function this engine does not model, assumed to hand back what it was given. */
+  readonly unmodelled?: string;
+  /** The sink kinds this step's cleaning protects only inside quotes. */
+  readonly quoteKinds?: readonly SinkKind[];
 }
 
 interface Taint {
@@ -175,6 +179,57 @@ interface Taint {
   readonly urlPrefix?: string | undefined;
   /** The value came from a browser-only source (SourceSpec.browserOnly). */
   readonly fromBrowser?: boolean | undefined;
+  /**
+   * Built by joining several dirty values. Only the receipt reads it: a
+   * cleared line's reason names one value's cleaning, and says when there
+   * were others (each cleaned too, or the kind would not be washed).
+   */
+  readonly joined?: boolean | undefined;
+  /**
+   * For each kind this value is washed for: the functions Defuse does not
+   * model that it went through SINCE that washing. A cleared line's receipt
+   * lists them as what it took on trust. Absent means "not tracked here",
+   * and the receipt then falls back to listing every unmodelled hop that
+   * could have come after - see cleanReason. Kept per kind because washing
+   * for one kind (intval, for SQL) does not reset the trust another kind's
+   * earlier washing (htmlspecialchars, for the page) has been resting on.
+   */
+  readonly afterWash?: Readonly<Partial<Record<SinkKind, readonly string[]>>> | undefined;
+}
+
+/** A fresh wash for these kinds: nothing has been taken on trust since. */
+function washedNow(
+  prior: Taint['afterWash'],
+  kinds: readonly SinkKind[],
+): Readonly<Partial<Record<SinkKind, readonly string[]>>> {
+  const next: Partial<Record<SinkKind, readonly string[]>> = { ...(prior ?? {}) };
+  for (const k of kinds) next[k] = [];
+  return next;
+}
+
+/** An unmodelled function the value just went through, after every wash it carries. */
+function trustedHop(prior: Taint['afterWash'], name: string): Taint['afterWash'] {
+  if (!prior) return undefined;
+  const next: Partial<Record<SinkKind, readonly string[]>> = {};
+  for (const [k, names] of Object.entries(prior) as [SinkKind, readonly string[]][]) {
+    next[k] = names.includes(name) ? names : [...names, name];
+  }
+  return next;
+}
+
+/**
+ * Values joined into one: for each kind ALL of them are washed for, every
+ * function any of them took on trust. A part that did not track it leaves
+ * the kind untracked, so the receipt falls back to the cautious list.
+ */
+function joinedAfterWash(parts: readonly Taint[], kinds: ReadonlySet<SinkKind>): Taint['afterWash'] {
+  const next: Partial<Record<SinkKind, readonly string[]>> = {};
+  for (const k of kinds) {
+    const lists = parts.map((p) => p.afterWash?.[k]);
+    if (lists.some((l) => l === undefined)) continue;
+    next[k] = [...new Set(lists.flatMap((l) => l ?? []))];
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
 }
 
 /**
@@ -187,6 +242,18 @@ export interface SanitizedFlow {
   readonly sinkNode: Node;
   /** The file the sink is in - may not be the file being scanned. */
   readonly filePath: string;
+  /**
+   * What made it clean, in words, with the line it happened on - the receipt.
+   * See cleanReason: a line printed as "checked and cleared" has to say what
+   * checked it.
+   */
+  readonly reason: string;
+  /**
+   * Functions Defuse does not model that the cleaned value passed through
+   * AFTER it was cleaned. Each was assumed to hand back what it was given; if
+   * one undoes the cleaning, the receipt is wrong, and it says so up front.
+   */
+  readonly assumes?: readonly string[];
 }
 
 /** One confirmed source-to-sink flow, ready to become a finding. */
@@ -1662,6 +1729,8 @@ export function traceFile(
     quotePending: taint.quotePending,
     urlPrefix: taint.urlPrefix,
     fromBrowser: taint.fromBrowser,
+    joined: taint.joined,
+    afterWash: taint.afterWash,
   });
 
   /*
@@ -1751,12 +1820,41 @@ export function traceFile(
               : what,
             kinds,
           ),
-          ...(insideQuotesOnly.length > 0 ? { quoteDependent: true } : {}),
+          ...(insideQuotesOnly.length > 0 ? { quoteDependent: true, quoteKinds: insideQuotesOnly } : {}),
           guard: true,
         },
       ],
       sanitizedFor: new Set([...taint.sanitizedFor, ...kinds]),
       quotePending: pending.length > 0 ? pending : undefined,
+      afterWash: washedNow(taint.afterWash, kinds),
+    };
+  };
+
+  /**
+   * Several dirty values become one: a template, a container literal. The
+   * result is washed only for what EVERY part was washed for, and the path is
+   * told through the least-washed part, so a reader sees the value that is
+   * actually dangerous rather than its cleaned neighbour.
+   */
+  const joinParts = (parts: readonly Taint[]): Taint => {
+    const first = parts[0]!;
+    if (parts.length === 1) return first;
+    const narrator = parts.reduce((a, b) => (b.sanitizedFor.size < a.sanitizedFor.size ? b : a));
+    const pending = [...new Set(parts.flatMap((p) => p.quotePending ?? []))];
+    const sanitizedFor = new Set([...first.sanitizedFor].filter((k) => parts.every((p) => p.sanitizedFor.has(k))));
+    return {
+      ...narrator,
+      sanitizedFor,
+      unknownHops: [...new Set(parts.flatMap((p) => p.unknownHops))],
+      quotePending: pending.length > 0 ? pending : undefined,
+      branchAssumed: parts.every((p) => p.branchAssumed) ? true : undefined,
+      containerGuess: parts.every((p) => p.containerGuess) ? true : undefined,
+      collectedMany: parts.some((p) => p.collectedMany) ? true : undefined,
+      // Where the FIRST dirty part starts is where the attacker's text starts.
+      urlPrefix: first.urlPrefix,
+      fromBrowser: parts.every((p) => p.fromBrowser) ? true : undefined,
+      joined: true,
+      afterWash: joinedAfterWash(parts, sanitizedFor),
     };
   };
 
@@ -1925,6 +2023,11 @@ export function traceFile(
               urlPrefix: left.urlPrefix,
               // The joined string is browser-only only if both halves are.
               fromBrowser: left.fromBrowser && right.fromBrowser ? true : undefined,
+              joined: true,
+              afterWash: joinedAfterWash(
+                [left, right],
+                new Set([...left.sanitizedFor].filter((k) => right.sanitizedFor.has(k))),
+              ),
             }
           : taint;
       /*
@@ -1952,18 +2055,24 @@ export function traceFile(
     }
 
     if (CONTAINER_NODES.has(node.type)) {
+      /*
+       * EVERY ELEMENT, for the reason the template note below gives. This also
+       * returned on the first dirty element, so `[shellQuote(a), b]` was the
+       * quoted `a`, and `exec('ls ' + args.join(' '))` was printed as checked
+       * and cleared with a raw `b` in the command line.
+       */
+      const elements: Taint[] = [];
       for (const element of node.namedChildren) {
         if (!element) continue;
         const taint = evaluate(element, scope, depth + 1);
-        if (taint) {
-          return addStep(
-            taint,
-            node,
-            'placed into a container - we taint the container whole, not per element',
-          );
-        }
+        if (taint) elements.push(taint);
       }
-      return null;
+      if (elements.length === 0) return null;
+      return addStep(
+        joinParts(elements),
+        node,
+        'placed into a container - we taint the container whole, not per element',
+      );
     }
 
     if (STRING_NODES.has(node.type)) {
@@ -2018,27 +2127,7 @@ export function traceFile(
         }
       }
       if (parts.length === 0) return null;
-      const first = parts[0]!;
-      // The path is told through the least-washed part, so a reader sees the
-      // value that is actually dangerous rather than its cleaned neighbour.
-      const narrator = parts.reduce((a, b) => (b.sanitizedFor.size < a.sanitizedFor.size ? b : a));
-      const pending = [...new Set(parts.flatMap((p) => p.quotePending ?? []))];
-      const merged: Taint =
-        parts.length === 1
-          ? first
-          : {
-              ...narrator,
-              sanitizedFor: new Set([...first.sanitizedFor].filter((k) => parts.every((p) => p.sanitizedFor.has(k)))),
-              unknownHops: [...new Set(parts.flatMap((p) => p.unknownHops))],
-              quotePending: pending.length > 0 ? pending : undefined,
-              branchAssumed: parts.every((p) => p.branchAssumed) ? true : undefined,
-              containerGuess: parts.every((p) => p.containerGuess) ? true : undefined,
-              collectedMany: parts.some((p) => p.collectedMany) ? true : undefined,
-              // Where the FIRST dirty part starts is where the attacker's text starts.
-              urlPrefix: first.urlPrefix,
-              fromBrowser: parts.every((p) => p.fromBrowser) ? true : undefined,
-            };
-      const result = addStep(merged, node, 'interpolated into a string template');
+      const result = addStep(joinParts(parts), node, 'interpolated into a string template');
       if (guardOn) {
         const sets = parts.map((p) => throughOf.get(p));
         if (sets.every((t): t is ReadonlySet<string> => t !== undefined)) {
@@ -2098,6 +2187,7 @@ export function traceFile(
             sanitizedFor: new Set([...taint.sanitizedFor, ...applied.kinds]),
             origin: taint.origin,
             unknownHops: taint.unknownHops,
+            afterWash: washedNow(taint.afterWash, applied.kinds),
           };
         }
       }
@@ -2264,6 +2354,7 @@ export function traceFile(
             sanitizedFor: new Set([...taint.sanitizedFor, ...applied.kinds]),
             origin: taint.origin,
             unknownHops: taint.unknownHops,
+            afterWash: washedNow(taint.afterWash, applied.kinds),
           };
         }
       }
@@ -2303,12 +2394,13 @@ export function traceFile(
                 `passed through \`${name}()\` - ${sanitizer.description}`,
                 sanitizer.kinds,
               ),
-              ...(quoteDependent.length > 0 ? { quoteDependent: true } : {}),
+              ...(quoteDependent.length > 0 ? { quoteDependent: true, quoteKinds: quoteDependent } : {}),
             },
           ],
           sanitizedFor: new Set([...taint.sanitizedFor, ...sanitizer.kinds]),
           origin: taint.origin,
           unknownHops: taint.unknownHops,
+          afterWash: washedNow(taint.afterWash, sanitizer.kinds),
           quotePending: pending.length > 0 ? pending : undefined,
         };
       }
@@ -2454,7 +2546,7 @@ export function traceFile(
               `preserves the value; if it actually sanitises, this trace is wrong`;
 
     return {
-      steps: [...carried.steps, step('propagation', node, hopText)],
+      steps: [...carried.steps, { ...step('propagation', node, hopText), unmodelled: name }],
       sanitizedFor: carried.sanitizedFor,
       origin: carried.origin,
       unknownHops: [...carried.unknownHops, name],
@@ -2481,6 +2573,8 @@ export function traceFile(
        * container, same write count; only the read tells them apart.
        */
       containerGuess: carried.containerGuess ?? (fromReceiver && carried.collectedMany ? true : undefined),
+      joined: carried.joined,
+      afterWash: trustedHop(carried.afterWash, name),
     };
   };
 
@@ -2592,12 +2686,64 @@ export function traceFile(
     return null;
   };
 
-  const recordRetraction = (sinkNode: Node, kind: SinkKind): void => {
+  /*
+   * THE RECEIPT FOR A CLEARED LINE.
+   *
+   * The report's "Checked and cleared" section printed one sentence for every
+   * line the tracer cleared: "A sanitiser for this kind of problem was proven
+   * to run on the path into this line." It was printed for an allow-list
+   * check, which is not a sanitiser; for a hex digest; and for DVWA's ping
+   * output, which was cleared only because the ping's ADDRESS was checked and
+   * `shell_exec()` - a function this engine does not model - was assumed to
+   * hand back what it was given. A claim of safety with no stated ground is
+   * the same overclaim as a finding with no path, pointed the other way.
+   *
+   * The ground is on the path already: the last step that washed the value
+   * for THIS kind of sink. What can undo it is on the path too - a function
+   * we do not model that the value went through afterwards. Hops before the
+   * wash do not matter (the wash happened after them), so they are not
+   * listed; hops on another value joined in, whose order we cannot see, are
+   * listed, because over-disclosing an assumption costs a reader a glance and
+   * hiding one costs them the truth.
+   */
+  const cleanReason = (taint: Taint, kind: SinkKind): { reason: string; assumes: string[] } => {
+    const steps = taint.steps;
+    let at = -1;
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const s = steps[i]!;
+      if (s.kind === 'sanitizer' && s.sanitizesKinds?.includes(kind)) {
+        at = i;
+        break;
+      }
+    }
+    const before = new Set(steps.slice(0, Math.max(at, 0)).map((s) => s.unmodelled).filter((n): n is string => !!n));
+    const after = steps.slice(at + 1).map((s) => s.unmodelled).filter((n): n is string => !!n);
+    const elsewhere = taint.unknownHops.filter((n) => !before.has(n) && !after.includes(n) && !steps.some((s) => s.unmodelled === n));
+    // Tracked precisely when every way this value was built kept count - see
+    // `afterWash`. Otherwise the cautious list: anything that MIGHT be after.
+    const tracked = taint.afterWash?.[kind];
+    const assumes = tracked ? [...tracked] : [...new Set([...after, ...elsewhere])];
+    if (at === -1) {
+      return { reason: 'the value was cleaned for this kind of sink on the way here, by a step this engine did not record', assumes };
+    }
+    const wash = steps[at]!;
+    const line = wash.location.startLine;
+    const where = wash.location.file === toDisplay(currentPath) ? `line ${line}` : `${wash.location.file}:${line}`;
+    let reason = wash.guard ? wash.description : `${wash.description} (${where})`;
+    if (wash.quoteKinds?.includes(kind)) reason += ' - and the value sits inside quotes where it is used, which is where that holds';
+    if (taint.joined) reason += ' - one of several values joined into this one, and every one of them was cleaned for this kind of sink';
+    return { reason, assumes };
+  };
+
+  const recordRetraction = (sinkNode: Node, kind: SinkKind, taint: Taint): void => {
+    const { reason, assumes } = cleanReason(taint, kind);
     sanitized.push({
       ruleId: SINK_KIND_RULE[kind],
       sinkNode,
       kind,
       filePath: toDisplay(currentPath),
+      reason,
+      ...(assumes.length > 0 ? { assumes } : {}),
     });
   };
 
@@ -2621,7 +2767,7 @@ export function traceFile(
   ): void => {
     const verdict = retracted(taint, valueNode, kind);
     if (verdict) {
-      if (verdict === 'sanitised') recordRetraction(valueNode, kind);
+      if (verdict === 'sanitised') recordRetraction(valueNode, kind, taint);
       return;
     }
     results.push({
@@ -2899,6 +3045,9 @@ export function traceFile(
           sinkNode: node,
           kind: sink.kind,
           filePath: toDisplay(currentPath),
+          reason:
+            `\`${lastSegment(text(callee.receiver))}\` is a prepared statement, so what is passed here is bound ` +
+            `as a parameter - data, never part of the query text`,
         });
         continue;
       }
@@ -2948,7 +3097,7 @@ export function traceFile(
         // correct. Confirmed-clean is a result too.
         const verdict = retracted(taint, arg, sink.kind);
         if (verdict) {
-          if (verdict === 'sanitised') recordRetraction(node, sink.kind);
+          if (verdict === 'sanitised') recordRetraction(node, sink.kind, taint);
           continue;
         }
 
@@ -2983,7 +3132,7 @@ export function traceFile(
       if (sink.contentCheck === 'sql' && !looksLikeSql(text(value))) continue;
       const verdict = retracted(taint, value, sink.kind);
       if (verdict) {
-        if (verdict === 'sanitised') recordRetraction(assignNode, sink.kind);
+        if (verdict === 'sanitised') recordRetraction(assignNode, sink.kind, taint);
         continue;
       }
       results.push({
@@ -3554,6 +3703,10 @@ export function traceFile(
               const either: Taint = {
                 ...before,
                 sanitizedFor: new Set([...before.sanitizedFor].filter((k) => taint.sanitizedFor.has(k))),
+                afterWash: joinedAfterWash(
+                  [before, taint],
+                  new Set([...before.sanitizedFor].filter((k) => taint.sanitizedFor.has(k))),
+                ),
                 quotePending: pendingEither.length > 0 ? pendingEither : undefined,
                 branchAssumed: inOtherArm(node, before, scope.body, scope.filePath) ? before.branchAssumed : true,
               };
