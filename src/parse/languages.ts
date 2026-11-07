@@ -159,8 +159,6 @@ export const LANGUAGES: readonly LanguageSpec[] = [
   },
 ];
 
-const BY_ID = new Map<LanguageId, LanguageSpec>(LANGUAGES.map((l) => [l.id, l]));
-
 /** Extension -> { language, grammar-to-use }. Built once at module load. */
 const BY_EXTENSION = new Map<string, { spec: LanguageSpec; grammar: string }>();
 for (const spec of LANGUAGES) {
@@ -228,12 +226,6 @@ export function detectLanguage(filePath: string, firstLine?: string): LanguageMa
   }
 
   return null;
-}
-
-export function languageById(id: LanguageId): LanguageSpec {
-  const spec = BY_ID.get(id);
-  if (!spec) throw new Error(`Unknown language id: ${id}`);
-  return spec;
 }
 
 /** Every extension we will attempt to open. Used by the file walker. */

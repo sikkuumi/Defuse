@@ -871,7 +871,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 1116 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 1123 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.
@@ -1037,6 +1037,7 @@ categories with a rule) was that set until 2026-11-08:
 |---|--:|--:|--:|
 | before any fix | 69.9% | 76.6% | **10** |
 | after fixing what it showed | 75.0% | 85.4% | **0** |
+| second pass | 78.0% | 85.4% | **0** |
 
 The 10 wrong proofs had three causes: an `eval` fenced to a single quoted
 literal, a Python list read after `pop`, and `exec()` in a function blocking the
@@ -1045,6 +1046,17 @@ route became a sink. Having been fixed against, BenchmarkPython is now training
 data too - `npm run scoreboard` runs it, and the next honest number needs the
 next set nobody has looked at. Still missed there: XSS via a value stored in a
 local dict and formatted out (`'{0[bar]}'.format(d)`), and request wrappers.
+
+The second pass found what the answer key cannot: the Flask sink had made
+about 60 **wrong proofs of XSS in files scored for other categories**, every one
+through the benchmark's own `escape_for_html()`, which the engine does not
+model and so assumed passes the value through. A hop whose own name says it
+escapes, encodes or sanitises now makes a trace a possibility, not a proof
+(an HTML escaper counts only against XSS; `b64decode(b64encode(x))` cleans
+nothing). The 11 XSS proofs left there were read by hand and are real. Code
+injection also gained the constant proof SQL had: 7 decoy `eval`s withdrawn,
+each with a receipt. BenchmarkJava, DVWA and Juice Shop were re-run after both
+changes: 0 wrong proofs, and BenchmarkJava unchanged at 94.8% / 100%.
 
 **What the misses were.** All 38 were one shape - a helper calling a
 same-named method on another object, read as recursion and cut short. That is

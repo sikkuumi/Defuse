@@ -726,7 +726,26 @@ export async function analyze(
         }
         continue;
       }
-      if (flow.branchAssumed || flow.containerGuess || flow.quoteUnknown) {
+      /*
+       * THE FIFTH: A HOP WHOSE OWN NAME SAYS IT CLEANS THE VALUE.
+       *
+       * An unmodelled function is assumed to pass the value through - right for
+       * decode(), and a coin flip for escape_for_html(). BenchmarkPython runs
+       * every printed value through its own HTML escaper (helpers/utils.py),
+       * and 60 Flask routes were "proven" XSS through it. A name is no proof
+       * that it cleans either, so the finding stays - as a possibility.
+       */
+      // b64decode(b64encode(x)) is x again: an encode undone later cleaned nothing.
+      // The decode may be a function we DO model (Java's decodeBase64), so look
+      // for it in the path itself, after the step that encoded.
+      const undone = (n: string): boolean => {
+        const inverse = n.replace(/encode/i, 'decode').replace(/escape/i, 'unescape');
+        const at = flow.path.findIndex((s) => s.location.snippet.includes(`${n}(`));
+        return inverse !== n && at >= 0 && flow.path.slice(at + 1).some((s) => s.location.snippet.includes(`${inverse}(`));
+      };
+      // An HTML escaper is no defence for pickle or a shell, so it only counts for XSS.
+      const cleanByName = unmodelled.find((n) => /(^|[^n])(escape|encode)|saniti[sz]|clean|purif|strip_?tags/i.test(n) && !undone(n) && (rule.id === 'xss' || !/html/i.test(n)));
+      if (flow.branchAssumed || flow.containerGuess || flow.quoteUnknown || cleanByName) {
         const downgraded = signatureFinding({
             ruleId: rule.id,
             ruleName: rule.name,
@@ -741,6 +760,11 @@ export async function analyze(
                 `is put together somewhere this engine does not read, so whether the value sits ` +
                 `inside quotes is not known. If it does, this line is safe; if it does not, it is ` +
                 `SQL injection. Check the quotes around it.`
+              : cleanByName && !flow.branchAssumed && !flow.containerGuess
+              ? `A value from \`${flow.origin}\` reaches ${flow.sinkDescription}, but on the way it passes ` +
+                `through \`${cleanByName}()\`, a function this engine does not model and whose name says it ` +
+                `escapes or cleans its input. We could not check that it does, so this is not proven; if it ` +
+                `does the right escaping for this sink, this line is safe. Read \`${cleanByName}()\` first.`
               : flow.branchAssumed
               ? `A value from \`${flow.origin}\` can reach ${flow.sinkDescription}, but the ` +
               `path depends on a BRANCH THIS ENGINE DOES NOT EVALUATE: somewhere along it a ` +

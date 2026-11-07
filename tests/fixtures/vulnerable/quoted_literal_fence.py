@@ -65,9 +65,9 @@ def global_lets_exec_write(c):
     exec(bar)
 
 
-# Safe in fact, but only the TRACE can show it: the signature rule still sees
-# exec() of a variable. These must stay a guess - never a proof - so a false
-# "proven" (what the held-out run found here) fails the suite.
+# Safe in fact. The signature rule sees exec() of a variable, and must withdraw
+# it with a receipt from the same proof the tracer uses - never upgrade it: a
+# false "proven" (what the held-out run found here) fails the suite.
 
 def list_replayed():
     # append, append, append, pop(0): lst[1] is 'moresafe'.
@@ -78,7 +78,7 @@ def list_replayed():
     lst.append('moresafe')
     lst.pop(0)
     bar = lst[1]
-    # EXPECT-SIGNATURE code-injection
+    # EXPECT-CLEAN code-injection
     exec(bar)
 
 
@@ -90,5 +90,5 @@ def constant_condition_with_exec_in_function():
         bar = 'This_should_always_happen'
     else:
         bar = param
-    # EXPECT-SIGNATURE code-injection
+    # EXPECT-CLEAN code-injection
     exec(bar)

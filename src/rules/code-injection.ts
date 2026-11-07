@@ -46,7 +46,7 @@
 
 import type { LanguageId } from '../parse/languages.js';
 import { asCall, type Rule, type RuleHit } from './contract.js';
-import { analyzeStringExpression } from './lib/strings.js';
+import { analyzeStringExpression, constantProof } from './lib/strings.js';
 
 /**
  * Calls that hand a string to the language's own interpreter.
@@ -322,6 +322,13 @@ export const codeInjectionRule: Rule = {
     const built = analyzeStringExpression(argument, language);
     // `eval("1 + 1")` is a constant. Nobody can put anything inside it.
     if (!built.isDynamic) return null;
+    // `bar` written in a branch that cannot run, every live write a literal:
+    // the same proof the SQL rule withdraws on, with the same receipt.
+    const proof = constantProof(argument, built.dynamicParts, language, { staticMethod: ctx.staticMethod, javaTypeInScan: ctx.javaTypeInScan });
+    if (proof) {
+      if (proof.reasoned) ctx.noteClean?.('code-injection', argument, proof.reason);
+      return null;
+    }
 
     return {
       node: call.node,

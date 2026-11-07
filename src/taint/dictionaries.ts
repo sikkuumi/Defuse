@@ -1569,8 +1569,6 @@ export const TAINT_DICTIONARIES: Partial<Record<LanguageId, TaintDictionary>> = 
   cpp: CPP_DICTIONARY,
 };
 
-export const TAINT_LANGUAGES = Object.keys(TAINT_DICTIONARIES) as LanguageId[];
-
 /** Per-language honesty notes, printed in the coverage section of every scan. */
 export const TAINT_COVERAGE_NOTES: Record<LanguageId, string> = {
   c:

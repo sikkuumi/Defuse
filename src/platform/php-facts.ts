@@ -21,12 +21,6 @@
 /** The day these facts were read from php.net. ISO date. */
 export const PHP_FACTS_CHECKED = '2026-10-28';
 
-export const PHP_FACT_SOURCES: readonly string[] = [
-  'https://www.php.net/supported-versions.php',
-  'https://www.php.net/eol.php',
-  'https://www.php.net/archive/2026',
-];
-
 /**
  * Branches still receiving security fixes, and until when. A branch past its
  * date on the day of the scan is treated as end of life - the scan date

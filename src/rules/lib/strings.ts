@@ -501,13 +501,6 @@ export function looksLikeHtml(text: string): boolean {
   return /<\s*[a-zA-Z][a-zA-Z0-9-]*(\s|>|\/)/.test(text) || /&(lt|gt|amp|quot);/.test(text);
 }
 
-const SHELL_HINTS =
-  /(^|[\s;&|])(rm|ls|cat|cp|mv|curl|wget|sh|bash|zsh|ping|tar|zip|unzip|chmod|chown|kill|git|npm|pip|docker|ssh|scp|echo|grep|find|awk|sed|systemctl|service)\b|[;&|`]|\$\(/;
-
-export function looksLikeShellCommand(text: string): boolean {
-  return text.length > 1 && SHELL_HINTS.test(text);
-}
-
 /**
  * Shannon entropy: a number for "how random does this look?".
  * Roughly - English prose scores ~2.5-3.5 bits/char, a base64 API key ~4.5-6.
@@ -1716,9 +1709,21 @@ export function constantProof(
 
   /** Is every live write to `part`, as seen from `anchor`, a fixed value? */
   const nameIsConstant = (part: string, anchor: Node, depth: number): string[] | null => {
-    const scopes = enclosingScopes(anchor);
+    let scopes = enclosingScopes(anchor);
     const body = scopes[0];
     if (!body) return null;
+    /*
+     * A Python name assigned in a function, with no global/nonlocal for it, is
+     * that function's local: no module-level write - and no module-level exec()
+     * - can reach it. Walking the module anyway let an eval() in ANY function
+     * of the file sink every proof (BenchmarkPython's 22 constant-branch evals).
+     */
+    if (
+      language === 'python' && scopes.length > 1 && body.type === 'function_definition' &&
+      folderOf(body).plainWriteCount(part, body) > 0 && !folderOf(body).writtenOtherwise(part, body)
+    ) {
+      scopes = [body];
+    }
     const key = `${spanKey(body)}#${part}`;
     if (resolving.has(key) || resolving.size > 24) return null;
     resolving.add(key);
@@ -2026,13 +2031,4 @@ export function constantProof(
       ? `Every value that can be spliced in is a fixed literal on every path that runs. ${reasons.join('. ')}.`
       : 'Every value spliced in is bound only to plain literals.',
   };
-}
-
-/** The boolean form, for callers that only need a yes or a no. */
-export function partsAreProvablyConstant(
-  node: Node,
-  dynamicParts: readonly string[],
-  language: LanguageId,
-): boolean {
-  return constantProof(node, dynamicParts, language) !== null;
 }
