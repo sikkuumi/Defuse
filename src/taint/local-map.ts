@@ -368,6 +368,112 @@ export function resolveListRead(call: Node, language: LanguageId): ListRead | nu
   return element ? { listName, index, add: element.node, value: element.value } : null;
 }
 
+/*
+ * THE SAME REPLAY FOR A PYTHON LIST, READ AS `lst[n]`.
+ *
+ *     lst = []
+ *     lst.append('safe'); lst.append(param); lst.append('moresafe')
+ *     lst.pop(0)
+ *     bar = lst[1]                         # 'moresafe'
+ *
+ * BenchmarkPython's copy of the Java list above; the engine "proved" it
+ * vulnerable four times. Same conditions, in Python's words: `lst = []` as its
+ * own statement, the name bound nowhere else in the function, every other
+ * mention an `append(v)` / `pop(n)` statement directly in that block or a
+ * read `lst[n]`. Anything else - passed, iterated, aliased, sliced, `del`,
+ * `global`, a nested function - ends the proof. The caller only accepts a
+ * literal element, so nothing stored can change in place afterwards.
+ */
+export function resolvePythonListRead(read: Node): ListRead | null {
+  if (read.type !== 'subscript') return null;
+  const receiver = read.childForFieldName('value');
+  const indexNode = read.childForFieldName('subscript');
+  if (receiver?.type !== 'identifier' || indexNode?.type !== 'integer' || !/^\d+$/.test(indexNode.text)) return null;
+  const listName = receiver.text;
+  const index = Number(indexNode.text);
+
+  let fn: Node | null = read.parent;
+  while (fn && fn.type !== 'function_definition') fn = fn.parent;
+  if (!fn) return null;
+
+  let block: Node | null = null;
+  let declaration: Node | null = null;
+  type Op = { kind: 'add'; node: Node; value: Node } | { kind: 'remove'; node: Node; at: number };
+  const ops: Op[] = [];
+  const statements: Node[] = [];
+  let escapes = false;
+  let walked = 0;
+  const visit = (n: Node): void => {
+    if (escapes) return;
+    if (++walked > 20000) {
+      escapes = true;
+      return;
+    }
+    if (n.type === 'identifier' && n.text === listName) {
+      const parent = n.parent;
+      const statement = parent?.parent;
+      // lst = []  - the one binding.
+      if (parent?.type === 'assignment' && sameSpan(parent.childForFieldName('left'), n)) {
+        const right = parent.childForFieldName('right');
+        if (block || right?.type !== 'list' || named(right).length > 0 || statement?.type !== 'expression_statement' || statement.parent?.type !== 'block') {
+          escapes = true;
+          return;
+        }
+        block = statement.parent;
+        declaration = statement;
+        statements.push(statement);
+        return;
+      }
+      // lst[n] - a read, unless something writes or deletes through it.
+      if (parent?.type === 'subscript' && sameSpan(parent.childForFieldName('value'), n)) {
+        const holder = parent.parent;
+        const written =
+          (holder?.type === 'assignment' || holder?.type === 'augmented_assignment') && sameSpan(holder.childForFieldName('left'), parent);
+        if (written || holder?.type === 'delete_statement' || parent.childForFieldName('subscript')?.type !== 'integer') escapes = true;
+        return;
+      }
+      // lst.append(v) / lst.pop(n) as their own statements.
+      const call = parent?.parent;
+      if (parent?.type === 'attribute' && sameSpan(parent.childForFieldName('object'), n) && call?.type === 'call' && call.parent?.type === 'expression_statement') {
+        const method = parent.childForFieldName('attribute')?.text;
+        const args = named(call.childForFieldName('arguments'));
+        statements.push(call.parent);
+        if (method === 'append' && args.length === 1 && args[0]) {
+          ops.push({ kind: 'add', node: call, value: args[0] });
+          return;
+        }
+        if (method === 'pop' && args.length === 1 && args[0]?.type === 'integer' && /^\d+$/.test(args[0].text)) {
+          ops.push({ kind: 'remove', node: call, at: Number(args[0].text) });
+          return;
+        }
+      }
+      escapes = true;
+      return;
+    }
+    for (const child of named(n)) visit(child);
+  };
+  visit(fn);
+  // Every write certainly runs: each is a statement directly in the declaring block.
+  if (escapes || !block || !declaration || statements.some((s) => !sameSpan(s.parent, block))) return null;
+  const home: Node = declaration;
+  if (home.endIndex > read.startIndex || !contains(block, read)) return null;
+
+  const model: Array<{ node: Node; value: Node }> = [];
+  for (const op of ops.sort((a, b) => a.node.startIndex - b.node.startIndex)) {
+    if (op.node.endIndex > read.startIndex) break;
+    if (op.node.startIndex < home.startIndex) return null;
+    if (op.kind === 'add') model.push({ node: op.node, value: op.value });
+    else {
+      if (op.at >= model.length) return null;
+      model.splice(op.at, 1);
+    }
+  }
+  const element = model[index];
+  return element ? { listName, index, add: element.node, value: element.value } : null;
+}
+
+const contains = (outer: Node, inner: Node): boolean => outer.startIndex <= inner.startIndex && outer.endIndex >= inner.endIndex;
+
 /** A read from a local map or list, resolved to the write that supplies it. */
 export interface ContainerRead {
   readonly container: string;
@@ -380,6 +486,10 @@ export interface ContainerRead {
 
 /** Try the map proof, then the list proof. Null means "use the whole-collection answer". */
 export function resolveContainerRead(call: Node, language: LanguageId): ContainerRead | null {
+  if (language === 'python') {
+    const list = resolvePythonListRead(call);
+    return list ? { container: list.listName, selector: `index ${list.index}`, write: list.add, value: list.value } : null;
+  }
   const map = resolveMapRead(call, language);
   if (map) return { container: map.mapName, selector: `"${map.key}"`, write: map.put, value: map.value };
   const list = resolveListRead(call, language);

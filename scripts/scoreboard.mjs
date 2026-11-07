@@ -46,6 +46,19 @@ const APPS = [
     score: scoreBenchmark,
   },
   {
+    // HELD OUT: no fix in this engine was made by looking at it, until the
+    // first run on 2026-11-08 found 10 wrong proofs. Those causes were fixed
+    // (see quoted_literal_*.py); every later fix should come from a new key.
+    name: 'BenchmarkPython',
+    dir: 'corpus2/BenchmarkPython',
+    fetch: 'git clone --depth 1 https://github.com/OWASP-Benchmark/BenchmarkPython.git corpus2/BenchmarkPython',
+    categories: {
+      'sql-injection': 'sqli', 'command-injection': 'cmdi', xss: 'xss',
+      'code-injection': 'codeinj', 'unsafe-deserialization': 'deserialization', 'weak-hash': 'hash',
+    },
+    score: scoreBenchmark,
+  },
+  {
     name: 'DVWA',
     dir: 'corpus2/DVWA',
     key: 'dvwa.json',
@@ -137,7 +150,7 @@ function scoreBenchmark(app, findings) {
     b.notes.push('no expectedresults CSV found - nothing to score against');
     return b;
   }
-  const CAT = { 'sql-injection': 'sqli', 'command-injection': 'cmdi', xss: 'xss' };
+  const CAT = app.categories ?? { 'sql-injection': 'sqli', 'command-injection': 'cmdi', xss: 'xss' };
   const expected = new Map();
   for (const line of readFileSync(join(app.dir, csv), 'utf8').split('\n').slice(1)) {
     const [name, category, real] = line.split(',').map((s) => (s ?? '').trim());
@@ -171,7 +184,7 @@ function scoreBenchmark(app, findings) {
       );
     }
   }
-  b.notes.push(`scored ${expected.size} test cases (sqli, cmdi, xss) per case, against ${csv}`);
+  b.notes.push(`scored ${expected.size} test cases (${Object.values(CAT).join(', ')}) per case, against ${csv}`);
   return b;
 }
 

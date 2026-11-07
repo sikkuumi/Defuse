@@ -333,7 +333,7 @@ export const xssRule: Rule = {
     },
     python: {
       status: 'partial',
-      note: 'PARTIAL: Django/Flask escape hatches (mark_safe, Markup, render_template_string, HttpResponse with built HTML) are detected. An HttpResponse whose call declares content_type="text/plain", "text/csv" or "application/json" is not a page and is not reported; a content type passed positionally or through a variable is not read, so that response still reports. Template files themselves (.html, .jinja) are NOT parsed at all, so `{{ x|safe }}` inside a template is invisible.',
+      note: 'PARTIAL: Django/Flask escape hatches (mark_safe, Markup, render_template_string, HttpResponse with built HTML) are detected, and so is a str returned from a Flask `@...route` view (sent as text/html) when the value is a str by construction - a returned name that might hold a dict is not. An HttpResponse whose call declares content_type="text/plain", "text/csv" or "application/json" is not a page and is not reported; a content type passed positionally or through a variable is not read, so that response still reports. Template files themselves (.html, .jinja) are NOT parsed at all, so `{{ x|safe }}` inside a template is invisible.',
     },
     java: {
       status: 'partial',

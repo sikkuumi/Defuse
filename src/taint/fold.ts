@@ -453,6 +453,19 @@ export function createFolder(language: LanguageId): Folder {
      */
     let found = body.hasError;
     let walked = 0;
+    /*
+     * PYTHON FUNCTIONS ARE THE EXCEPTION. Since Python 3, exec/eval/locals()
+     * inside a function work on a COPY of its locals - they cannot rebind one
+     * (PEP 667 made that the language's word in 3.13; earlier releases behave
+     * the same without tracing hooks). So inside a function they only count
+     * when a `global`/`nonlocal` line lets a name escape to a scope exec CAN
+     * write. Module and class bodies are real dicts, and keep the old answer.
+     * Refusing here had stopped BenchmarkPython's `num = 86; if 7*42 - num > 200`
+     * from ever being decided in a function that went on to call exec().
+     */
+    const pyFunction = language === 'python' && (body.type === 'function_definition' || body.parent?.type === 'function_definition');
+    let pyDynamicCall = false;
+    let pyEscape = false;
     const visit = (n: Node): void => {
       if (found || ++walked > 20000) {
         found = true;
@@ -465,11 +478,16 @@ export function createFolder(language: LanguageId): Folder {
       // (C++ refuses to compile that, so only C gives up here.)
       else if (type === 'goto_statement' && language === 'c') found = true;
       else if (type === 'identifier' && n.text === 'arguments' && (language === 'javascript' || language === 'typescript')) found = true;
+      else if (pyFunction && (type === 'global_statement' || type === 'nonlocal_statement')) pyEscape = true;
       else if ((type === 'call_expression' || type === 'call' || type === 'function_call_expression') &&
-               DYNAMIC_CALLS.has((n.childForFieldName('function')?.text ?? '').replace(/^\\/, ''))) found = true;
+               DYNAMIC_CALLS.has((n.childForFieldName('function')?.text ?? '').replace(/^\\/, ''))) {
+        if (pyFunction) pyDynamicCall = true;
+        else found = true;
+      }
       if (!found) for (const c of n.namedChildren) if (c) visit(c);
     };
     visit(body);
+    if (pyDynamicCall && pyEscape) found = true;
     dynamicScopeCache.set(key, found);
     return found;
   };

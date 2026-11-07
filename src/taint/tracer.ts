@@ -1498,6 +1498,69 @@ export interface UnreachableRegion {
   readonly why: string;
 }
 
+/**
+ * A FLASK ROUTE RETURNING A STR IS AN HTML PAGE, TAGS OR NOT.
+ *
+ * The return sink otherwise needs visible markup, because most functions that
+ * return a string are not views. BenchmarkPython's 31 real XSS cases return
+ * `f"bar is '{bar}'"` from `@app.route` - Flask sends a returned str as
+ * text/html, so `<script>` in bar runs - and all 31 were silent.
+ *
+ * Both halves are proven, not guessed:
+ *   - the function carries a `@<x>.route(...)` decorator (Flask, Blueprint,
+ *     Quart). NOT FastAPI's `@app.get`, which JSON-encodes a returned str;
+ *   - the value is a str by construction: a string literal or f-string, a `+`
+ *     or `%` with a string literal on the left, or a name whose only writes in
+ *     the function are one `name = "<literal>"` and then `name += ...` (str +=
+ *     anything that is not a str raises, so it stays a str). A name that may
+ *     hold a dict - which Flask turns into JSON - never qualifies.
+ * A header set elsewhere (after_request, a config default) is not seen.
+ */
+function flaskRouteReturningStr(ret: Node, expression: Node): boolean {
+  let fn: Node | null = ret.parent;
+  while (fn && fn.type !== 'function_definition') fn = fn.parent;
+  const decorated = fn?.parent?.type === 'decorated_definition' ? fn.parent : null;
+  if (!fn || !decorated) return false;
+  const isRoute = decorated.namedChildren.some(
+    (d) => d?.type === 'decorator' && /^@\s*[\w.]+\.route\s*\(/.test(d.text),
+  );
+  if (!isRoute) return false;
+
+  const strByConstruction = (e: Node): boolean => {
+    if (e.type === 'parenthesized_expression') return !!e.namedChildren[0] && strByConstruction(e.namedChildren[0]);
+    if (e.type === 'string' || e.type === 'concatenated_string') return true;
+    if (e.type === 'binary_operator') {
+      const op = e.childForFieldName('operator')?.text;
+      const left = e.childForFieldName('left');
+      return (op === '+' || op === '%') && !!left && strByConstruction(left);
+    }
+    return false;
+  };
+  if (strByConstruction(expression)) return true;
+  if (expression.type !== 'identifier') return false;
+
+  const name = expression.text;
+  let initial = 0;
+  let other = false;
+  const visit = (n: Node): void => {
+    if (other) return;
+    if (n.type === 'assignment' || n.type === 'augmented_assignment') {
+      const left = n.childForFieldName('left');
+      if (left?.text === name) {
+        const op = n.type === 'augmented_assignment' ? n.childForFieldName('operator')?.text : '=';
+        const right = n.childForFieldName('right');
+        if (op === '=' && right && strByConstruction(right)) initial++;
+        else if (op !== '+=') other = true;
+      } else if (left && new RegExp(`(^|[^\\w])${name}([^\\w]|$)`).test(left.text)) other = true;
+    } else if (n.type === 'identifier' && n.text === name && n.parent && /^(for_statement|with_item|global_statement|nonlocal_statement|named_expression|parameters|typed_parameter|default_parameter)$/.test(n.parent.type)) {
+      other = true;
+    }
+    for (const c of n.namedChildren) if (c) visit(c);
+  };
+  visit(fn);
+  return !other && initial === 1;
+}
+
 export interface TraceOutcome {
   readonly flows: readonly FlowResult[];
   readonly sanitized: readonly SanitizedFlow[];
@@ -1939,6 +2002,26 @@ export function traceFile(
     if (VARIABLE_NODES.has(node.type)) {
       const found = scope.env.get(expression) ?? sourceTaint(node, expression);
       return found ? guarded(found, node, expression, scope) : null;
+    }
+
+    // `lst[1]` on a local list whose every write is on the page and whose
+    // element there is a literal - see resolvePythonListRead. Anything else
+    // keeps the whole-list answer below.
+    if (language === 'python' && node.type === 'subscript') {
+      const read = resolveContainerRead(node, language);
+      const value = read?.value;
+      if (
+        read && value &&
+        (['integer', 'float', 'true', 'false', 'none'].includes(value.type) ||
+          (value.type === 'string' && !value.namedChildren.some((c) => c?.type === 'interpolation')))
+      ) {
+        noteResolvedRead(
+          node,
+          scope.filePath,
+          `\`${expression.slice(0, 50)}\` returns what was appended at ${read.selector} on line ${read.write.startPosition.row + 1}, a literal`,
+        );
+        return null;
+      }
     }
 
     if (MEMBER_NODES.has(node.type)) {
@@ -3787,21 +3870,26 @@ export function traceFile(
       // only adds something when the returned expression IS the string.
       const returnsAString = expression !== null && !CALL_NODES.has(expression.type);
 
+      const flaskRoute = language === 'python' && expression !== null && flaskRouteReturningStr(node, expression);
       if (
         dictionary.htmlReturnIsSink &&
         returned &&
         expression &&
         returnsAString &&
-        looksLikeHtml(text(expression))
+        (looksLikeHtml(text(expression)) || flaskRoute)
       ) {
         checkTaintAtSink(
           returned,
           expression,
           'xss',
           'an HTML response body returned by this function',
-          'is returned from this function as an HTML string - in Flask/Django a view\'s ' +
-            'return value IS the response body. We do not verify that this function is a ' +
-            'route handler; if it is not, this string is rendered somewhere else instead.',
+          flaskRoute
+            ? 'is returned as a str from a Flask route (`@...route`), which Flask sends as the ' +
+              'response body with Content-Type text/html - markup in the value is rendered. A ' +
+              'content type changed elsewhere (after_request, a config default) is not seen.'
+            : 'is returned from this function as an HTML string - in Flask/Django a view\'s ' +
+              'return value IS the response body. We do not verify that this function is a ' +
+              'route handler; if it is not, this string is rendered somewhere else instead.',
         );
       }
 

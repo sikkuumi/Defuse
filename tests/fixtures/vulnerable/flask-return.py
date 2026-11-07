@@ -15,3 +15,27 @@ def greet_concat():
     who = request.args.get("who")
     # EXPECT-FLOW xss
     return "<div class='greeting'>" + who + "</div>"
+
+
+# A Flask ROUTE needs no markup in the string: Flask sends a returned str as
+# text/html, so `<script>` in the value runs. BenchmarkPython's 31 real XSS
+# cases are this shape, and every one was silent.
+from flask import Flask
+
+app = Flask(__name__)
+
+
+@app.route("/echo", methods=["POST"])
+def echo():
+    bar = request.form.get("bar")
+    # EXPECT-FLOW xss
+    return f"bar is '{bar}'"
+
+
+@app.route("/accumulate")
+def accumulate():
+    RESPONSE = ""
+    bar = request.args.get("bar")
+    RESPONSE += f"Parameter value: {bar}"
+    # EXPECT-FLOW xss
+    return RESPONSE

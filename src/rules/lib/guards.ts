@@ -80,7 +80,7 @@ import type { Node, Tree } from 'web-tree-sitter';
 import type { LanguageId } from '../../parse/languages.js';
 import type { SinkKind } from '../../taint/types.js';
 
-export type GuardStrength = 'digits' | 'word' | 'fixed';
+export type GuardStrength = 'digits' | 'word' | 'fixed' | 'quoted-literal';
 
 export interface GuardFact {
   readonly strength: GuardStrength;
@@ -145,6 +145,9 @@ const SAFE_KINDS: Record<GuardStrength, { readonly kinds: readonly SinkKind[]; r
     kinds: ['sql', 'command', 'xss', 'deserialization', 'code', 'ssrf', 'format', 'overflow'],
     insideQuotesOnly: [],
   },
+  // One Python string literal with no quote of its kind inside: eval/exec can
+  // only build a str from it. Says nothing for SQL, a shell or a page.
+  'quoted-literal': { kinds: ['code'], insideQuotesOnly: [] },
 };
 
 /** Which sinks a fact makes safe, and which of those only when the value lands inside quotes. */
@@ -162,7 +165,9 @@ export function describeFact(fact: GuardFact): string {
   const snippet = (fact.check.text ?? '').replace(/\s+/g, ' ').trim();
   const shown = snippet.length > 70 ? `${snippet.slice(0, 67)}...` : snippet;
   const lets =
-    fact.strength === 'digits'
+    fact.strength === 'quoted-literal'
+      ? 'only one quoted string literal can pass, so evaluating it only builds a string'
+      : fact.strength === 'digits'
       ? 'only digits can pass'
       : fact.strength === 'word'
         ? 'only letters, digits and underscores can pass'
@@ -483,7 +488,7 @@ function phpPattern(literal: string): { source: string; flags: string } | null {
 /* ------------------------------------------------------------------------ */
 
 const EMPTY: Outcome = { whenTrue: new Map(), whenFalse: new Map() };
-const RANK: Record<GuardStrength, number> = { word: 1, digits: 2, fixed: 3 };
+const RANK: Record<GuardStrength, number> = { 'quoted-literal': 0, word: 1, digits: 2, fixed: 3 };
 
 const classOfValues = (values: readonly string[]): GuardStrength | null =>
   values.every((v) => /^[0-9]*$/.test(v)) ? 'digits' : values.every((v) => /^[A-Za-z0-9_]*$/.test(v)) ? 'word' : null;
@@ -503,6 +508,10 @@ function weaker(a: GuardFact, b: GuardFact, at: Node): GuardFact | null {
       ...(a.newlineTail || b.newlineTail ? { newlineTail: true } : {}),
       check: at,
     };
+  }
+  // Not a character class: "word OR quoted literal" promises nothing either does.
+  if (a.strength === 'quoted-literal' || b.strength === 'quoted-literal') {
+    return a.strength === b.strength ? { strength: a.strength, check: at } : null;
   }
   const asCharset = (f: GuardFact): GuardStrength | null => (f.strength === 'fixed' ? classOfValues(f.values ?? ['\u0000']) : f.strength);
   const x = asCharset(a);
@@ -741,6 +750,81 @@ function comparisonOutcome(node: Node, language: LanguageId, depth: number): Out
   return equal ? { whenTrue: facts, whenFalse: new Map() } : { whenTrue: new Map(), whenFalse: facts };
 }
 
+/** `'` or `"` written as a one-character Python literal, in any of its spellings. */
+const QUOTE_LITERALS: Readonly<Record<string, string>> = { [`"'"`]: "'", [`'\\''`]: "'", [`'"'`]: '"', [`"\\""`]: '"' };
+
+/**
+ * `s.startswith(Q) and s.endswith(Q) and Q not in s[1:-1]`, or its negation
+ * `not s.startswith(Q) or not s.endswith(Q) or Q in s[1:-1]` (true side leaves).
+ *
+ * Where it holds, s is exactly one Q-quoted literal with no Q inside, so
+ * eval/exec can only produce a str (or a SyntaxError). BenchmarkPython fences
+ * eval and exec with it; the engine proved 7 of those safe cases "vulnerable".
+ *
+ * Recognised WHOLE or not at all - each part alone proves nothing - and on one
+ * subject with one quote character.
+ */
+function quotedLiteralFence(node: Node): Outcome | null {
+  const operator = operatorOf(node).toLowerCase();
+  if (operator !== 'and' && operator !== 'or') return null;
+  const operands: Node[] = [];
+  const flatten = (n: Node | null): void => {
+    if (!n) return;
+    if (n.type === 'parenthesized_expression') return flatten(firstNamed(n));
+    if (n.type === 'boolean_operator' && operatorOf(n).toLowerCase() === operator) {
+      flatten(n.childForFieldName('left'));
+      flatten(n.childForFieldName('right'));
+    } else operands.push(n);
+  };
+  flatten(node);
+  // `and`: every operand true on the true side. `or`: every operand false on the false side.
+  const need = operator === 'and';
+  const seen = new Map<string, Set<string>>(); // `${subject}|${quote}` -> parts
+  for (let operand of operands) {
+    let truth = need;
+    while (operand.type === 'not_operator' || operand.type === 'parenthesized_expression') {
+      if (operand.type === 'not_operator') truth = !truth;
+      const inner = operand.childForFieldName('argument') ?? firstNamed(operand);
+      if (!inner) break;
+      operand = inner;
+    }
+    let part: string | null = null;
+    let subject = '';
+    let quote: string | undefined;
+    if (operand.type === 'call' && truth) {
+      const callee = operand.childForFieldName('function');
+      const method = callee?.type === 'attribute' ? callee.childForFieldName('attribute')?.text : undefined;
+      const args = callArgs(operand);
+      quote = args.length === 1 ? QUOTE_LITERALS[args[0]?.text ?? ''] : undefined;
+      if ((method === 'startswith' || method === 'endswith') && quote) {
+        part = method;
+        subject = normalizeExpression(callee?.childForFieldName('object')?.text ?? '');
+      }
+    } else if (operand.type === 'comparison_operator') {
+      const op = operatorOf(operand);
+      const [left, right] = namedKids(operand);
+      quote = QUOTE_LITERALS[left?.text ?? ''];
+      // `Q in s[1:-1]` must come out false; `Q not in s[1:-1]` true.
+      if (quote && right?.type === 'subscript' && ((op === 'in' && !truth) || (op === 'not in' && truth))) {
+        if (normalizeExpression(right.text.slice(right.childForFieldName('value')?.text.length ?? 0)) === '[1:-1]') {
+          part = 'inner';
+          subject = normalizeExpression(right.childForFieldName('value')?.text ?? '');
+        }
+      }
+    }
+    if (!part || !subject || !quote) continue;
+    const key = `${subject}|${quote}`;
+    if (!seen.has(key)) seen.set(key, new Set());
+    seen.get(key)!.add(part);
+  }
+  for (const [key, parts] of seen) {
+    if (parts.size !== 3) continue;
+    const facts: Facts = new Map([[key.slice(0, key.lastIndexOf('|')), { strength: 'quoted-literal', check: node }]]);
+    return need ? { whenTrue: facts, whenFalse: new Map() } : { whenTrue: new Map(), whenFalse: facts };
+  }
+  return null;
+}
+
 const outcomeCache = new WeakMap<Tree, Map<number, Outcome>>();
 
 /** What is known about values when this condition came out true, and when false. */
@@ -776,6 +860,8 @@ function computeOutcome(node: Node, language: LanguageId, depth: number): Outcom
     case 'binary_expression':
     case 'boolean_operator':
     case 'comparison_operator': {
+      const fence = language === 'python' ? quotedLiteralFence(node) : null;
+      if (fence) return fence;
       const operator = operatorOf(node).toLowerCase();
       if (operator === '&&' || operator === 'and') {
         const a = outcomeOf(node.childForFieldName('left'), language, depth + 1);
