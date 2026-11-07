@@ -298,6 +298,9 @@ export const xssRule: Rule = {
   cwe: 'CWE-79',
   owasp: 'A05:2025 Injection',
   severity: 'high',
+  summary: 'A value is written into a web page as HTML; if it comes from outside, it can add its own script and run as your site.',
+  fix:
+    'Insert it as text (textContent, or the template\'s auto-escaping) or escape/sanitise it before it becomes HTML.',
   explanation:
     'A browser reads HTML as instructions, so text inserted into a page without ' +
     'escaping can bring its own <script> tag or event handler and run as your site. ' +

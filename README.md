@@ -809,6 +809,7 @@ Useful flags:
                         name; * and ** work as usual (--exclude=**/*.min.js)
 --no-cross-file         analyse each file alone: faster, far less memory, and
                         no finding that crosses a module boundary
+--full                  the long terminal report: reasoning, limits, OWASP table
 --coverage-matrix       print the full rule × language table
 --show-suppressed       list findings silenced by defuse:ignore comments
 --sarif                 SARIF 2.1.0, for GitHub code scanning and any SARIF viewer
@@ -870,7 +871,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 1098 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 1099 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.

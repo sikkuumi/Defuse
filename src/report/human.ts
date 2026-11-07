@@ -17,6 +17,8 @@ import { SEVERITY_ORDER, type Finding, type FlowStep, type Severity } from '../c
 import type { CoverageReport } from '../core/coverage.js';
 import { scoreAnalysis } from '../core/score.js';
 import type { ScanResult } from '../engine/scan.js';
+import { RUNTIME_VERSION_RULE } from '../platform/runtime-version.js';
+import { getRule } from '../rules/registry.js';
 import { color, g, wrapText } from './colors.js';
 
 const WIDTH = 92;
@@ -42,6 +44,14 @@ export interface HumanReportOptions {
   readonly showSuppressed?: boolean;
   readonly showCoverageMatrix?: boolean;
   readonly minSeverity?: Severity;
+  /**
+   * Print everything: the gauge arithmetic, each finding's reasoning and
+   * limits, OWASP and the full "not checked" list. Off by default because a
+   * first-time tester read 200 lines for one finding and called it
+   * overwhelming. Nothing is dropped - the short report names every gap in a
+   * line and points here, and --json and --report always carry all of it.
+   */
+  readonly full?: boolean;
   /**
    * What the scan was actually pointed at, as resolved from the command line.
    *
@@ -80,7 +90,42 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
    * number from the web page for the same scan. Rendered as bars rather than
    * dials for obvious reasons, but the READING is identical.               */
   const score = scoreAnalysis(result, result.stats.filesFound);
-  out.push(heading('Readings'));
+  const full = options.full ?? false;
+  const present = Object.keys(result.byLanguage).sort();
+  out.push(heading('Summary'));
+  if (!score.examinedNothing) {
+    /*
+     * Plain sentences first. The gauges below are exact but a tester read
+     * "82%/100%" next to "64%" next to "mean of 2 measured ratios" and could
+     * not say what any of them meant. These lines use the same counts and say
+     * them in words; --full keeps the arithmetic.
+     */
+    const flowCount = result.findings.filter((f) => f.confidence === 'flow-verified').length;
+    const guessCount = result.findings.length - flowCount;
+    out.push(
+      `  ${color.red('proven  ')}  ${color.bold(String(flowCount))}  ` +
+        color.dim('attacker input was traced into a dangerous call - every step is printed'),
+    );
+    out.push(
+      `  ${color.yellow('possible')}  ${color.bold(String(guessCount))}  ` +
+        color.dim('risky-looking code, but the input was not traced - check these by hand'),
+    );
+    out.push(
+      `  ${'read'.padEnd(8)}  ${result.stats.filesParsed} of ` +
+        `${result.stats.filesFound || result.stats.filesParsed} file(s)`,
+    );
+    for (const id of present) {
+      const cells = result.coverage.matrix.filter((c) => c.language === id);
+      const count = (s: string) => cells.filter((c) => c.status === s).length;
+      const deep = result.coverage.taint.find((t) => t.language === id)?.implemented ?? false;
+      out.push(
+        `  ${'checked'.padEnd(8)}  ${id}: ${count('implemented')} of ${cells.length} bug types fully, ` +
+          `${count('partial')} partly, ${count('not-implemented')} not at all` +
+          color.dim(deep ? ' - with data-flow tracing' : ' - pattern matching only, no data-flow tracing'),
+      );
+    }
+  }
+  if (full && !score.examinedNothing) out.push(heading('Readings'));
   if (score.examinedNothing) {
     // Printed INSTEAD of the dials, not above them. Zeroes shown next to this
     // warning would still be read as zeroes.
@@ -97,7 +142,7 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
           ),
         ),
     );
-  } else {
+  } else if (full) {
     for (const reading of score.gauges) {
       const filled = Math.round((reading.value / reading.max) * 28);
       const bar = `${g('dotFull').repeat(filled)}${g('dotEmpty').repeat(28 - filled)}`;
@@ -115,8 +160,8 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
       out.push(color.dim(`  ${' '.repeat(20)} ${reading.working.join('  ' + g('middot') + '  ')}`));
     }
   }
-  out.push('');
-  if (!score.examinedNothing) {
+  if (full && !score.examinedNothing) {
+    out.push('');
     out.push(
     color.dim(
       `  ${wrapText(
@@ -196,11 +241,14 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
         lastFile = finding.location.file;
         out.push(`\n  ${color.underline(color.cyan(lastFile))}`);
       }
-      out.push(renderFinding(finding));
+      out.push(renderFinding(finding, full));
     }
   }
 
-  /* ---------------- the honesty block ---------------- */
+  /* ---------------- the honesty block ----------------
+   * The short report states both counts, with their meanings, in the summary
+   * at the top; this block is the long form. */
+  if (full) {
   out.push(heading('Confidence'));
   const signature = result.findings.filter((f) => f.confidence === 'signature-based').length;
   const flow = result.findings.filter((f) => f.confidence === 'flow-verified').length;
@@ -247,8 +295,8 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
    * taint is MISSING. With every language implemented that list is empty, so the
    * report said nothing at all and left the reader's stale belief standing.
    *
-   * A capability you only mention in the negative is one nobody can confirm. */
-  const present = Object.keys(result.byLanguage).sort();
+   * A capability you only mention in the negative is one nobody can confirm.
+   * The short report says it per language on the summary's "checked" lines. */
   if (present.length > 0) {
     out.push(heading('Analysis depth in this scan'));
     for (const id of present) {
@@ -307,9 +355,34 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
       out.push(color.dim(`           why       ${wrapText(category.note, WIDTH - 22, '                     ')}`));
     }
   }
+  }
 
-  /* ---------------- coverage / gaps ---------------- */
-  out.push(renderCoverage(result.coverage, options.showCoverageMatrix ?? false));
+  /* ---------------- coverage / gaps ----------------
+   * The short form still names every gap - by count, in plain words - so a
+   * quiet scan can never read as a clean one. It only leaves out the list. */
+  if (full || options.showCoverageMatrix) {
+    out.push(renderCoverage(result.coverage, options.showCoverageMatrix ?? false));
+  } else {
+    const owaspNone = result.coverage.owaspCoverage.filter((c) => c.state === 'none').length;
+    const here = result.coverage.gaps.filter((c) => present.includes(c.language));
+    const partly = here.filter((c) => c.status === 'partial').length;
+    const notAtAll = here.length - partly;
+    out.push(heading('What this scan did NOT check'));
+    out.push(
+      `  ${wrapText(
+        `OWASP Top 10: ${owaspNone} of 10 categories have no rule at all, and the other ` +
+          `${10 - owaspNone} are checked only in part.` +
+          (present.length > 0
+            ? ` For the language(s) in this scan, ${notAtAll} rule/language pair(s) are not ` +
+              `checked and ${partly} only partly.`
+            : '') +
+          ` The engine has ${result.coverage.engine.notImplemented.length} known limits. ` +
+          'No findings means these rules found nothing - not that the code is safe.',
+        WIDTH - 4,
+        '  ',
+      )}`,
+    );
+  }
 
   /* ---------------- scan health ---------------- */
   out.push(heading('Scan'));
@@ -539,6 +612,15 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
     out.push(color.dim(`  ${result.oversizedFiles.length} file(s) skipped for size (>2MB)`));
   }
 
+  if (!full) {
+    out.push('');
+    out.push(
+      color.dim(
+        '  Short report. --full adds the reasoning and limits on each finding, the OWASP table\n' +
+          '  and every gap by name; --report=report.html writes all of it to one file.',
+      ),
+    );
+  }
   out.push('');
   return out.join('\n');
 }
@@ -551,7 +633,9 @@ function countBySeverity(findings: readonly Finding[]): Record<Severity, number>
   return counts;
 }
 
-function renderFinding(finding: Finding): string {
+function renderFinding(finding: Finding, full: boolean): string {
+  const rule = getRule(finding.ruleId) ?? (finding.ruleId === RUNTIME_VERSION_RULE.id ? RUNTIME_VERSION_RULE : undefined);
+  const indent = '                 ';
   const lines: string[] = [];
   // Pad BEFORE colouring: ANSI escape codes are invisible but count towards
   // String.length, so padding a coloured string misaligns every column.
@@ -573,14 +657,24 @@ function renderFinding(finding: Finding): string {
   lines.push(
     `           ${color.dim('code')}  ${color.gray(finding.location.snippet)}`,
   );
-  lines.push(
-    `           ${color.dim('node')}  ${color.gray(finding.location.astNodePath)}`,
-  );
-  lines.push(`           ${color.cyan('why')}   ${wrapText(finding.reasoning, WIDTH - 18, '                 ')}`);
+  if (full) {
+    lines.push(`           ${color.dim('node')}  ${color.gray(finding.location.astNodePath)}`);
+  }
+  if (rule) lines.push(`           ${color.cyan('what')}  ${wrapText(rule.summary, WIDTH - 18, indent)}`);
+  // A pattern match has no path to show, so its reasoning IS the evidence and
+  // stays in the short report; a traced finding's evidence is the path itself.
+  if (full || !finding.flowPath) {
+    lines.push(`           ${color.cyan('why')}   ${wrapText(finding.reasoning, WIDTH - 18, indent)}`);
+  }
   if (finding.flowPath) lines.push(renderFlowPath(finding.flowPath));
-  lines.push(
-    `           ${color.yellow('gap')}   ${color.dim(wrapText(finding.limitations, WIDTH - 18, '                 '))}`,
-  );
+  if (rule) lines.push(`           ${color.green('fix')}   ${wrapText(rule.fix, WIDTH - 18, indent)}`);
+  if (full) {
+    lines.push(`           ${color.yellow('gap')}   ${color.dim(wrapText(finding.limitations, WIDTH - 18, indent))}`);
+  } else if (!finding.flowPath) {
+    lines.push(
+      `           ${color.yellow('note')}  ${color.dim('not traced - this may be a false positive; --full says what was not checked')}`,
+    );
+  }
   return lines.join('\n');
 }
 
@@ -598,14 +692,31 @@ function renderFlowPath(path: readonly FlowStep[]): string {
     sink: (t) => color.red(t),
   };
   const lines: string[] = [`           ${color.magenta('flow')}  ${color.dim(`traced source ${g('arrow')} sink:`)}`];
-  path.forEach((step, index) => {
+  // `a + b + c` is two concatenation hops on one line, and printing the same
+  // sentence twice read as a glitch. Same line, kind and words -> one row, xN.
+  // Display only: --json, SARIF and the HTML report keep every hop.
+  const rows: { step: FlowStep; times: number }[] = [];
+  for (const step of path) {
+    const last = rows[rows.length - 1];
+    if (
+      last &&
+      last.step.kind === step.kind &&
+      last.step.location.startLine === step.location.startLine &&
+      last.step.description === step.description
+    ) {
+      last.times++;
+    } else {
+      rows.push({ step, times: 1 });
+    }
+  }
+  rows.forEach(({ step, times }, index) => {
     const marker =
-      index === 0 ? g('cornerTop') : index === path.length - 1 ? g('cornerBottom') : g('vertical');
+      index === 0 ? g('cornerTop') : index === rows.length - 1 ? g('cornerBottom') : g('vertical');
     const where = `${step.location.startLine}`.padStart(4);
     const kind = style[step.kind](step.kind.padEnd(11));
     lines.push(
       `                 ${color.dim(marker)} ${color.dim(`L${where}`)} ${kind} ` +
-        wrapText(step.description, WIDTH - 36, '                            '),
+        wrapText(step.description + (times > 1 ? ` (x${times})` : ''), WIDTH - 36, '                            '),
     );
   });
   return lines.join('\n');

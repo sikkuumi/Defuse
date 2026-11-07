@@ -136,6 +136,9 @@ export const unsafeDeserializationRule: Rule = {
   cwe: 'CWE-502',
   owasp: 'A08:2025 Software or Data Integrity Failures',
   severity: 'critical',
+  summary: 'Bytes are turned back into objects; if they come from outside, they can make the program run code the attacker picks.',
+  fix:
+    'Use a plain data format such as JSON, or restrict which classes may be loaded, or sign the data.',
   explanation:
     'Deserialising does not just read data - it names a class and rebuilds it, ' +
     'which runs that class\'s code. Whoever controls the bytes therefore chooses ' +

@@ -230,6 +230,9 @@ export const hardcodedSecretRule: Rule = {
   cwe: 'CWE-798',
   owasp: 'A07:2025 Authentication Failures',
   severity: 'high',
+  summary: 'A password or key is written in the code, so anyone with the code or its git history has it.',
+  fix:
+    'Move it to an environment variable or secrets manager, read it by name, and rotate the exposed one.',
   explanation:
     'A password or API key written into source code lives in git history forever, on ' +
     'every machine that cloned the repo, and in every CI log. It cannot be rotated ' +

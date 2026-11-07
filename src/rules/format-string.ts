@@ -83,6 +83,9 @@ export const formatStringRule: Rule = {
   cwe: 'CWE-134',
   owasp: 'A05:2025 Injection',
   severity: 'high',
+  summary: 'The format string is not fixed; if it comes from outside, it can read or even write memory.',
+  fix:
+    'Make the format a fixed string and pass the value separately: printf("%s", name), not printf(name).',
   explanation:
     'A format string is a small program: %x reads, %s dereferences, and %n WRITES. When ' +
     'the format itself comes from the user, they are writing that program. The fix is ' +

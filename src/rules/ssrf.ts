@@ -44,6 +44,9 @@ export const ssrfRule: Rule = {
   cwe: 'CWE-918',
   owasp: 'A01:2025 Broken Access Control',
   severity: 'high',
+  summary: 'The server fetches a URL the request may choose, so an attacker could make it reach internal systems.',
+  fix:
+    'Only fetch hosts on an allowlist, checked after the URL is resolved, and do not follow redirects off it.',
   explanation:
     'Your server sits inside the network. It can reach the database, the admin ' +
     'panel, and the cloud metadata endpoint that hands out instance credentials - ' +

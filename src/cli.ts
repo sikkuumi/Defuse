@@ -180,6 +180,9 @@ ${b('USAGE')}
   defuse doctor
 
 ${b('SCAN OPTIONS')}
+  --full                    the long terminal report: reasoning and limits on every
+                            finding, the gauge arithmetic, OWASP table and every
+                            unchecked rule by name. Default is a short report.
   --json                    machine-readable output (superset of the terminal report)
   --sarif                   SARIF 2.1.0, for GitHub/GitLab code scanning. A
                             flow-verified finding carries its traced path as a
@@ -329,9 +332,14 @@ async function commandScan(args: Args): Promise<number> {
     ...(quiet
       ? {}
       : {
+          // analyze() reports 2N steps for N files: every file is read once,
+          // then checked once. "scanning 3/4" for a two-file folder looked like
+          // a counting bug, so the two passes are named and counted per file.
           onProgress: (done, total, file) => {
+            const files = total / 2;
+            const step = done > files ? `checking ${done - files}` : `reading ${done}`;
             process.stderr.write(
-              `\r${color.dim(`scanning ${done}/${total} ${path.basename(file).slice(0, 40)}`.padEnd(70))}`,
+              `\r${color.dim(`${step}/${files} ${path.basename(file).slice(0, 40)}`.padEnd(70))}`,
             );
           },
         }),
@@ -371,6 +379,7 @@ async function commandScan(args: Args): Promise<number> {
       renderHuman(result, {
         showSuppressed: args.flags.has('show-suppressed'),
         showCoverageMatrix: args.flags.has('coverage-matrix'),
+        full: args.flags.has('full'),
         minSeverity,
         target: path.relative(process.cwd(), resolved) || '.',
       }),
@@ -436,7 +445,9 @@ function commandRules(args: Args): number {
     }
     console.log(`\n${color.bold(rule.name)}  ${color.dim(`(${rule.id})`)}`);
     console.log(color.dim(`${rule.cwe} · ${rule.owasp} · severity ${rule.severity}\n`));
+    console.log(`${color.cyan('In one line')}\n  ${wrapText(rule.summary, 86, '  ')}\n`);
     console.log(`${color.cyan('The vulnerability')}\n  ${wrapText(rule.explanation, 86, '  ')}\n`);
+    console.log(`${color.green('How to fix it')}\n  ${wrapText(rule.fix, 86, '  ')}\n`);
     console.log(`${color.yellow('What this rule cannot tell you')}\n  ${wrapText(rule.limitations, 86, '  ')}\n`);
     console.log(color.cyan('Per-language support'));
     for (const language of LANGUAGES) {

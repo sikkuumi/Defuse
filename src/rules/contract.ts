@@ -170,6 +170,14 @@ export interface Rule {
    */
   readonly explanation: string;
   /**
+   * ONE plain sentence a beginner can read under a finding: what goes wrong,
+   * no jargon. The terminal prints it on every finding; `explanation` is the
+   * long version behind --full and `rules --explain`.
+   */
+  readonly summary: string;
+  /** ONE sentence: what to change in the code. Printed as `fix` on every finding. */
+  readonly fix: string;
+  /**
    * What this rule structurally cannot determine. Copied onto every finding it
    * produces unless the hit overrides it. Required - a rule with no stated
    * limitations is a rule pretending to be certain.

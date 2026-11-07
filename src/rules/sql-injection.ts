@@ -124,6 +124,9 @@ export const sqlInjectionRule: Rule = {
   cwe: 'CWE-89',
   owasp: 'A05:2025 Injection',
   severity: 'critical',
+  summary: 'The SQL query text is built from pieces; if any piece comes from outside, it can rewrite what the query does.',
+  fix:
+    'Use a parameterised query: keep the SQL fixed with placeholders and pass values separately, e.g. cursor.execute("... WHERE name = ?", (name,)).',
   explanation:
     'A database reads the string you give it as instructions, not as a question. ' +
     'When a query is glued together from pieces, anything spliced in can change what ' +

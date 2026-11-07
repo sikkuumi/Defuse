@@ -1280,6 +1280,41 @@ async function main(): Promise<number> {
     }
   }
 
+  /*
+   * ---- the short report is short, and still honest ----
+   *
+   * A first-time tester called 200 lines for one finding "overwhelming", so the
+   * default dropped the long sections behind --full. What the short form may
+   * NOT drop: a fix on every finding, and a "not checked" section, so a quiet
+   * scan can never read as a clean one.
+   */
+  console.log(`\n${color.bold('  Short and full terminal report')}`);
+  {
+    const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
+    const short = plain(renderHuman(result, { target: 'x' }));
+    const long = plain(renderHuman(result, { target: 'x', full: true }));
+    const problems: string[] = [];
+    const fixes = (short.match(/^ {11}fix {3}/gm) ?? []).length;
+    if (fixes !== result.findings.length) {
+      problems.push(`${fixes} fix lines for ${result.findings.length} findings in the short report`);
+    }
+    if (!short.includes('What this scan did NOT check')) problems.push('short report dropped "not checked"');
+    if (short.includes('OWASP Top 10 (2025)')) problems.push('short report still prints the OWASP table');
+    if (!long.includes('OWASP Top 10 (2025)')) problems.push('--full lost the OWASP table');
+    if (!long.includes('gap   ')) problems.push('--full lost the per-finding limits');
+    if (/^(.*concatenated.*)\n\1$/m.test(short)) problems.push('a repeated flow step was printed twice');
+    if (problems.length === 0) {
+      passed++;
+      console.log(
+        `    ${color.green(g('tick'))} default report is short with a fix on every finding; --full keeps the rest ` +
+          `(${short.split('\n').length} vs ${long.split('\n').length} lines)`,
+      );
+    } else {
+      failed++;
+      for (const p of problems) console.log(`    ${color.red(g('cross'))} ${p}`);
+    }
+  }
+
   console.log(`\n${color.bold('  Test-path conventions')}`);
   {
     const TEST_PATHS: readonly string[] = [
@@ -1766,6 +1801,8 @@ async function main(): Promise<number> {
   const userFacingText: Array<{ where: string; text: string }> = [];
   for (const rule of ALL_RULES) {
     userFacingText.push({ where: `${rule.id}.explanation`, text: rule.explanation });
+    userFacingText.push({ where: `${rule.id}.summary`, text: rule.summary });
+    userFacingText.push({ where: `${rule.id}.fix`, text: rule.fix });
     userFacingText.push({ where: `${rule.id}.limitations`, text: rule.limitations });
     for (const [language, support] of Object.entries(rule.support)) {
       if (support) userFacingText.push({ where: `${rule.id}/${language}`, text: support.note });

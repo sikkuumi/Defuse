@@ -34,6 +34,8 @@ export const RUNTIME_VERSION_RULE = {
   id: 'runtime-version',
   name: 'PHP version with a known critical flaw or no security support',
   owasp: 'A03:2025 Software Supply Chain Failures',
+  summary: 'The project runs on a PHP version with a known serious flaw, or one that no longer gets security fixes.',
+  fix: 'Upgrade PHP to a supported release and update the version declared in the Dockerfile or composer.json.',
   explanation:
     'A program is only as safe as the language runtime under it. When the PHP version a project ' +
     'runs on has a known critical flaw, or no longer gets security fixes at all, an attacker can ' +

@@ -67,6 +67,9 @@ export const unboundedCopyRule: Rule = {
   cwe: 'CWE-120',
   owasp: 'A05:2025 Injection',
   severity: 'high',
+  summary: 'Data is copied into a buffer with no size limit; if the data comes from outside, long input can overwrite memory.',
+  fix:
+    'Use the bounded version that takes the buffer size: snprintf, strncpy/strlcpy, strncat; replace gets with fgets.',
   explanation:
     'strcpy, strcat and sprintf write until they meet a NUL byte, and when the source is ' +
     'attacker-controlled the attacker decides where that byte is. Each has a bounded ' +

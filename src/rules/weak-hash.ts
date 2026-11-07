@@ -82,6 +82,9 @@ export const weakHashRule: Rule = {
   cwe: 'CWE-327',
   owasp: 'A04:2025 Cryptographic Failures',
   severity: 'medium',
+  summary: 'MD5 or SHA-1 is used where security depends on it, and both can be broken cheaply today.',
+  fix:
+    'Use SHA-256 for integrity, HMAC-SHA256 for authentication, and Argon2id or bcrypt for passwords.',
   explanation:
     'MD5 and SHA-1 are broken for security use: finding two inputs with the same ' +
     'fingerprint is cheap today, so they cannot be trusted for signatures or integrity. ' +

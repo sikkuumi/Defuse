@@ -115,6 +115,9 @@ export const commandInjectionRule: Rule = {
   cwe: 'CWE-78',
   owasp: 'A05:2025 Injection',
   severity: 'critical',
+  summary: 'A shell command is built from pieces; if any piece comes from outside, it can add a command of its own.',
+  fix:
+    'Run the program with an argument list and no shell, e.g. subprocess.run(["ls", path]) or execFile("ls", [path]).',
   explanation:
     'A shell reads punctuation like ; | && ` and $() as instructions. If a command ' +
     'string is glued together from pieces, anything spliced in can end your command ' +

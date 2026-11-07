@@ -197,6 +197,9 @@ export const codeInjectionRule: Rule = {
   cwe: 'CWE-94',
   owasp: 'A05:2025 Injection',
   severity: 'critical',
+  summary: 'A string is run as program code; if any of it comes from outside, the sender decides what your server does.',
+  fix:
+    'Never eval input: parse it instead (a maths parser, a fixed list of allowed commands, or a lookup table).',
   explanation:
     'Passing a string to eval (or exec, Function, assert) tells your own language ' +
     'to run it as a program, with every privilege the process has. If any part of ' +
