@@ -871,7 +871,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 1143 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 1144 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.
