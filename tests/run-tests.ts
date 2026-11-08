@@ -3439,12 +3439,15 @@ async function main(): Promise<number> {
 
   console.log(`\n${color.bold('  README self-consistency')}`);
   const readmeClaim = /`npm test`\s*[—-]\s*([\d,]+)\s*checks/.exec(await readFile(readmePath, 'utf8'));
-  const totalWithThisCheck = passed + failed + 1;
+  // A skipped check still counts toward the README number: each SKIPPED line stands in for one
+  // check, so a fresh clone without ui/engine or docs/*.html built does not fail on the count.
+  const totalWithThisCheck = passed + failed + skipped + 1;
   const claimedCount = readmeClaim?.[1] ? Number(readmeClaim[1].replace(/,/g, '')) : NaN;
   if (claimedCount === totalWithThisCheck) {
     passed++;
     console.log(
-      `    ${color.green(g('tick'))} README says ${claimedCount} checks, and ${totalWithThisCheck} ran`,
+      `    ${color.green(g('tick'))} README says ${claimedCount} checks, and ${totalWithThisCheck} ran` +
+        (skipped > 0 ? ` or were skipped (${skipped})` : ''),
     );
   } else {
     failed++;

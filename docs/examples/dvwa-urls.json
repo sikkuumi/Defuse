@@ -1,0 +1,8 @@
+{
+  "base": "http://localhost:4280/",
+  "root": "corpus2/DVWA",
+  "rules": [
+    ["^vulnerabilities/([^/]+)/source/(low|medium|high|impossible)\\.php$", "vulnerabilities/$1/", "security=$2"],
+    ["^vulnerabilities/.+\\.php$", "$&"]
+  ]
+}
