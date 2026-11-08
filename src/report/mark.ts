@@ -23,3 +23,25 @@ export function markSvg(width: number, title = ''): string {
     `<g transform="translate(0,960) scale(0.1,-0.1)" fill="${MARK_COLOUR}"><path d="${MARK_PATH}"/></g></svg>`
   );
 }
+
+/*
+ * THE MARK, AS BLOCKS - the terminal banner.
+ *
+ * "DEFUSE" in chunky block letters with a box-drawing shadow.
+ */
+const BANNER = [
+  '██████╗ ███████╗███████╗██╗   ██╗███████╗███████╗',
+  '██╔══██╗██╔════╝██╔════╝██║   ██║██╔════╝██╔════╝',
+  '██║  ██║█████╗  █████╗  ██║   ██║███████╗█████╗',
+  '██║  ██║██╔══╝  ██╔══╝  ██║   ██║╚════██║██╔══╝',
+  '██████╔╝███████╗██║     ╚██████╔╝███████║███████╗',
+  '╚═════╝ ╚══════╝╚═╝      ╚═════╝ ╚══════╝╚══════╝',
+];
+
+/** Columns the banner needs. */
+export const BANNER_WIDTH = Math.max(...BANNER.map((l) => l.length));
+
+/** The banner as plain lines. */
+export function bannerLines(): string[] {
+  return [...BANNER];
+}

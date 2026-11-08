@@ -486,7 +486,9 @@ const PYTHON_DICTIONARY: TaintDictionary = {
       description: 'shell quoting (shlex.quote)',
     },
     {
-      names: ['int', 'float'],
+      // ord() and len() always return an int. Without ord, BenchmarkPython's
+      // char-by-char escaper `f'&#x{hex(ord(c))[2:]};'` read as passing c through.
+      names: ['int', 'float', 'ord', 'len'],
       kinds: ['sql', 'command', 'xss'],
       description: 'conversion to a number',
     },

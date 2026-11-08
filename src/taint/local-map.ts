@@ -392,8 +392,7 @@ export function resolvePythonListRead(read: Node): ListRead | null {
   const listName = receiver.text;
   const index = Number(indexNode.text);
 
-  let fn: Node | null = read.parent;
-  while (fn && fn.type !== 'function_definition') fn = fn.parent;
+  const fn = enclosingPythonFunction(read);
   if (!fn) return null;
 
   let block: Node | null = null;
@@ -474,6 +473,103 @@ export function resolvePythonListRead(read: Node): ListRead | null {
 
 const contains = (outer: Node, inner: Node): boolean => outer.startIndex <= inner.startIndex && outer.endIndex >= inner.endIndex;
 
+/** The Python function a node sits in, or null at module level. */
+export function enclosingPythonFunction(from: Node): Node | null {
+  let fn: Node | null = from.parent;
+  while (fn && fn.type !== 'function_definition') fn = fn.parent;
+  return fn;
+}
+
+/** Whether any identifier spelled `name` appears in `fn` strictly between two offsets. */
+export function mentionedBetween(fn: Node, name: string, from: number, to: number): boolean {
+  let found = false;
+  const visit = (n: Node): void => {
+    if (found || n.endIndex <= from || n.startIndex >= to) return;
+    if (n.type === 'identifier' && n.text === name) found = true;
+    for (const child of named(n)) visit(child);
+  };
+  visit(fn);
+  return found;
+}
+
+/*
+ * THE SAME PROOF FOR A PYTHON DICT, READ AS `d['k']`.
+ *
+ *     m = {}
+ *     m['keyA'] = 'a-Value'
+ *     m['keyB'] = param
+ *     m['keyC'] = 'another-Value'
+ *     bar = m['keyB']                      # param
+ *
+ * BenchmarkPython's copy of the Java HashMap above. Conditions, as for the
+ * list: `m = {}` once, as its own statement; every other mention of the name
+ * is either a write `m['literal'] = v` as its own statement directly in that
+ * block, or a read `m['literal']`. Anything else - passed whole (`.format(m)`),
+ * a method (`m.get`, `m.update`), iterated, `del`, `global`, a key that is not
+ * a plain literal - ends the proof. Two literals are the same key exactly when
+ * their text matches: no prefixes, no escapes.
+ */
+const PY_KEY = /^(['"])([^'"\\]*)\1$/;
+const pyKey = (n: Node | null | undefined): string | null => (n?.type === 'string' ? PY_KEY.exec(n.text)?.[2] ?? null : null);
+
+export function resolvePythonDictRead(read: Node): ContainerRead | null {
+  if (read.type !== 'subscript') return null;
+  const receiver = read.childForFieldName('value');
+  const key = pyKey(read.childForFieldName('subscript'));
+  if (receiver?.type !== 'identifier' || key === null) return null;
+  const name = receiver.text;
+  const fn = enclosingPythonFunction(read);
+  if (!fn) return null;
+
+  let declaration: Node | null = null;
+  const writes: Array<{ key: string; node: Node; value: Node }> = [];
+  let escapes = false;
+  let walked = 0;
+  const visit = (n: Node): void => {
+    if (escapes) return;
+    if (++walked > 20000) {
+      escapes = true;
+      return;
+    }
+    if (n.type === 'identifier' && n.text === name) {
+      const parent = n.parent;
+      const statement = parent?.parent;
+      // m = {}  - the one binding.
+      if (parent?.type === 'assignment' && sameSpan(parent.childForFieldName('left'), n)) {
+        const right = parent.childForFieldName('right');
+        if (declaration || right?.type !== 'dictionary' || named(right).length > 0 || statement?.type !== 'expression_statement' || statement.parent?.type !== 'block') {
+          escapes = true;
+          return;
+        }
+        declaration = statement;
+        return;
+      }
+      if (parent?.type === 'subscript' && sameSpan(parent.childForFieldName('value'), n)) {
+        const k = pyKey(parent.childForFieldName('subscript'));
+        const holder = parent.parent;
+        const value = holder?.childForFieldName('right');
+        if (k === null) escapes = true;
+        else if (holder?.type === 'assignment' && sameSpan(holder.childForFieldName('left'), parent)) {
+          if (!value || holder.parent?.type !== 'expression_statement') escapes = true;
+          else writes.push({ key: k, node: holder.parent, value });
+        } else if (holder?.type === 'augmented_assignment' || holder?.type === 'delete_statement') escapes = true;
+        return;
+      }
+      escapes = true;
+      return;
+    }
+    for (const child of named(n)) visit(child);
+  };
+  visit(fn);
+  const home = declaration as Node | null; // assigned inside visit(), which TS cannot see
+  const block = home?.parent ?? null;
+  // Every write certainly runs: each is a statement directly in the declaring block.
+  if (escapes || !home || !block || writes.some((w) => !sameSpan(w.node.parent, block) || w.node.startIndex < home.startIndex)) return null;
+  if (home.endIndex > read.startIndex || !contains(block, read)) return null;
+  const last = writes.filter((w) => w.key === key && w.node.endIndex <= read.startIndex).pop();
+  return last ? { container: name, selector: `'${key}'`, write: last.node, value: last.value } : null;
+}
+
 /** A read from a local map or list, resolved to the write that supplies it. */
 export interface ContainerRead {
   readonly container: string;
@@ -488,7 +584,7 @@ export interface ContainerRead {
 export function resolveContainerRead(call: Node, language: LanguageId): ContainerRead | null {
   if (language === 'python') {
     const list = resolvePythonListRead(call);
-    return list ? { container: list.listName, selector: `index ${list.index}`, write: list.add, value: list.value } : null;
+    return list ? { container: list.listName, selector: `index ${list.index}`, write: list.add, value: list.value } : resolvePythonDictRead(call);
   }
   const map = resolveMapRead(call, language);
   if (map) return { container: map.mapName, selector: `"${map.key}"`, write: map.put, value: map.value };

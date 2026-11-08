@@ -27,7 +27,7 @@
  *
  * Usage:  npm run memory [path-to-source] [--slices=4]
  */
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { readdirSync, statSync, mkdtempSync, rmSync, mkdirSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
@@ -79,26 +79,23 @@ function collect(dir, out = []) {
  */
 function scanPeakRss(dir) {
   return new Promise((resolve) => {
+    // The child reports the kernel's own peak (maxRSS, KB) on fd 3 as it exits - no
+    // `ps` polling, so it works on Windows and cannot miss a spike between samples.
+    const report = `import{writeSync}from"node:fs";process.on("exit",()=>writeSync(3,String(process.resourceUsage().maxRSS)))`;
     const child = spawn(
-      'node',
-      ['--max-old-space-size=6144', join(root, 'dist/src/cli.js'), 'scan', dir, '--json'],
-      { stdio: ['ignore', 'ignore', 'ignore'] },
+      process.execPath,
+      [
+        '--max-old-space-size=6144',
+        `--import=data:text/javascript,${encodeURIComponent(report)}`,
+        join(root, 'dist/src/cli.js'), 'scan', dir, '--json',
+      ],
+      { stdio: ['ignore', 'ignore', 'ignore', 'pipe'] },
     );
-    let peak = 0;
-    const sample = setInterval(() => {
-      try {
-        const rss = Number(
-          execFileSync('ps', ['-o', 'rss=', '-p', String(child.pid)], { encoding: 'utf8' }).trim(),
-        );
-        if (Number.isFinite(rss)) peak = Math.max(peak, rss * 1024);
-      } catch {
-        /* process gone */
-      }
-    }, 60);
+    let kb = '';
+    child.stdio[3].on('data', (d) => (kb += d));
     const started = Date.now();
     child.on('close', (code, signal) => {
-      clearInterval(sample);
-      resolve({ peak, ms: Date.now() - started, killed: signal !== null, signal });
+      resolve({ peak: Number(kb) * 1024, ms: Date.now() - started, killed: signal !== null, signal });
     });
   });
 }

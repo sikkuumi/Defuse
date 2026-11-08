@@ -160,6 +160,8 @@ export function renderJson(result: ScanResult, pretty = true): string {
             notes: result.runtimeVersions.notes,
           }
         : null,
+      /** What `--deps` read and asked osv.dev; null when it did not run. */
+      dependencies: result.dependencies ?? null,
       oversizedFilesSkipped: result.oversizedFiles,
       excludedByUser: result.excluded,
       /**

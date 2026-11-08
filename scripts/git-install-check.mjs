@@ -36,8 +36,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+// Windows can't execFile npm/npx (they're .cmd); run their JS through node when npm launched us.
+const npm = (cmd, args) =>
+  /^np[mx]$/.test(cmd) && process.env.npm_execpath
+    ? [process.execPath, [process.env.npm_execpath.replace(/npm-cli.js$/, `${cmd}-cli.js`), ...args]]
+    : [cmd, args];
 const run = (cmd, args, cwd, env) =>
-  execFileSync(cmd, args, {
+  execFileSync(...npm(cmd, args), {
     cwd,
     encoding: 'utf8',
     maxBuffer: 1024 * 1024 * 64,

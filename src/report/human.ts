@@ -18,6 +18,7 @@ import type { CoverageReport } from '../core/coverage.js';
 import { scoreAnalysis } from '../core/score.js';
 import type { ScanResult } from '../engine/scan.js';
 import { RUNTIME_VERSION_RULE } from '../platform/runtime-version.js';
+import { DEPENDENCY_RULE } from '../platform/dependency-rule.js';
 import { getRule } from '../rules/registry.js';
 import { color, g, wrapText } from './colors.js';
 
@@ -539,6 +540,17 @@ export function renderHuman(result: ScanResult, options: HumanReportOptions = {}
     );
     for (const note of runtime.notes) out.push(color.dim(`  note: ${note}`));
   }
+  const deps = result.dependencies;
+  out.push(
+    color.dim(
+      deps
+        ? `  dependencies (osv.dev, ${deps.checkedAt.slice(0, 10)}): ${deps.checked} package versions from ` +
+            `${deps.read.length} lockfile(s)` +
+            (deps.notRead.length ? ` ${g('middot')} not read: ${deps.notRead.join(', ')}` : '') +
+            (deps.read.some((r) => r.skipped.length) ? ` ${g('middot')} skipped entries in --json` : '')
+        : '  dependencies: library versions not checked - add --deps (sends names and versions to osv.dev)',
+    ),
+  );
   // Build the list FIRST, then decide what to print. The earlier version tried
   // to do both in one expression:
   //
@@ -634,7 +646,7 @@ function countBySeverity(findings: readonly Finding[]): Record<Severity, number>
 }
 
 function renderFinding(finding: Finding, full: boolean): string {
-  const rule = getRule(finding.ruleId) ?? (finding.ruleId === RUNTIME_VERSION_RULE.id ? RUNTIME_VERSION_RULE : undefined);
+  const rule = getRule(finding.ruleId) ?? [RUNTIME_VERSION_RULE, DEPENDENCY_RULE].find((r) => r.id === finding.ruleId);
   const indent = '                 ';
   const lines: string[] = [];
   // Pad BEFORE colouring: ANSI escape codes are invisible but count towards
