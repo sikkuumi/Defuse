@@ -56,7 +56,7 @@ export interface Plan {
 
 /** Team is priced per developer with a floor of this many. */
 export const TEAM_MIN_SEATS = 5;
-const TEAM_PRICE = 49;
+const TEAM_PRICE = 69;
 
 /** Rule/language pairs the engine declares it does not implement - counted, never typed in. */
 function countNotImplemented(): number {
@@ -93,8 +93,8 @@ export function plans(): Plan[] {
           detail: `Every run lists the rule and language pairs it does not cover - ${notImplemented} today - each with its reason.`,
         },
         {
-          name: 'Terminal, browser and CI',
-          detail: 'A terminal command, a browser page that scans on your own machine and uploads nothing, JSON output, and SARIF for GitHub code scanning.',
+          name: 'Terminal, JSON and CI',
+          detail: 'A terminal command, JSON output, and SARIF for GitHub code scanning. The point-and-click browser app is in Pro.',
         },
         {
           name: 'Client report',
@@ -106,11 +106,15 @@ export function plans(): Plan[] {
     {
       name: 'Pro',
       status: 'available',
-      price: { amount: '$19', unit: 'per developer / month' },
+      price: { amount: '$29', unit: 'per developer / month' },
       forWhom: 'One developer working through findings over time, on their own machine.',
       badge: 'One developer',
       builds: 'Everything in Community, and:',
       features: [
+        {
+          name: 'The browser app',
+          detail: 'A point-and-click page that scans on your own machine and uploads nothing - the same engine as the terminal, run from a browser instead of a command line.',
+        },
         {
           name: 'New problems only',
           detail: 'Compare two scans and see only what a change added. A line that moved is matched, not called new; what disappeared is "no longer reported", never "fixed".',
@@ -150,12 +154,50 @@ export function plans(): Plan[] {
       cta: { label: 'Ask for Team', href: enquiry('Team'), primary: true },
     },
     /*
-     * Business and Enterprise were listed here as "coming soon", each with a
-     * "Tell us you need it" button. Removed: a button for a plan that does not
-     * exist only brings requests nobody can fill. A plan is added back when it
-     * is built - and if one is listed before then, it is drawn as "coming
-     * soon", with no price and no features (planCard).
+     * BUSINESS AND ENTERPRISE - the agreed plan (2026-11-08), built in two moves.
+     *
+     * Move 1 (this): they go on the page as "coming soon" - no price, no
+     * features - because none of their features exist yet and this page may
+     * only list what is built (npm test enforces it). The decided numbers are
+     * recorded here so a later session needs nothing but the code:
+     *
+     *   Business   $129 per developer / month, floor of 10 developers.
+     *              Badge when live: "10+ developers".
+     *   Enterprise contract only - price is "Contact us", never a number.
+     *
+     * Move 2 (a later session): BUILD the Business features, then flip Business
+     * to status 'available' with price $129 the moment it has one real feature.
+     * Buildable in this repo, in order: portfolio dashboard across repos ->
+     * findings API / bulk export -> org-wide policy (one fail-gate for all
+     * repos) -> scheduled DAST across apps. SSO, seats/roles and priority
+     * support need auth and support infra, so they stay coming-soon until real.
+     * Enterprise is self-hosted / air-gapped, SSO+SCIM, a compliance pack
+     * (SOC 2 / ISO 27001 / PCI evidence, signed audit trail), private custom
+     * rules and data-residency controls - contract and infra work, listed only
+     * as it ships.
+     *
+     * DAST is a PAID capability too (Pro and Team), but it is kept off the live
+     * cards for the same reason: only the engine (src/dast) exists, not a
+     * product a buyer can use. When DAST is wired as a feature, it is added as
+     * Pro "run a dynamic confirmation against your app" + newly-confirmed-only,
+     * and Team "dynamic confirmation on each pull request" + shared record. A
+     * confirmation never creates or clears a finding, so "the scanner is free"
+     * still holds: it confirms what SAST already proved.
      */
+    {
+      name: 'Business',
+      status: 'coming-soon',
+      forWhom: 'A company with many teams and repositories that wants one view and one policy across all of them.',
+      features: [],
+      cta: { label: 'Tell us you need it', href: enquiry('Business') },
+    },
+    {
+      name: 'Enterprise',
+      status: 'coming-soon',
+      forWhom: 'A large or regulated organisation that runs the scanner inside its own network and answers to auditors.',
+      features: [],
+      cta: { label: 'Contact us', href: enquiry('Enterprise') },
+    },
   ];
 }
 
