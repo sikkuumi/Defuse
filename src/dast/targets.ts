@@ -88,19 +88,15 @@ export function buildTargets(report: { findings: Finding[] }, config: UrlConfig)
     return { targets, skipped, noUrl };
 }
 
-export function loadTargets(reportPath: string, configPath: string): BuiltTargets {
-    const report = JSON.parse(readFileSync(reportPath, 'utf8')) as { findings: Finding[] };
-    const config = JSON.parse(readFileSync(configPath, 'utf8')) as UrlConfig;
-    return buildTargets(report, config);
-}
-
 function main(): void {
     const [reportPath, configPath] = process.argv.slice(2);
     if (reportPath === undefined || configPath === undefined) {
         console.error('usage: node dist/src/dast/targets.js report.json urls.json');
         process.exit(1);
     }
-    const { targets, skipped, noUrl } = loadTargets(reportPath, configPath);
+    const report = JSON.parse(readFileSync(reportPath, 'utf8')) as { findings: Finding[] };
+    const config = JSON.parse(readFileSync(configPath, 'utf8')) as UrlConfig;
+    const { targets, skipped, noUrl } = buildTargets(report, config);
     console.log(JSON.stringify(targets, null, 2));
     console.error(
         `${targets.length} targets; ${skipped} proven findings skipped (no ZAP rule or no named request input); ${noUrl} skipped (no URL rule matched the file)`,
