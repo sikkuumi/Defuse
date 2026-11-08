@@ -68,6 +68,8 @@ import { looksLikeSql, matchKnownSecret, isTestPath } from '../src/rules/lib/str
 import { checkRuntimeVersions, parseComposerRange, readableDate, RUNTIME_VERSION_RULE } from '../src/platform/runtime-version.js';
 import { checkDependencies, dependencyFinding, queryOsv, readLockfile } from '../src/platform/deps.js';
 import { renderJson } from '../src/report/json.js';
+import { groupKey, classify, joinResults } from '../src/dast/zap.js';
+import type { Target } from '../src/dast/targets.js';
 import { CLEAN_PART, destinationPinned } from '../src/taint/tracer.js';
 import { guardClears, regexAllowList } from '../src/rules/lib/guards.js';
 import {
@@ -3434,6 +3436,45 @@ async function main(): Promise<number> {
     check(
       /checked against osv\.dev/.test(withDeps) && /given <code>--deps<\/code>/.test(withoutDeps),
       'the client report says whether library versions were checked, both when they were and when they were not',
+    );
+  }
+
+  /* ---- DAST: every target gets one ZAP verdict, and none is dropped ---- */
+  console.log(`\n${color.bold('  DAST ZAP join')}`);
+  {
+    const mk = (id: string, over: Partial<Target> = {}): Target => ({
+      id,
+      rule: 'sql-injection',
+      zapRule: '40018',
+      file: 'f',
+      url: 'http://dvwa/a/',
+      cookie: 'security=low',
+      from: 'GET',
+      param: 'id',
+      ...over,
+    });
+    const t1 = mk('a:1');
+    const t2 = mk('a:2'); // same spot as t1 -> same scan group, two findings
+    const t3 = mk('b:1', { url: 'http://dvwa/b/' });
+    const t4 = mk('c:1', { url: 'http://dvwa/c/' }); // no outcome recorded for its group
+    const byKey = new Map<string, { zap: 'confirmed' | 'not-confirmed' | 'could-not-test'; detail: string }>();
+    byKey.set(groupKey(t1), { zap: 'confirmed', detail: '' });
+    byKey.set(groupKey(t3), { zap: 'not-confirmed', detail: '' });
+    const rows = joinResults([t1, t2, t3, t4], byKey);
+    const ok =
+      classify('40018', ['90020', '40018']) === 'confirmed' &&
+      classify('40018', ['90020']) === 'not-confirmed' &&
+      classify('40018', []) === 'not-confirmed' &&
+      rows.length === 4 &&
+      new Set(rows.map((r) => r.id)).size === 4 &&
+      rows.filter((r) => r.id === 'a:1' || r.id === 'a:2').every((r) => r.zap === 'confirmed') &&
+      rows.find((r) => r.id === 'b:1')?.zap === 'not-confirmed' &&
+      rows.find((r) => r.id === 'c:1')?.zap === 'could-not-test';
+    if (ok) passed++;
+    else failed++;
+    console.log(
+      `    ${ok ? color.green(g('tick')) : color.red(g('cross'))} ` +
+        `confirmed only on a rule's own alert; every target keeps its id and a group with no scan is could-not-test, never dropped`,
     );
   }
 
