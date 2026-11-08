@@ -24,6 +24,7 @@ import type { Finding } from '../core/finding.js';
 import { SCANNABLE_EXTENSIONS } from '../parse/languages.js';
 import { useNodeGrammars } from '../parse/node-grammars.js';
 import { checkRuntimeVersions, RUNTIME_VERSION_RULE, type RuntimeCheckResult } from '../platform/runtime-version.js';
+import type { DependencyReport } from '../platform/dependency-rule.js';
 import { collectFiles } from './walk.js';
 
 export type { FileParseProblem, Suppression } from '../core/analyze.js';
@@ -55,6 +56,11 @@ export interface ScanResult {
    * platform/runtime-version.ts. Null when --only left the check out.
    */
   readonly runtimeVersions: RuntimeCheckResult | null;
+  /**
+   * What `scan --deps` read and asked osv.dev. Absent when the check did not run -
+   * scan() never sets it; the CLI adds it, because it is the one network call.
+   */
+  readonly dependencies?: DependencyReport;
   /** Per-file participation, so a file a flow passes through is never "clean". */
   readonly fileRoles: AnalysisResult['fileRoles'];
   /** Where the tracer ran out, counted for this scan. */

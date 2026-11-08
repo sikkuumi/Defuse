@@ -66,6 +66,7 @@ import { renderSite } from '../src/report/site.js';
 import { plans, renderPricing } from '../src/report/pricing.js';
 import { looksLikeSql, matchKnownSecret, isTestPath } from '../src/rules/lib/strings.js';
 import { checkRuntimeVersions, parseComposerRange, readableDate, RUNTIME_VERSION_RULE } from '../src/platform/runtime-version.js';
+import { checkDependencies, dependencyFinding, queryOsv, readLockfile } from '../src/platform/deps.js';
 import { renderJson } from '../src/report/json.js';
 import { CLEAN_PART, destinationPinned } from '../src/taint/tracer.js';
 import { guardClears, regexAllowList } from '../src/rules/lib/guards.js';
@@ -3320,6 +3321,120 @@ async function main(): Promise<number> {
           `parse should never need that escape hatch`,
       );
     }
+  }
+
+  /* ---- dependency check: lockfile readers and the OSV answer, offline ---- */
+  console.log(`\n${color.bold('  Dependency check')}`);
+  {
+    const check = (ok: boolean, what: string): void => {
+      if (ok) passed++;
+      else failed++;
+      console.log(`    ${ok ? color.green(g('tick')) : color.red(g('cross'))} ${what}`);
+    };
+    const pins = (file: string, text: string): string[] =>
+      (readLockfile(file, text)?.packages ?? []).map((p) => `${p.name}@${p.version}`);
+
+    const npm3 = JSON.stringify({
+      packages: {
+        '': { name: 'app' },
+        'node_modules/a': { version: '1.0.0' },
+        'node_modules/a/node_modules/@s/b': { version: '2.0.0' },
+        'node_modules/w': { link: true },
+        'node_modules/l': { version: 'file:../l' },
+      },
+    });
+    check(
+      pins('package-lock.json', npm3).join() === 'a@1.0.0,@s/b@2.0.0' &&
+        readLockfile('package-lock.json', npm3)!.skipped.length === 1,
+      'package-lock v2/v3: nested and scoped names read; the project, links and file: paths are not queried, and file: is listed',
+    );
+    check(
+      pins('package-lock.json', JSON.stringify({ dependencies: { a: { version: '1.0.0', dependencies: { b: { version: '2.0.0' } } } } })).join() ===
+        'a@1.0.0,b@2.0.0',
+      'package-lock v1: nested dependencies read',
+    );
+    check(
+      pins('composer.lock', JSON.stringify({ packages: [{ name: 'x/y', version: 'v1.2.0' }], 'packages-dev': [{ name: 'x/z', version: 'dev-main' }] })).join() ===
+        'x/y@v1.2.0',
+      'composer.lock: packages and packages-dev read; a branch version is listed, not queried',
+    );
+    const req = readLockfile('requirements.txt', 'Flask[async]==2.0.1 ; python_version>"3"\n# c\nrequests>=2\n-r base.txt\n')!;
+    check(
+      req.packages.map((p) => `${p.name}@${p.version}`).join() === 'Flask@2.0.1' && req.skipped.length === 2,
+      'requirements.txt: == pins read (extras and markers too); ranges and -r lines are listed as not read',
+    );
+    const gomod = readLockfile('go.mod', 'module m\nrequire a.io/x v1.0.0\nrequire (\n\tb.io/y v0.3.0 // indirect\n)\nreplace a.io/x => ../x\n')!;
+    check(
+      gomod.packages.map((p) => `${p.name}@${p.version}`).join() === 'a.io/x@v1.0.0,b.io/y@v0.3.0' && gomod.skipped.length === 1,
+      'go.mod: single and block requires read; replace directives are named as not applied',
+    );
+    check(readLockfile('package-lock.json', '{not json')!.skipped.length === 1, 'a lockfile that does not parse says so instead of reading as clean');
+
+    // A fake OSV: two databases holding the same CVE, one with a commit-hash fix.
+    const sent: unknown[] = [];
+    const fakeFetch = (async (url: string, init?: { body?: string }) => {
+      if (init?.body) sent.push(JSON.parse(init.body));
+      const vulns: Record<string, unknown> = {
+        'GHSA-1': { id: 'GHSA-1', summary: 's', aliases: ['CVE-1'], database_specific: { severity: 'MODERATE' },
+          affected: [{ package: { name: 'flask', ecosystem: 'PyPI' }, ranges: [{ type: 'ECOSYSTEM', events: [{ fixed: '2.3.2' }] }] }] },
+        'PYSEC-1': { id: 'PYSEC-1', details: 'd', aliases: ['CVE-1'],
+          affected: [{ package: { name: 'flask', ecosystem: 'PyPI' }, ranges: [{ type: 'GIT', events: [{ fixed: 'abc123' }] }] }] },
+      };
+      const body = url.endsWith('/querybatch')
+        ? { results: (JSON.parse(init!.body!) as { queries: unknown[] }).queries.map(() => ({ vulns: [{ id: 'GHSA-1' }, { id: 'PYSEC-1' }] })) }
+        : vulns[decodeURIComponent(url.split('/').pop()!)];
+      return { ok: true, status: 200, json: async () => body };
+    }) as unknown as typeof fetch;
+    const pin = { name: 'flask', version: '2.0.1', ecosystem: 'PyPI' as const, file: 'requirements.txt' };
+    const answer = await queryOsv([pin, { ...pin, file: 'other/requirements.txt' }], fakeFetch);
+    const adv = answer.hits[0]?.advisories ?? [];
+    check(
+      (sent[0] as { queries: unknown[] }).queries.length === 1 && answer.checked === 1,
+      'the same package version pinned in two lockfiles is asked about once',
+    );
+    check(
+      adv.length === 1 && adv[0]!.id === 'GHSA-1' && adv[0]!.severity === 'medium' && adv[0]!.aliases.includes('PYSEC-1'),
+      'one CVE held by two databases is one advisory, rated where a rating exists, every id kept',
+    );
+    check(adv[0]?.fixed.join() === '2.3.2', 'a fix named only as a git commit is not offered as a version to upgrade to');
+    const wrongShape = (async () => ({ ok: true, status: 200, json: async () => ({ results: [] }) })) as unknown as typeof fetch;
+    check(
+      await queryOsv([pin], wrongShape).then(() => false, () => true),
+      'an OSV answer of the wrong shape fails the check instead of reporting "no advisories"',
+    );
+
+    // scan --deps: findings on the lockfile line, --exclude honoured, the report says what ran.
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'defuse-deps-'));
+    await writeFile(path.join(dir, 'requirements.txt'), '# pinned\nrequests==2.0\nflask==2.0.1\n');
+    await mkdir(path.join(dir, 'old'));
+    await writeFile(path.join(dir, 'old', 'requirements.txt'), 'flask==0.1\n');
+    const deps = await checkDependencies(dir, (f) => path.relative(dir, f), ['old'], fakeFetch);
+    await rm(dir, { recursive: true, force: true });
+    const depFinding = deps.findings[0];
+    check(
+      deps.findings.length === 2 && depFinding?.confidence === 'signature-based' && depFinding.location.startLine === 2 &&
+        deps.findings[1]?.location.startLine === 3,
+      'a dependency finding is signature-based and points at its own lockfile line',
+    );
+    check(
+      deps.report.read.length === 1 && deps.report.read[0]?.file === 'requirements.txt',
+      '--exclude applies to lockfiles exactly as it does to source',
+    );
+    const unrated = dependencyFinding(
+      { pkg: pin, advisories: [{ id: 'X-1', summary: 's', aliases: [], severity: 'unrated', fixed: [] }] },
+      ['flask==2.0.1'],
+      'requirements.txt',
+    );
+    check(
+      unrated.severity === 'medium' && /placeholder/.test(unrated.reasoning),
+      'an advisory with no rating is reported at a stated placeholder, never a silent guess',
+    );
+    const withDeps = renderHtmlReport({ ...result, dependencies: deps.report }, { generatedAt: new Date(0) });
+    const withoutDeps = renderHtmlReport(result, { generatedAt: new Date(0) });
+    check(
+      /checked against osv\.dev/.test(withDeps) && /given <code>--deps<\/code>/.test(withoutDeps),
+      'the client report says whether library versions were checked, both when they were and when they were not',
+    );
   }
 
   console.log(`\n${color.bold('  README self-consistency')}`);

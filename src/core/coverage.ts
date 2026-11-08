@@ -21,6 +21,7 @@ import { LANGUAGES, type LanguageId } from '../parse/languages.js';
 import { TAINT_COVERAGE_NOTES, TAINT_DICTIONARIES } from '../taint/dictionaries.js';
 import { ENGINE_CAPABILITIES } from './finding.js';
 import { RUNTIME_VERSION_RULE } from '../platform/runtime-version.js';
+import { DEPENDENCY_RULE } from '../platform/dependency-rule.js';
 
 export interface CoverageCell {
   readonly ruleId: string;
@@ -194,7 +195,7 @@ const PARTIAL_NOTES: Record<string, string> = {
   // already tracked. The claim was an assumption dressed up as an analysis.
   'A08:2025': 'deserialization of untrusted input only - unsigned updates and CI/CD integrity are not checked',
   'A03:2025':
-    'the PHP version a project declares (Dockerfile, compose, composer.json, .php-version), against php.net support dates and critical advisories only. The libraries a project installs are NOT checked.',
+    'the PHP version a project declares (Dockerfile, compose, composer.json, .php-version), against php.net support dates and critical advisories only. Library versions are checked only with --deps (package-lock.json, composer.lock, requirements.txt, go.mod against osv.dev).',
 };
 
 /**
@@ -204,6 +205,7 @@ const PARTIAL_NOTES: Record<string, string> = {
  */
 const PROJECT_CHECKS: readonly { id: string; owasp: string }[] = [
   { id: RUNTIME_VERSION_RULE.id, owasp: RUNTIME_VERSION_RULE.owasp },
+  { id: DEPENDENCY_RULE.id, owasp: DEPENDENCY_RULE.owasp },
 ];
 
 export function buildCoverageReport(unscannedExtensions: readonly string[] = []): CoverageReport {

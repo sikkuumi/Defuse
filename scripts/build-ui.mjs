@@ -29,6 +29,7 @@ const NODE_ONLY = new Set([
   'engine/scan.js',
   'engine/walk.js',
   'parse/node-grammars.js',
+  'platform/deps.js',
   'report/human.js',
   'report/json.js',
   'report/colors.js',

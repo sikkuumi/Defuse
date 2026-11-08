@@ -24,15 +24,17 @@ import path from 'node:path';
 import { SEVERITY_ORDER, type Severity } from './core/finding.js';
 import { buildCoverageReport } from './core/coverage.js';
 import { LICENCE_LINE, LICENCE_SPDX } from './core/licence.js';
-import { scan } from './engine/scan.js';
+import { scan, type ScanResult } from './engine/scan.js';
 import { SHAPE_QUERY_SOURCES } from './engine/shapes.js';
 import { dumpAst } from './parse/astDump.js';
 import { detectLanguage, LANGUAGES } from './parse/languages.js';
 import { getLanguage, initEngine } from './parse/parser.js';
 import { parseFile, useNodeGrammars } from './parse/node-grammars.js';
+import { checkDependencies, findLockfiles, queryOsv } from './platform/deps.js';
 import { RUNTIME_VERSION_RULE } from './platform/runtime-version.js';
 import { ALL_RULES, validateRegistry } from './rules/registry.js';
 import { color, g, setAsciiMode, wrapText } from './report/colors.js';
+import { BANNER_WIDTH, bannerLines } from './report/mark.js';
 import { renderHuman } from './report/human.js';
 import { renderJson } from './report/json.js';
 import { renderSarif } from './report/sarif.js';
@@ -178,6 +180,9 @@ ${b('USAGE')}
   defuse ast <file> [options]
   defuse rules [--explain <rule-id>]
   defuse doctor
+  defuse deps [path] [--json]   known advisories for pinned library versions.
+                                The one command that uses the network: it sends
+                                package names and versions (no code) to osv.dev.
 
 ${b('SCAN OPTIONS')}
   --full                    the long terminal report: reasoning and limits on every
@@ -206,6 +211,9 @@ ${b('SCAN OPTIONS')}
                             directory of that name; * and ** work as usual.
                             e.g. --exclude=tests,vendor,**/*.min.js
   --no-config               ignore .defuse.json
+  --deps                    also check pinned library versions against osv.dev.
+                            Off by default: it sends package names and versions
+                            (no code) off the machine. Same as defuse deps.
   --show-suppressed         list findings silenced by defuse:ignore comments
   --coverage-matrix         print the full rule x language support table
   --no-cross-file           do not resolve imports; analyse each file alone.
@@ -215,7 +223,7 @@ ${b('SCAN OPTIONS')}
                             memory for speed instead.
   --ascii                   plain ASCII output - no box-drawing characters.
                             Chosen automatically when redirecting on Windows.
-  --quiet                   suppress the per-file progress line
+  --quiet                   suppress the banner and the per-file progress line
 
 ${b('AST OPTIONS')}
   --depth=<n>               how deep to print (default 12)
@@ -286,6 +294,12 @@ async function commandScan(args: Args): Promise<number> {
   const asJson = args.flags.has('json');
   const asSarif = args.flags.has('sarif');
   const quiet = args.flags.has('quiet') || asJson || asSarif;
+  // Decoration for a person at a terminal only: never in piped output, CI logs,
+  // or a window too narrow to hold it.
+  if (!quiet && process.stdout.isTTY && (process.stdout.columns ?? 0) >= BANNER_WIDTH) {
+    const purple = (s: string): string => (color.enabled ? `\x1b[38;2;121;44;247m${s}\x1b[39m` : s);
+    console.log(`\n${bannerLines().map(purple).join('\n')}`);
+  }
   const configForOnly = args.flags.has('no-config')
     ? ({} as FileConfig)
     : loadConfig(statSync(resolved).isDirectory() ? resolved : path.dirname(resolved)).config;
@@ -325,7 +339,7 @@ async function commandScan(args: Args): Promise<number> {
     config.exclude ??
     [];
 
-  const result = await scan(resolved, {
+  let result: ScanResult = await scan(resolved, {
     only,
     exclude,
     noCrossFile: args.flags.has('no-cross-file'),
@@ -346,6 +360,26 @@ async function commandScan(args: Args): Promise<number> {
   });
 
   if (!quiet) process.stderr.write(`\r${' '.repeat(70)}\r`);
+
+  /*
+   * --deps: the one network call, added here rather than inside scan() so the
+   * browser page (which runs scan's engine) can never make it. The findings
+   * join the same list, so every report and SARIF carries them unchanged.
+   */
+  if (args.flags.has('deps')) {
+    if (!quiet) process.stderr.write(color.dim('sending package names and versions (no code) to api.osv.dev...\n'));
+    try {
+      const deps = await checkDependencies(
+        statSync(resolved).isDirectory() ? resolved : path.dirname(resolved),
+        (f) => path.relative(process.cwd(), f) || f,
+        exclude,
+      );
+      result = { ...result, findings: [...result.findings, ...deps.findings], dependencies: deps.report };
+    } catch (error) {
+      console.error(color.red(`error: --deps lookup failed, so the scan was not reported - ${(error as Error).message}`));
+      return 2;
+    }
+  }
 
   /*
    * The client report is WRITTEN BY THE TOOL, never piped. On Windows,
@@ -482,6 +516,89 @@ function commandRules(args: Args): number {
   return 0;
 }
 
+/* ------------------------------------------------------------------ deps -- */
+
+async function commandDeps(args: Args): Promise<number> {
+  const target = args.positional[0] ?? '.';
+  try {
+    await stat(target);
+  } catch {
+    console.error(color.red(`error: cannot read '${target}'`));
+    return 2;
+  }
+  const asJson = args.flags.has('json');
+  const { read, unread } = findLockfiles(path.resolve(target));
+  const rel = (f: string): string => path.relative(process.cwd(), f) || f;
+  const pinned = read.flatMap((r) => r.packages);
+
+  // Said BEFORE anything is sent, on stderr so --json stays clean.
+  console.error(
+    color.dim(
+      pinned.length
+        ? `Sending ${pinned.length} package names and versions (no code) to api.osv.dev...`
+        : 'No pinned packages found - nothing sent anywhere.',
+    ),
+  );
+  let result: Awaited<ReturnType<typeof queryOsv>>;
+  try {
+    result = pinned.length ? await queryOsv(pinned) : { hits: [], checked: 0, incomplete: [] };
+  } catch (error) {
+    console.error(color.red(`error: the advisory lookup failed, so nothing was checked - ${(error as Error).message}`));
+    return 2;
+  }
+
+  if (asJson) {
+    console.log(
+      JSON.stringify(
+        {
+          source: 'api.osv.dev',
+          checkedAt: new Date().toISOString(),
+          confidence: 'signature-based',
+          read: read.map((r) => ({ file: rel(r.file), packages: r.packages.length, skipped: r.skipped })),
+          notRead: unread.map(rel),
+          checked: result.checked,
+          incomplete: result.incomplete,
+          hits: result.hits.map((h) => ({ ...h, pkg: { ...h.pkg, file: rel(h.pkg.file) } })),
+        },
+        null,
+        args.flags.has('compact') ? 0 : 2,
+      ),
+    );
+    return result.hits.length ? 1 : 0;
+  }
+
+  const sev = (s: string): string =>
+    (s === 'critical' || s === 'high' ? color.red : s === 'medium' ? color.yellow : color.dim)(s.toUpperCase().padEnd(8));
+  console.log(`\n${color.bold('Dependency check')} ${color.dim('- known advisories for pinned library versions, from osv.dev')}\n`);
+  for (const r of read) console.log(`  read      ${rel(r.file)}  ${color.dim(`(${r.packages.length} packages)`)}`);
+  for (const f of unread) console.log(`  ${color.yellow('not read')}  ${rel(f)}  ${color.dim('- this lockfile format is not supported yet')}`);
+  if (!read.length && !unread.length) console.log(color.dim('  no lockfiles found (package-lock.json, composer.lock, requirements.txt, go.mod)'));
+
+  for (const h of result.hits) {
+    console.log(`\n  ${color.bold(`${h.pkg.name} ${h.pkg.version}`)}  ${color.dim(`${h.pkg.ecosystem} · ${rel(h.pkg.file)}`)}`);
+    for (const a of h.advisories) {
+      const ids = [a.id, ...a.aliases.filter((x) => x.startsWith('CVE-'))].join(' ');
+      const fix = a.fixed.length ? color.green(`fixed in ${a.fixed.join(', ')}`) : color.dim('no fixed version published');
+      console.log(`    ${sev(a.severity)} ${ids}\n             ${a.summary}\n             ${fix}`);
+    }
+  }
+
+  const skipped = read.flatMap((r) => r.skipped.map((s) => `${rel(r.file)}: ${s}`));
+  if (skipped.length || result.incomplete.length || unread.length) {
+    console.log(`\n${color.bold('  What this check did NOT read')}`);
+    for (const s of [...skipped, ...result.incomplete]) console.log(`    ${g('cross')} ${s}`);
+    for (const f of unread) console.log(`    ${g('cross')} ${rel(f)}: format not supported yet`);
+  }
+  console.log(
+    `\n  ${result.checked} distinct package versions checked, ${color.bold(String(result.hits.length))} with known advisories.\n` +
+      color.dim(
+        '  signature-based: an advisory matching a pinned version means the vulnerable code is\n' +
+          '  installed - not that this project ever calls it.\n',
+      ),
+  );
+  return result.hits.length ? 1 : 0;
+}
+
 /* ---------------------------------------------------------------- doctor -- */
 
 /**
@@ -572,6 +689,8 @@ async function main(): Promise<number> {
       return commandRules(args);
     case 'doctor':
       return commandDoctor();
+    case 'deps':
+      return commandDeps(args);
     default:
       console.error(color.red(`error: unknown command '${args.command}'`));
       printHelp();

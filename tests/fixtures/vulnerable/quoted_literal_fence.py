@@ -47,7 +47,8 @@ def list_write_under_a_branch(c):
     if c:
         lst.append(param)
     lst.append('moresafe')
-    # EXPECT-FLOW code-injection
+    # With c false, lst[1] is 'moresafe': which element comes back is a guess.
+    # EXPECT-SIGNATURE code-injection
     exec(lst[1])
 
 

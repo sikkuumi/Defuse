@@ -871,7 +871,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 1123 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 1143 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.
@@ -1439,13 +1439,14 @@ and `npm test` fails if a phase number reappears anywhere a user can read it.
 | Three gauges that are never merged, each showing its arithmetic | a test fails if a combined risk score is ever exported |
 | Blind spots counted per scan, not disclaimed in general | `traceLimits` from the tracer's own truncation points |
 | PHP version check: Dockerfile, compose, composer.json, `.php-version` against dated php.net facts | `php-runtime.dockerfile`, and 27 checks that pin each decision with the scan date fixed |
+| `defuse deps`: pinned library versions in package-lock.json, composer.lock, requirements.txt and go.mod against osv.dev. Opt-in, the one command that uses the network, and it sends names and versions only | 10 offline checks, including one that fails if a malformed OSV answer reads as "no advisories" |
 
 **Not built**
 
 | Next | Why it matters |
 |---|---|
 | Remediation: context-aware fixes and before/after diffs | a finding you can act on beats a finding you can read |
-| The same version check for Node and Python; library versions through OSV-Scanner | the language runtime is checked for PHP only, and installed libraries not at all |
+| The same version check for Node and Python; yarn, pnpm, Poetry, Maven and Cargo lockfiles in `defuse deps` | the language runtime is checked for PHP only, and those lockfiles are listed as not read |
 | Language expansion — 31 more grammars already ship in `tree-sitter-wasms` | the parser layer already supports them; the dictionaries do not |
 | Framework bindings still unread: Django URLconf kwargs, Spring `@ModelAttribute`, Pydantic/DTO object fields | each binds through a second file or an object’s fields, which the tracer does not follow |
 

@@ -62,7 +62,7 @@ import type { ParsedFile } from '../parse/parser.js';
 import { analyzeStringExpression, looksLikeHtml, looksLikeSql } from '../rules/lib/strings.js';
 import { TAINT_DICTIONARIES } from './dictionaries.js';
 import { ASSIGNMENT_NODES, SWITCH_NODES, assignmentParts, createFolder, type SwitchDecision } from './fold.js';
-import { declaredImmutable, enclosingMethod, resolveContainerRead, writtenBetween } from './local-map.js';
+import { declaredImmutable, enclosingMethod, enclosingPythonFunction, mentionedBetween, resolveContainerRead, writtenBetween } from './local-map.js';
 import { SINK_KIND_RULE, type SinkKind, type TaintDictionary } from './types.js';
 
 /* -------------------------------------------------------------------------- *
@@ -600,6 +600,12 @@ const MEMBER_NODES = new Set([
    */
   'field_expression',
 ]);
+
+/** Assignment targets that write ONE element of a container: `m['k']`, `a[i]`, `$a['k']`. */
+const ELEMENT_TARGETS = new Set(['subscript', 'subscript_expression', 'index_expression', 'array_access']);
+
+/** Container literals: `{...}`, `[...]`, `array(...)`, Java `{a, b}`. */
+const CONTAINER_LITERALS = new Set(['dictionary', 'list', 'array', 'object', 'array_creation_expression', 'array_initializer', 'composite_literal']);
 
 /**
  * Calls that COMPILE a query and hand back a statement handle.
@@ -2004,23 +2010,28 @@ export function traceFile(
       return found ? guarded(found, node, expression, scope) : null;
     }
 
-    // `lst[1]` on a local list whose every write is on the page and whose
-    // element there is a literal - see resolvePythonListRead. Anything else
-    // keeps the whole-list answer below.
+    // `lst[1]` / `d['k']` on a local list or dict whose every write is on the
+    // page - see resolvePythonListRead / resolvePythonDictRead. A literal there
+    // is clean; a name nothing mentions between the write and here is traced
+    // as itself, with no guess attached. Anything else keeps the
+    // whole-container answer below.
     if (language === 'python' && node.type === 'subscript') {
       const read = resolveContainerRead(node, language);
       const value = read?.value;
+      const where = read && `\`${expression.slice(0, 50)}\` returns what was stored at ${read.selector} on line ${read.write.startPosition.row + 1}`;
       if (
         read && value &&
         (['integer', 'float', 'true', 'false', 'none'].includes(value.type) ||
           (value.type === 'string' && !value.namedChildren.some((c) => c?.type === 'interpolation')))
       ) {
-        noteResolvedRead(
-          node,
-          scope.filePath,
-          `\`${expression.slice(0, 50)}\` returns what was appended at ${read.selector} on line ${read.write.startPosition.row + 1}, a literal`,
-        );
+        noteResolvedRead(node, scope.filePath, `${where}, a literal`);
         return null;
+      }
+      const fn = read && enclosingPythonFunction(node);
+      if (read && value?.type === 'identifier' && fn && !mentionedBetween(fn, value.text, read.write.endIndex, node.startIndex)) {
+        noteResolvedRead(node, scope.filePath, `${where}, \`${value.text}\``);
+        const stored = evaluate(value, scope, depth + 1);
+        return stored ? addStep(stored, node, `read back from \`${read.container}\` at ${read.selector}`) : null;
       }
     }
 
@@ -2036,9 +2047,11 @@ export function traceFile(
         node.namedChildren.find((c): c is Node => c !== null) ??
         null;
       const inner = evaluate(object, scope, depth + 1);
-      return inner
-        ? guarded(addStep(inner, node, `read out of a tainted value as \`${expression.slice(0, 50)}\``), node, expression, scope)
-        : null;
+      if (!inner) return null;
+      const read = addStep(inner, node, `read out of a tainted value as \`${expression.slice(0, 50)}\``);
+      // One element of several: which one is a guess - see collectedMany.
+      const oneOfMany = ELEMENT_TARGETS.has(node.type) && inner.collectedMany ? { ...read, containerGuess: true } : read;
+      return guarded(oneOfMany, node, expression, scope);
     }
 
     if (node.type === 'binary_expression' || node.type === 'binary_operator') {
@@ -3004,6 +3017,30 @@ export function traceFile(
     return (text(scopeNode ?? node).match(pattern) ?? []).length;
   };
 
+  /**
+   * How many elements `name` can hold in the function around `node`: element
+   * writes `name[...] = v`, plus the entries of any container literal bound
+   * to it. Textual, like countElementWrites, and wrong the same safe way: a
+   * write after the read still counts, which costs a proof, never a finding.
+   */
+  const elementCount = (node: Node, name: string): number => {
+    let scopeNode: Node | null = node;
+    while (scopeNode && !functionTypes.has(scopeNode.type)) scopeNode = scopeNode.parent;
+    let count = 0;
+    const visit = (n: Node): void => {
+      if (ASSIGNMENT_NODES.has(n.type)) {
+        const parts = assignmentParts(n);
+        if (parts && stripDeclarator(text(parts.target)) === name) {
+          if (ELEMENT_TARGETS.has(parts.target.type)) count++;
+          else if (CONTAINER_LITERALS.has(parts.value.type)) count += parts.value.namedChildCount;
+        }
+      }
+      for (const c of n.namedChildren) if (c) visit(c);
+    };
+    visit(scopeNode ?? node);
+    return count;
+  };
+
   const checkMutation = (node: Node, scope: Scope): void => {
     const mutators = dictionary.mutators;
     if (!mutators || mutators.length === 0) return;
@@ -3744,7 +3781,40 @@ export function traceFile(
         const operator = node.childForFieldName('operator')?.text ?? '';
         const extendsTarget = operator === '+=' || operator === '.=';
 
-        for (const targetName of targetNames) {
+        /*
+         * `m['k'] = v` WRITES ONE ELEMENT. It does not replace `m`.
+         *
+         * stripDeclarator turns `m['k']` into `m` (it exists for C's `buf[10]`),
+         * so an element write was applied as `m = v`. BenchmarkPython 00189:
+         *
+         *     m['keyB'] = param           # m dirty
+         *     m['keyC'] = 'another'       # m wiped clean - the whole dict
+         *     bar = m['keyB']             # silent: not even "to review"
+         *
+         * And the mirror image claimed a proof it did not have: one dirty
+         * element, then a read of a CLEAN key, read back the dirt as certain.
+         * Now the container keeps every element: a clean write leaves the dirt
+         * where it is, a dirty one joins it, and a container holding more than
+         * one element is marked collectedMany, so reading ONE back is a guess
+         * unless local-map.ts can show which write it returns.
+         */
+        const elementWrite =
+          ELEMENT_TARGETS.has(parts.target.type) && targetNames.length === 1 && /^[A-Za-z_$][\w$]*$/.test(targetNames[0]!);
+        if (elementWrite) {
+          const name = targetNames[0]!;
+          const before = scope.env.get(name);
+          const many = !!before || elementCount(node, name) > 1;
+          if (taint) {
+            const stored = addStep(taint, parts.target, `written into an element of \`${name}\``);
+            // joinParts, but not `joined`: that marks a string built from parts.
+            const both = before ? { ...joinParts([before, stored]), joined: before.joined } : stored;
+            scope.env.set(name, many ? { ...both, collectedMany: true } : both);
+          } else if (before) {
+            scope.env.set(name, { ...before, collectedMany: true });
+          }
+        }
+
+        for (const targetName of elementWrite ? [] : targetNames) {
           if (!/^[A-Za-z_$][\w$]*$/.test(targetName)) continue;
           const before = scope.env.get(targetName);
           if (

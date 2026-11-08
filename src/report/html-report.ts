@@ -39,6 +39,7 @@ import { LICENCE_SPDX } from '../core/licence.js';
 import { LANGUAGES } from '../parse/languages.js';
 import { ALL_RULES } from '../rules/registry.js';
 import { readableDate, RUNTIME_VERSION_RULE } from '../platform/runtime-version.js';
+import { DEPENDENCY_RULE } from '../platform/dependency-rule.js';
 import { isTestPath } from '../rules/lib/strings.js';
 import { markSvg } from './mark.js';
 
@@ -278,9 +279,9 @@ export function renderHtmlReport(result: ScanResult, options: HtmlReportOptions)
             const tests = rows.filter((f) => isTestPath(f.location.file));
             return (
               `<div class="group" data-rule="${e(id)}"><h3><span class="dot dot-guess" aria-hidden="true"></span>${e(name)} <span class="count">${rows.length}</span></h3>` +
-              ((rule?.explanation ?? (id === RUNTIME_VERSION_RULE.id ? RUNTIME_VERSION_RULE.explanation : undefined))
-                ? `<p class="explain">${e(rule?.explanation ?? RUNTIME_VERSION_RULE.explanation)}</p>`
-                : '') +
+              ((explain) => (explain ? `<p class="explain">${e(explain)}</p>` : ''))(
+                rule?.explanation ?? [RUNTIME_VERSION_RULE, DEPENDENCY_RULE].find((r) => r.id === id)?.explanation,
+              ) +
               `<p class="limits"><strong>What this check cannot tell:</strong> ${e(limits)}</p>` +
               (id === 'hardcoded-secret'
                 ? `<p class="hitnote">The values below are cut to their first three characters, so this report does not pass the secrets on. The full values are in the code, and in the scan's own output.</p>`
@@ -336,8 +337,16 @@ export function renderHtmlReport(result: ScanResult, options: HtmlReportOptions)
    */
   notCheckedItems.push(
     `<li><strong>Other people's code.</strong> Dependency and build folders (node_modules, vendor, dist, build, ` +
-      `virtual environments and the like) are not scanned, and Defuse does not check whether the libraries the ` +
-      `project uses have known vulnerabilities. That is a separate check, done by a dependency scanner.</li>`,
+      `virtual environments and the like) are not scanned. ` +
+      (result.dependencies
+        ? `The library versions pinned in ${result.dependencies.read.length} lockfile(s) were checked against osv.dev on ` +
+          `${e(readableDate(result.dependencies.checkedAt.slice(0, 10)))} - that says a vulnerable version is installed, not that it is called.` +
+          (result.dependencies.notRead.length
+            ? ` Not read: ${result.dependencies.notRead.map((f) => `<code>${e(f)}</code>`).join(', ')}.`
+            : '') +
+          `</li>`
+        : `Defuse did not check whether the libraries the project uses have known vulnerabilities - ` +
+          `that runs only when the scan is given <code>--deps</code>.</li>`),
   );
   /*
    * The PHP version check reads declarations, which can differ from the server.
