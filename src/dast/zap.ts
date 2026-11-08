@@ -101,10 +101,6 @@ async function zap(apiPath: string, params: Record<string, string> = {}): Promis
     return body;
 }
 
-function cookieFor(t: Target): string {
-    return [AUTH, t.cookie].filter(Boolean).join('; ');
-}
-
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 async function setCookie(cookie: string): Promise<void> {
@@ -124,7 +120,7 @@ async function setCookie(cookie: string): Promise<void> {
 // ZAP error becomes could-not-test.
 async function scanOnce(t: Target, verb: 'GET' | 'POST', trigger: string): Promise<Outcome> {
     try {
-        const cookie = cookieFor(t);
+        const cookie = [AUTH, t.cookie].filter(Boolean).join('; ');
         await setCookie(cookie);
         const seedParams = [`${t.param}=test`, trigger].filter(Boolean).join('&');
 
