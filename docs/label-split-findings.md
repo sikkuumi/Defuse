@@ -107,7 +107,7 @@ about Jenkins.
 
 ## Still open
 
-- The decoy detector in `benchmark.mjs` only recognises `if`-shaped decoys, so
+- The decoy detector in `label-split.mjs` only recognises `if`-shaped decoys, so
   it misses the `switch` variant in `BenchmarkTest01256` and undercounts.
 - `tracer.ts` and `dictionaries.ts` point readers at `safe/keyed-container.java`;
   the file is in `vulnerable/`.

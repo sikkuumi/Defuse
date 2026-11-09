@@ -23,7 +23,7 @@
     "ui": "npm run build --silent && node scripts/build-ui.mjs && node scripts/serve-ui.mjs",
     "build:ui": "npm run build --silent && node scripts/build-ui.mjs",
     "metamorphic": "npm run build --silent && node dist/tests/metamorphic.js",
-    "benchmark": "npm run build --silent && node scripts/benchmark.mjs",
+    "benchmark": "npm run build --silent && node scripts/label-split.mjs",
     "dvwa": "npm run build --silent && node scripts/dvwa.mjs",
     "sync:readme": "npm run build --silent && node scripts/sync-readme.mjs",
     "prepare": "npm run build",
