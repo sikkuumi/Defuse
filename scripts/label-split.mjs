@@ -2,8 +2,8 @@
  * LABEL SPLIT SCORER
  * ==================
  *
- * scripts/benchmark.mjs answers "how accurate is Defuse?" with one pair of
- * numbers. That pair is a blend. It counts a test case as flagged when ANY
+ * The published "how accurate is Defuse?" figure (docs/benchmark-result.json,
+ * the "combined" row below) is a blend. It counts a test case as flagged when ANY
  * finding lands in it, whether that finding was a pattern match or a traced
  * data path - which means the headline precision is an average across two
  * populations the whole tool exists to keep apart.
@@ -30,7 +30,7 @@
  * only the signature pass caught. That is not a regression, it is the price of
  * the label, and reporting it is the point.
  *
- * Usage:  node scripts/label-split.mjs
+ * Usage:  npm run benchmark  (or npm run label-split - the same scan, both files)
  *
  * SCAN SCOPE: THE WHOLE APPLICATION, NOT JUST testcode/.
  *
@@ -245,3 +245,36 @@ writeFileSync(
   )}\n`,
 );
 console.log('  written to docs/label-split-result.json');
+
+/*
+ * THE PUBLISHED BLEND, written down so the README cannot outlive it: npm test
+ * compares the README's benchmark table against this file. It is the combined
+ * row above plus what the scan itself cost.
+ */
+const blend = rows[2];
+const stats = result.diagnostics?.stats ?? {};
+writeFileSync(
+  join(root, 'docs/benchmark-result.json'),
+  `${JSON.stringify(
+    {
+      scored: expected.size,
+      tp: blend.tp,
+      fp: blend.fp,
+      fn: blend.fn,
+      tn: blend.tn,
+      precision: blend.precision,
+      recall: blend.recall,
+      missedByCategory: blend.missedByCategory,
+      filesParsed: stats.filesParsed ?? 0,
+      parseErrors: stats.filesWithParseErrors ?? 0,
+      durationMs: stats.durationMs ?? 0,
+      decoyFalsePositives: blend.decoyFalsePositives,
+      decoyShare: blend.decoyShare,
+      engineVersion: pkg.version,
+      measuredAt: new Date().toISOString().slice(0, 10),
+    },
+    null,
+    2,
+  )}\n`,
+);
+console.log('  written to docs/benchmark-result.json');
