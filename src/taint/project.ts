@@ -356,6 +356,26 @@ export function importSpecifiers(root: Node, language: LanguageId): string[] {
           const first = args?.namedChildren.find((c): c is Node => c !== null);
           if (first) specifiers.push(unquote(first.text ?? ''));
         }
+      } else if (
+        node.type === 'import_from_statement' &&
+        /^\.+$/.test(node.childForFieldName('module_name')?.text ?? '')
+      ) {
+        /*
+         * `from . import runner, shell` names no module in the `from` part: the
+         * imported NAMES are the modules (runner.py, shell/__init__.py). Read
+         * as just ".", it resolved to the package folder and never to a file -
+         * so every edge in a package written this way was lost. One specifier
+         * per name, `.runner`, resolves them like `from .runner import x`.
+         * ponytail: a name defined in the package's own __init__.py rather than
+         * a module of that name stays unresolved; add a fallback when it shows.
+         */
+        const dots = node.childForFieldName('module_name')?.text ?? '.';
+        const names = node.childrenForFieldName('name').filter((n): n is Node => n !== null);
+        if (names.length === 0) specifiers.push(dots); // `from . import *`: the package itself
+        for (const name of names) {
+          const module = name.type === 'aliased_import' ? name.childForFieldName('name') : name;
+          if (module?.text) specifiers.push(`${dots}${module.text}`);
+        }
       } else {
         const source =
           node.childForFieldName('source') ??
@@ -438,15 +458,20 @@ function resolveSpecifier(
   if (fromFile.language === 'python') {
     const leadingDots = /^\.+/.exec(specifier)?.[0].length ?? 0;
     const body = specifier.slice(leadingDots).replace(/\./g, '/');
+    // A module is a file (`shell.py`) or a package folder (`shell/__init__.py`).
     if (leadingDots > 0) {
       let base = fromFile.directory;
       for (let i = 1; i < leadingDots; i++) base = dirnameOf(base);
       const candidate = body ? joinPath(base, body) : base;
-      return known.has(`${candidate}.py`) ? `${candidate}.py` : tryAll(candidate);
+      if (body && known.has(`${candidate}.py`)) return `${candidate}.py`;
+      return known.has(`${candidate}/__init__.py`) ? `${candidate}/__init__.py` : null;
     }
     // Absolute-ish: match any known file whose path ends with the module path.
-    const suffix = `/${body}.py`;
-    const matches = [...known].filter((p) => p.endsWith(suffix) || p === `${body}.py`);
+    const asFile = `${body}.py`;
+    const asPackage = `${body}/__init__.py`;
+    const matches = [...known].filter(
+      (p) => p === asFile || p === asPackage || p.endsWith(`/${asFile}`) || p.endsWith(`/${asPackage}`),
+    );
     return matches.length === 1 ? (matches[0] ?? null) : null;
   }
 

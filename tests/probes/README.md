@@ -21,6 +21,10 @@ agent whose only job was to find such programs, in three rounds:
   other `r3-` directories are shapes from the same round that the proof
   already read correctly.
 
+`x01` is a Python package whose `from . import runner` and `shell/__init__.py`
+imports resolved to nothing, so no call crossed into them - found scanning a
+real 23-file Python project that linked 0 of 31 local imports.
+
 `p33`, `p34` were added while fixing them. The `c` directories (and `j11`-`j13`,
 `k01`-`k07`) are shapes the proof already read correctly when probed, kept so
 it stays that way.

@@ -227,6 +227,19 @@ function coverageGauge(result: AnalysisResult, filesFound: number, examinedNothi
   }
 
   if (result.crossFile.enabled) {
+    /*
+     * A local import that resolved to nothing is a module the analysis never
+     * entered. Leaving it out of the mean let a scan that linked 0 of 31 imports
+     * read 82%, because no call could even be attempted across the gap.
+     */
+    const imports = result.crossFile.importEdges + result.crossFile.importsUnresolved;
+    if (imports > 0) {
+      const rate = result.crossFile.importEdges / imports;
+      parts.push(rate);
+      working.push(
+        `local imports resolved: ${result.crossFile.importEdges}/${imports} = ${Math.round(rate * 100)}%`,
+      );
+    }
     const attempts = result.crossFile.resolved + result.crossFile.ambiguous;
     if (attempts > 0) {
       const rate = result.crossFile.resolved / attempts;
