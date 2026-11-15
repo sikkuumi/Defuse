@@ -9,6 +9,7 @@
 import { LANGUAGES, SCANNABLE_EXTENSIONS } from '/engine/parse/languages.js';
 import { NETWORK_SOURCE_NOTICE } from '/engine/core/licence.js';
 import { renderHtmlReport } from '/engine/report/html-report.js';
+import { runtimeFileKind } from '/engine/platform/runtime-version.js';
 
 // The landing card's language line. Derived, never typed - see the comment in
 // index.html for what typing it cost.
@@ -60,6 +61,9 @@ startWorker();
 /* ------------------------------------------------------------- file intake */
 
 function isScannable(name, size) {
+  // Dockerfile, compose, composer.json, .php-version: read for the PHP version
+  // they declare, as the CLI's walk does. Most have no source extension.
+  if (runtimeFileKind(name)) return size <= MAX_FILE_BYTES;
   const dot = name.lastIndexOf('.');
   if (dot < 0) return false;
   return scannable.has(name.slice(dot).toLowerCase()) && size <= MAX_FILE_BYTES;
@@ -403,7 +407,12 @@ function describeRole(role, broken) {
   return parts.length ? parts.join(', ') : 'nothing reported';
 }
 function roleFor(path) {
-  return (lastResult?.fileRoles ?? []).find((r) => r.file === path) ?? NO_ROLE;
+  const role = (lastResult?.fileRoles ?? []).find((r) => r.file === path);
+  if (role) return role;
+  // A Dockerfile or composer.json is read only by the runtime version check,
+  // so the engine gives it no role - count its findings directly.
+  const reported = (lastResult?.findings ?? []).filter((f) => f.location.file === path).length;
+  return reported ? { ...NO_ROLE, findingsReported: reported } : NO_ROLE;
 }
 
 /* --------------------------------- tree --------------------------------- */
