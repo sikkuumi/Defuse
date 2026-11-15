@@ -20,15 +20,20 @@ export interface Target {
     cookie: string;
     from: string;
     param: string;
+    trigger?: string; // extra form fields this page needs before its code runs
+    untestable?: string; // why ZAP cannot reach this page's code at all
 }
 
 // Where the site runs, where its code sits on disk, and which file is served at which address.
-// Each rule is [pattern, url, cookie?] on the file path; the first rule that matches wins.
-// A pattern should match the WHOLE path (^...$): the url and cookie are built by replacing what it matched.
+// Each rule is [pattern, url, cookie?, fields?] on the file path; the first rule that matches wins.
+// A pattern should match the WHOLE path (^...$): the url, cookie and fields are built by replacing what it matched.
+// fields is what the page checks for before its code runs (DVWA's brute page wants Login=Login, not
+// the config-wide trigger), or {untestable: reason} when that check is one the scan cannot pass.
+export type Fields = string | { untestable: string };
 export interface UrlConfig {
     base: string;
     root: string;
-    rules: [string, string, string?][];
+    rules: [string, string, string?, Fields?][];
 }
 
 export interface BuiltTargets {
@@ -38,14 +43,19 @@ export interface BuiltTargets {
 }
 
 // No matching rule means no URL: a file that is only included by other files has no address of its own.
-function toAddress(config: UrlConfig, file: string): { url: string; cookie: string } | undefined {
+function toAddress(
+    config: UrlConfig,
+    file: string,
+): { url: string; cookie: string; trigger?: string; untestable?: string } | undefined {
     const relative = path.relative(config.root, file).replaceAll('\\', '/');
-    for (const [pattern, url, cookie] of config.rules) {
+    for (const [pattern, url, cookie, fields] of config.rules) {
         const rule = new RegExp(pattern);
         if (rule.test(relative)) {
             return {
                 url: new URL(relative.replace(rule, url), config.base).href,
                 cookie: cookie === undefined ? '' : relative.replace(rule, cookie),
+                ...(typeof fields === 'string' ? { trigger: relative.replace(rule, fields) } : {}),
+                ...(typeof fields === 'object' ? { untestable: fields.untestable } : {}),
             };
         }
     }
@@ -82,6 +92,8 @@ export function buildTargets(report: { findings: Finding[] }, config: UrlConfig)
             cookie: address.cookie,
             from: match[1] ?? '',
             param: match[2] ?? '',
+            ...(address.trigger !== undefined ? { trigger: address.trigger } : {}),
+            ...(address.untestable !== undefined ? { untestable: address.untestable } : {}),
         });
     }
 
