@@ -702,6 +702,41 @@ const JAVA_DICTIONARY: TaintDictionary = {
       description: 'a process launched via ProcessBuilder',
     },
     {
+      kind: 'ssrf',
+      // `new URL(x)`, read as the sink like `new File(x)`: the tracer follows
+      // variables, not what an object holds, so the openStream() on a later
+      // line is out of reach. bareOnly because a constructor has no receiver,
+      // and it keeps `foo.URL(x)` - some unrelated method - out.
+      methods: ['URL'],
+      bareOnly: true,
+      // new URL(spec) | new URL(context, spec) | new URL(protocol, host, ...):
+      // an absolute spec replaces the context's host, so 0 and 1 both steer it.
+      argIndexes: [0, 1],
+      description: 'a java.net.URL the server opens, so it fetches whatever host this names',
+    },
+    {
+      kind: 'ssrf',
+      methods: ['create'],
+      receiverPattern: /^(java\.net\.)?URI$/,
+      argIndexes: [0],
+      description: 'a java.net.URI the server requests, so it fetches whatever host this names',
+    },
+    {
+      kind: 'ssrf',
+      methods: ['newBuilder'],
+      receiverPattern: /^(java\.net\.http\.)?HttpRequest$/,
+      argIndexes: [0],
+      description: 'an outbound java.net.http request, so the server fetches whatever host this names',
+    },
+    {
+      kind: 'ssrf',
+      // Spring's RestTemplate. `exchange` is also Exchanger's, hence the receiver.
+      methods: ['getForObject', 'getForEntity', 'postForObject', 'exchange'],
+      receiverPattern: /resttemplate|\brest\b/i,
+      argIndexes: [0],
+      description: 'an outbound HTTP request via RestTemplate, so the server fetches whatever host this names',
+    },
+    {
       kind: 'xss',
       // `format` and `printf` are new here, and the receiver test is what makes
       // them safe to add: `String.format(fmt, dirty)` builds a string and is
@@ -862,6 +897,28 @@ const GO_DICTIONARY: TaintDictionary = {
       argIndexes: [0], // db.Query("... $1", id) - the rest are bound parameters
       contentCheck: 'sql',
       description: 'a database/sql query',
+    },
+    {
+      kind: 'ssrf',
+      // Package-level net/http only: `client.Get(u)` is not seen.
+      methods: ['Get', 'Post', 'Head', 'PostForm'],
+      requiredReceivers: ['http'],
+      argIndexes: [0],
+      description: 'an outbound HTTP request, so the server fetches whatever host this names',
+    },
+    {
+      kind: 'ssrf',
+      methods: ['NewRequest'], // NewRequest(method, url, body)
+      requiredReceivers: ['http'],
+      argIndexes: [1],
+      description: 'an outbound HTTP request, so the server fetches whatever host this names',
+    },
+    {
+      kind: 'ssrf',
+      methods: ['NewRequestWithContext'], // NewRequestWithContext(ctx, method, url, body)
+      requiredReceivers: ['http'],
+      argIndexes: [2],
+      description: 'an outbound HTTP request, so the server fetches whatever host this names',
     },
     {
       kind: 'command',

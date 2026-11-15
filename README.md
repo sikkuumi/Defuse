@@ -218,7 +218,7 @@ Four words carry the design: **source**, **propagation**, **sanitiser**, **sink*
 | `unbounded-copy` | CWE-120 | A05:2025 Injection | ○ | ○ | ○ | ○ | ○ | ○ | ◐ | ◐ |
 | `code-injection` | CWE-94 | A05:2025 Injection | ● | ● | ● | ◐ | ● | ○ | ○ | ○ |
 | `xss` | CWE-79 | A05:2025 Injection | ● | ● | ◐ | ◐ | ◐ | ◐ | ○ | ○ |
-| `ssrf` | CWE-918 | A01:2025 Broken Access Control | ● | ● | ● | ◐ | ● | ● | ○ | ○ |
+| `ssrf` | CWE-918 | A01:2025 Broken Access Control | ● | ● | ● | ◐ | ● | ◐ | ○ | ○ |
 | `unsafe-deserialization` | CWE-502 | A08:2025 Software or Data Integrity Failures | ◐ | ◐ | ● | ◐ | ● | ○ | ○ | ○ |
 | `hardcoded-secret` | CWE-798 | A07:2025 Authentication Failures | ● | ● | ● | ● | ● | ● | ● | ● |
 | `weak-hash` | CWE-327 | A04:2025 Cryptographic Failures | ● | ● | ● | ● | ● | ◐ | ● | ● |
@@ -321,7 +321,7 @@ constant`. Suppressed findings are **counted and listed**, never erased.
 
 Three suites, because they fail at different things.
 
-**`npm test` — 1146 checks, annotation-driven.** Fixtures carry their own
+**`npm test` — 1155 checks, annotation-driven.** Fixtures carry their own
 expectations as comments, so there is no second list to keep in sync. Catches
 regressions and honesty-contract violations. Its ceiling is that it only ever
 checks what somebody already thought of.
