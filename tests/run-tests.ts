@@ -2368,13 +2368,13 @@ async function main(): Promise<number> {
       console.log(`    ${color.red(g('cross'))} secret_arguments.py:10 should describe a 24-character key, got: ${pyKey?.reasoning.slice(0, 160) ?? 'no finding'}`);
     }
     // The text a reader sees: PHP's `"{$x}"` braces are syntax, not address.
-    const php = findings.find((f) => f.location.file.endsWith('ssrf-destination.php') && f.location.startLine === 8);
+    const php = findings.find((f) => f.location.file.endsWith('ssrf-destination.php') && f.location.startLine === 11 && f.ruleId === 'ssrf');
     if (php?.message.includes('(`./`)')) {
       passed++;
       console.log(`    ${color.green(g('tick'))} the fixed start is shown as written, without interpolation syntax`);
     } else {
       failed++;
-      console.log(`    ${color.red(g('cross'))} ssrf-destination.php:8 should show \`./\` as the fixed start, got: ${php?.message ?? 'no finding'}`);
+      console.log(`    ${color.red(g('cross'))} ssrf-destination.php:11 should show \`./\` as the fixed start, got: ${php?.message ?? 'no finding'}`);
     }
   }
 

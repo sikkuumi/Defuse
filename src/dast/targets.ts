@@ -9,6 +9,7 @@ export const ZAP_RULE: Record<string, string> = {
     'command-injection': '90020',
     'code-injection': '90019',
     'ssrf': '40046',
+    'path-traversal': '6',
 };
 
 export interface Target {

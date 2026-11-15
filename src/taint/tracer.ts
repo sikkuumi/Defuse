@@ -179,6 +179,10 @@ interface Taint {
   readonly urlPrefix?: string | undefined;
   /** The value came from a browser-only source (SourceSpec.browserOnly). */
   readonly fromBrowser?: boolean | undefined;
+  /** The value came from the program's own command line, environment or terminal (SourceSpec.localOnly). */
+  readonly fromLocal?: boolean | undefined;
+  /** A file name with every folder already cut off (SourceSpec.fileNameOnly). */
+  readonly fileNameOnly?: boolean | undefined;
   /**
    * Built by joining several dirty values. Only the receipt reads it: a
    * cleared line's reason names one value's cleaning, and says when there
@@ -295,6 +299,12 @@ export interface FlowResult {
    * Reported as a guess with the reason, never as proven SSRF and never cleared.
    */
   readonly fixedDestination?: { readonly kind: 'path' | 'browser'; readonly before: string } | undefined;
+  /**
+   * A path-traversal flow whose value comes only from the program's own
+   * command line, environment or terminal. Reported as a guess with the
+   * reason, never as proven: the person who chose the path can read the file.
+   */
+  readonly localSource?: boolean | undefined;
   /** The file the sink is in - may not be the file being scanned. */
   readonly filePath: string;
 }
@@ -1781,6 +1791,8 @@ export function traceFile(
         origin: expression.slice(0, 60),
         unknownHops: [],
         ...(source.browserOnly ? { fromBrowser: true } : {}),
+        ...(source.localOnly ? { fromLocal: true } : {}),
+        ...(source.fileNameOnly ? { fileNameOnly: true } : {}),
       };
     }
     return null;
@@ -1798,6 +1810,8 @@ export function traceFile(
     quotePending: taint.quotePending,
     urlPrefix: taint.urlPrefix,
     fromBrowser: taint.fromBrowser,
+    fromLocal: taint.fromLocal,
+    fileNameOnly: taint.fileNameOnly,
     joined: taint.joined,
     afterWash: taint.afterWash,
   });
@@ -1922,6 +1936,8 @@ export function traceFile(
       // Where the FIRST dirty part starts is where the attacker's text starts.
       urlPrefix: first.urlPrefix,
       fromBrowser: parts.every((p) => p.fromBrowser) ? true : undefined,
+      fromLocal: parts.every((p) => p.fromLocal) ? true : undefined,
+      fileNameOnly: parts.every((p) => p.fileNameOnly) ? true : undefined,
       joined: true,
       afterWash: joinedAfterWash(parts, sanitizedFor),
     };
@@ -2119,6 +2135,9 @@ export function traceFile(
               urlPrefix: left.urlPrefix,
               // The joined string is browser-only only if both halves are.
               fromBrowser: left.fromBrowser && right.fromBrowser ? true : undefined,
+              // Local only if both halves are: one request value makes it the attacker's.
+              fromLocal: left.fromLocal && right.fromLocal ? true : undefined,
+              fileNameOnly: left.fileNameOnly && right.fileNameOnly ? true : undefined,
               joined: true,
               afterWash: joinedAfterWash(
                 [left, right],
@@ -2568,6 +2587,21 @@ export function traceFile(
       return null;
     }
 
+    /*
+     * A KEYED LOOKUP on a clean store. Juice Shop's
+     * `security.authenticatedUsers.get(req.cookies.token)` returns the user
+     * kept under that token, and four routes build a file path from that
+     * user's id: the cookie picks WHICH user, it writes nothing. A dirty
+     * receiver (`new URLSearchParams(dirty).get('x')`) still carries, and so
+     * does a language that lists `get` as a propagator (Java, Go).
+     */
+    if (name === 'get' && args.length === 1 && receiver && evaluate(receiver, scope, depth + 1) === null) {
+      if (evaluate(args[0] ?? null, scope, depth + 1) !== null) {
+        noteFreshStop(node, scope.filePath, '`get()` is a lookup - it returns what is stored under the key, not the key');
+      }
+      return null;
+    }
+
     /* ---- A function we do not model. The hardest judgement call here. ----
      *
      * Two wrong answers were available:
@@ -2879,6 +2913,7 @@ export function traceFile(
       containerGuess: taint.containerGuess ?? false,
       quoteUnknown: taint.quotePending?.includes(kind) ?? false,
       fixedDestination: fixedDestinationOf(taint, kind),
+      localSource: kind === 'path' && taint.fromLocal ? true : undefined,
       filePath: toDisplay(currentPath),
     });
   };
@@ -3220,6 +3255,12 @@ export function traceFile(
           if (verdict === 'sanitised') recordRetraction(node, sink.kind, taint);
           continue;
         }
+        // PHP's file_get_contents("http://" . $host) is a request, never a
+        // file on disk: `../` there climbs a URL. It is the SSRF sink's line.
+        if (sink.kind === 'path' && /^(https?|ftps?):\/\//i.test(taint.urlPrefix ?? '')) continue;
+        // ponytail: a bare `..` upload name still names the parent folder itself;
+        // it cannot reach a file in it. Track literal slashes joined in if that matters.
+        if (sink.kind === 'path' && taint.fileNameOnly) continue;
 
         results.push({
           ruleId: SINK_KIND_RULE[sink.kind],
@@ -3234,6 +3275,7 @@ export function traceFile(
           containerGuess: taint.containerGuess ?? false,
           quoteUnknown: taint.quotePending?.includes(sink.kind) ?? false,
           fixedDestination: fixedDestinationOf(taint, sink.kind),
+          localSource: sink.kind === 'path' && taint.fromLocal ? true : undefined,
           filePath: toDisplay(currentPath),
         });
       }
@@ -3268,6 +3310,7 @@ export function traceFile(
         containerGuess: taint.containerGuess ?? false,
         quoteUnknown: taint.quotePending?.includes(sink.kind) ?? false,
         fixedDestination: fixedDestinationOf(taint, sink.kind),
+        localSource: sink.kind === 'path' && taint.fromLocal ? true : undefined,
         filePath: toDisplay(currentPath),
       });
     }

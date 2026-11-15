@@ -186,7 +186,7 @@ const PARTIAL_NOTES: Record<string, string> = {
   'A04:2025': 'weak hash algorithms only',
   'A05:2025': 'SQL, command and XSS only',
   'A01:2025':
-    'server-side request forgery only - a URL the server fetches that a request chose. Missing authorisation checks, IDOR and path traversal are NOT checked: deciding whether a check is ABSENT needs a model of who may do what, which no syntax tree carries.',
+    'server-side request forgery (a URL the server fetches that a request chose) and path traversal (a file path it opens that a request chose) only. Missing authorisation checks and IDOR are NOT checked: deciding whether a check is ABSENT needs a model of who may do what, which no syntax tree carries.',
   'A07:2025': 'hardcoded credentials in source only',
   // This category used to be listed as unreachable, on the reasoning that
   // deserialization is "structurally unlike a taint chain". That was wrong, and

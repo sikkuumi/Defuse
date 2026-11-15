@@ -2,7 +2,7 @@
  "app": "OWASP Juice Shop",
  "repository": "https://github.com/juice-shop/juice-shop",
  "commit": "717f5efa886b0417eeecb52378b03cf10567b7e2",
- "source": "Three keys in one. (1) Juice Shop marks its own vulnerable lines with `// vuln-code-snippet vuln-line <challenge>`; `challengeRules` maps the challenges whose kind of problem Defuse checks, and every other marked challenge is out of scope. (2) data/static/codefixes holds the snippets its coding challenges show players: a file ending `_correct` is the fixed version, every other variant is vulnerable by Juice Shop's own answer. (3) `entries`: proofs outside those, read against the source by Claude on 2026-10-31.",
+ "source": "Three keys in one. (1) Juice Shop marks its own vulnerable lines with `// vuln-code-snippet vuln-line <challenge>`; `challengeRules` maps the challenges whose kind of problem Defuse checks, and every other marked challenge is out of scope. (2) data/static/codefixes holds the snippets its coding challenges show players: a file ending `_correct` is the fixed version, every other variant is vulnerable by Juice Shop's own answer. (3) `entries`: proofs outside those, read against the source by Claude on 2026-10-31. (4) path-traversal proofs, read the same way on 2026-11-15.",
  "challengeRules": {
   "unionSqlInjectionChallenge": "sql-injection",
   "dbSchemaChallenge": "sql-injection",
@@ -90,6 +90,22 @@
    "line": 40,
    "verdict": "real",
    "note": "httpHeaderXssChallenge: the True-Client-IP header is saved at login (routes/saveLoginIp.ts), travels back in the JWT kept in localStorage, and is printed through bypassSecurityTrustHtml. The proof starts at localStorage - where the value comes from in the browser; the attacker writes it through the header."
+  },
+  {
+   "rule": "path-traversal",
+   "file": "routes/vulnCodeFixes.ts",
+   "line": 83,
+   "verdict": "wrong",
+   "cause": "a lookup that rejects unknown names is not read",
+   "note": "readFixes(key) lists only files in data/static/codefixes whose names start with `${key}_`, and an empty list answers 404 before this line - so a key that reaches it names a real challenge and holds no `/`. A lookup that rejects unknown names is not something this engine reads."
+  },
+  {
+   "rule": "path-traversal",
+   "file": "routes/vulnCodeSnippet.ts",
+   "line": 90,
+   "verdict": "wrong",
+   "cause": "a lookup that rejects unknown names is not read",
+   "note": "retrieveCodeSnippet(key) returns null unless codeChallenges.has(key), and null answers 404 before this line - so a key that reaches it is a known challenge name and holds no `/`. A lookup that rejects unknown names is not something this engine reads."
   }
  ]
 }

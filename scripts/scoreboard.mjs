@@ -55,6 +55,7 @@ const APPS = [
     categories: {
       'sql-injection': 'sqli', 'command-injection': 'cmdi', xss: 'xss',
       'code-injection': 'codeinj', 'unsafe-deserialization': 'deserialization', 'weak-hash': 'hash',
+      'path-traversal': 'pathtraver',
     },
     score: scoreBenchmark,
   },
@@ -150,7 +151,7 @@ function scoreBenchmark(app, findings) {
     b.notes.push('no expectedresults CSV found - nothing to score against');
     return b;
   }
-  const CAT = app.categories ?? { 'sql-injection': 'sqli', 'command-injection': 'cmdi', xss: 'xss' };
+  const CAT = app.categories ?? { 'sql-injection': 'sqli', 'command-injection': 'cmdi', xss: 'xss', 'path-traversal': 'pathtraver' };
   const expected = new Map();
   for (const line of readFileSync(join(app.dir, csv), 'utf8').split('\n').slice(1)) {
     const [name, category, real] = line.split(',').map((s) => (s ?? '').trim());

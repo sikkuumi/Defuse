@@ -1,6 +1,7 @@
 <?php
 function pull() {
   // EXPECT-FLOW ssrf
+  // EXPECT-FLOW path-traversal
   return file_get_contents($_GET['url']);
 }
 function pullCurl() {

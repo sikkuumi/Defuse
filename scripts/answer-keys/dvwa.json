@@ -2,7 +2,7 @@
  "app": "DVWA",
  "repository": "https://github.com/digininja/DVWA",
  "commit": "b496a5d3de6b967410155e1b7d3e51e9d035eb22",
- "source": "Every finding Defuse labelled proven on 2026-10-18 was read against the DVWA source by an AI review (one reviewer per finding, asked to break the path). \"real\": the path holds. \"wrong\": a hop or the sink does not hold - `cause` says which. \"unsure\": the reviewer could not decide. This is an AI review, not a human audit: it is the best key available, and a disagreement with it is a reason to look, not proof either way.",
+ "source": "Every finding Defuse labelled proven on 2026-10-18 was read against the DVWA source by an AI review (one reviewer per finding, asked to break the path). \"real\": the path holds. \"wrong\": a hop or the sink does not hold - `cause` says which. \"unsure\": the reviewer could not decide. This is an AI review, not a human audit: it is the best key available, and a disagreement with it is a reason to look, not proof either way. The path-traversal entries were read against the source by Claude on 2026-11-15, at DVWA a1978a2.",
  "entries": [
   {
    "rule": "sql-injection",
@@ -397,6 +397,62 @@
    "line": 81,
    "verdict": "real",
    "note": "Added 2026-11-01 (AI, reading the source): $ip is the X-Forwarded-For header, placed inside quotes in the INSERT with no escaping. Before this date the line was printed as checked and cleared, because the intval'd id in front of it made the whole string look washed."
+  },
+  {
+   "rule": "path-traversal",
+   "file": "vulnerabilities/view_help.php",
+   "line": 20,
+   "verdict": "real",
+   "note": "The id climbs out of vulnerabilities/ with `../`. The fixed tail of the path (/source/low.php, /help/help.php) limits which files can be reached to ones of that name, so the impact is smaller than a free read - but the path holds."
+  },
+  {
+   "rule": "path-traversal",
+   "file": "vulnerabilities/view_help.php",
+   "line": 22,
+   "verdict": "real",
+   "note": "The id climbs out of vulnerabilities/ with `../`. The fixed tail of the path (/source/low.php, /help/help.php) limits which files can be reached to ones of that name, so the impact is smaller than a free read - but the path holds."
+  },
+  {
+   "rule": "path-traversal",
+   "file": "vulnerabilities/view_source_all.php",
+   "line": 14,
+   "verdict": "real",
+   "note": "The id climbs out of vulnerabilities/ with `../`. The fixed tail of the path (/source/low.php, /help/help.php) limits which files can be reached to ones of that name, so the impact is smaller than a free read - but the path holds."
+  },
+  {
+   "rule": "path-traversal",
+   "file": "vulnerabilities/view_source_all.php",
+   "line": 18,
+   "verdict": "real",
+   "note": "The id climbs out of vulnerabilities/ with `../`. The fixed tail of the path (/source/low.php, /help/help.php) limits which files can be reached to ones of that name, so the impact is smaller than a free read - but the path holds."
+  },
+  {
+   "rule": "path-traversal",
+   "file": "vulnerabilities/view_source_all.php",
+   "line": 22,
+   "verdict": "real",
+   "note": "The id climbs out of vulnerabilities/ with `../`. The fixed tail of the path (/source/low.php, /help/help.php) limits which files can be reached to ones of that name, so the impact is smaller than a free read - but the path holds."
+  },
+  {
+   "rule": "path-traversal",
+   "file": "vulnerabilities/view_source_all.php",
+   "line": 26,
+   "verdict": "real",
+   "note": "The id climbs out of vulnerabilities/ with `../`. The fixed tail of the path (/source/low.php, /help/help.php) limits which files can be reached to ones of that name, so the impact is smaller than a free read - but the path holds."
+  },
+  {
+   "rule": "path-traversal",
+   "file": "vulnerabilities/view_source.php",
+   "line": 63,
+   "verdict": "real",
+   "note": "The id climbs out of vulnerabilities/ with `../`. The fixed tail of the path (/source/low.php, /help/help.php) limits which files can be reached to ones of that name, so the impact is smaller than a free read - but the path holds."
+  },
+  {
+   "rule": "path-traversal",
+   "file": "vulnerabilities/view_source.php",
+   "line": 68,
+   "verdict": "real",
+   "note": "The id climbs out of vulnerabilities/ with `../`. The fixed tail of the path (/source/low.php, /help/help.php) limits which files can be reached to ones of that name, so the impact is smaller than a free read - but the path holds."
   }
  ]
 }

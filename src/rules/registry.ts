@@ -19,6 +19,7 @@ import { commandInjectionRule } from './command-injection.js';
 import { hardcodedSecretRule } from './hardcoded-secret.js';
 import { sqlInjectionRule } from './sql-injection.js';
 import { ssrfRule } from './ssrf.js';
+import { pathTraversalRule } from './path-traversal.js';
 import { unsafeDeserializationRule } from './unsafe-deserialization.js';
 import { weakHashRule } from './weak-hash.js';
 import { formatStringRule } from './format-string.js';
@@ -33,6 +34,7 @@ export const ALL_RULES: readonly Rule[] = [
   codeInjectionRule,
   xssRule,
   ssrfRule,
+  pathTraversalRule,
   unsafeDeserializationRule,
   hardcodedSecretRule,
   weakHashRule,

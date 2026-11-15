@@ -45,6 +45,13 @@ export type SinkKind =
   | 'code'
   | 'ssrf'
   /**
+   * A tainted FILE PATH (CWE-22). `../` in the value walks out of the folder
+   * the code meant, so a read returns any file the server can see and a write
+   * or delete reaches any file it can touch. Separate from `ssrf` because PHP's
+   * file_get_contents is both: a URL there is a request, a path a file read.
+   */
+  | 'path'
+  /**
    * A tainted FORMAT STRING (CWE-134). C-family only, and the cleanest sink in
    * this union: `printf(name)` reads the attacker's string as a format, so
    * `%n` turns a logging call into an arbitrary memory write. It is separate
@@ -71,6 +78,7 @@ export const SINK_KIND_RULE: Record<SinkKind, string> = {
   deserialization: 'unsafe-deserialization',
   code: 'code-injection',
   ssrf: 'ssrf',
+  path: 'path-traversal',
   format: 'format-string',
   overflow: 'unbounded-copy',
 };
@@ -112,6 +120,22 @@ export interface SourceSpec {
    * cannot be server-side request forgery. See `fixedDestination` in tracer.ts.
    */
   readonly browserOnly?: boolean;
+  /**
+   * A source the person RUNNING the program writes - its command line, its
+   * environment, the terminal. Opening the file `argv[1]` names is what a
+   * command-line tool is for, so a path built from one is not proven path
+   * traversal: whoever chose it can already read that file. See `localSource`
+   * in tracer.ts. Every other kind is unaffected.
+   */
+  readonly localOnly?: boolean;
+  /**
+   * A file name the platform has already cut down to its last part. PHP keeps
+   * only what follows the last `/` or `\` in an upload's name, so
+   * `$_FILES['f']['name']` cannot climb a folder - storing the upload under it
+   * is an unrestricted-upload question, not path traversal. Every other kind
+   * (an echoed `<script>` file name, say) is unaffected.
+   */
+  readonly fileNameOnly?: boolean;
 }
 
 /** A call that does something dangerous with a string. */

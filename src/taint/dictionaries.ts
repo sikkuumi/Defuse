@@ -74,7 +74,7 @@ const JS_DICTIONARY: TaintDictionary = {
       pattern: /\bsearchParams\.get\s*\(/,
       description: 'a URL query parameter read via URLSearchParams',
     },
-    { pattern: /\bprocess\.argv\b/, description: 'command-line arguments' },
+    { pattern: /\bprocess\.argv\b/, description: 'command-line arguments', localOnly: true },
     {
       pattern: /\b(localStorage|sessionStorage)\.getItem\s*\(/,
       description: 'browser storage, which any script on the page can write',
@@ -169,6 +169,43 @@ const JS_DICTIONARY: TaintDictionary = {
       ],
       argIndexes: [0],
       description: 'an outbound HTTP request, so the server fetches whatever host this names',
+    },
+    {
+      kind: 'path',
+      methods: [
+        'readFile', 'readFileSync', 'createReadStream', 'writeFile', 'writeFileSync',
+        'appendFile', 'appendFileSync', 'createWriteStream', 'unlink', 'unlinkSync',
+        'rm', 'rmSync', 'readdir', 'readdirSync', 'open', 'openSync',
+      ],
+      requiredReceivers: ['fs', 'fsp', 'promises', 'fse', 'fsExtra', 'fsPromises'],
+      argIndexes: [0], // writeFile(path, data): the data is not a path
+      description: 'a file path the server opens, so `../` in it reaches files outside the folder the code meant',
+    },
+    {
+      kind: 'path',
+      methods: ['copyFile', 'copyFileSync', 'rename', 'renameSync', 'cp', 'cpSync'],
+      requiredReceivers: ['fs', 'fsp', 'promises', 'fse', 'fsExtra', 'fsPromises'],
+      argIndexes: [0, 1], // from, to
+      description: 'a file path the server opens, so `../` in it reaches files outside the folder the code meant',
+    },
+    {
+      kind: 'path',
+      // `const { readFileSync } = require('fs')`. Only the Sync and stream
+      // names: a bare `readFile` is as often somebody's own helper.
+      methods: ['readFileSync', 'writeFileSync', 'appendFileSync', 'createReadStream', 'createWriteStream', 'unlinkSync'],
+      bareOnly: true,
+      argIndexes: [0],
+      description: 'a file path the server opens, so `../` in it reaches files outside the folder the code meant',
+    },
+    {
+      kind: 'path',
+      // Express. With a `root` option, send() refuses any path that climbs
+      // out of it, which is the documented fix - so that form is not a sink.
+      methods: ['sendFile', 'download'],
+      requiredReceivers: ['res', 'response', 'reply'],
+      argIndexes: [0],
+      unlessOption: /\broot\s*:/,
+      description: 'a file sent back in the HTTP response, so `../` in this path serves any file the server can read',
     },
     {
       kind: 'ssrf',
@@ -288,7 +325,7 @@ const JS_DICTIONARY: TaintDictionary = {
       // a semicolon or a tag, so it is safe for every text-injection sink at
       // once. This is the strongest and most under-used sanitiser there is.
       names: ['parseInt', 'parseFloat', 'Number', 'BigInt'],
-      kinds: ['sql', 'command', 'xss'],
+      kinds: ['sql', 'command', 'xss', 'path'],
       description: 'conversion to a number',
     },
     {
@@ -297,12 +334,17 @@ const JS_DICTIONARY: TaintDictionary = {
       description: 'shell quoting',
     },
     {
+      names: ['basename'],
+      kinds: ['path'],
+      description: 'path.basename - the last name in the path, with every folder and `..` gone',
+    },
+    {
       // Node's hash and HMAC objects. Only the encodings that return a fixed
       // alphabet: no argument returns a raw Buffer, which can hold anything.
       names: ['digest'],
       argumentPattern: /^['"`](hex|base64|base64url)['"`]$/,
       fromReceiver: true,
-      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization', 'path'],
       description: 'a hash digest as hex or base64 - letters, digits and +/=, none of the text that went in',
     },
   ],
@@ -333,6 +375,10 @@ const JS_DICTIONARY: TaintDictionary = {
         'getOne', 'getMany', 'getRawOne', 'getRawMany',
       ],
       description: 'an ORM or database read - it returns stored rows, not the arguments that picked them',
+    },
+    {
+      names: ['readFileSync', 'readFile'],
+      description: 'a file read - it returns what the file holds, not the path that named it',
     },
   ],
 };
@@ -372,8 +418,8 @@ const PYTHON_DICTIONARY: TaintDictionary = {
       except:
         /^(?:self\.)?request\.META(?:\[\s*(["'])(?:CSRF_COOKIE|CSRF_COOKIE_NEEDS_UPDATE)\1\s*\]|\.get\(\s*(["'])(?:CSRF_COOKIE|CSRF_COOKIE_NEEDS_UPDATE)\2\s*(?:,\s*(?:(["'])[^"'\\]*\3|None|True|False))?\s*\))$/,
     },
-    { pattern: /\bsys\.argv\b/, description: 'command-line arguments' },
-    { pattern: /(^|[^.\w])input\s*\(/, description: 'input() read from the terminal' },
+    { pattern: /\bsys\.argv\b/, description: 'command-line arguments', localOnly: true },
+    { pattern: /(^|[^.\w])input\s*\(/, description: 'input() read from the terminal', localOnly: true },
     {
       pattern: /\bself\.(get_argument|request\.(arguments|body|headers))\b/,
       description: 'Tornado request data',
@@ -420,6 +466,40 @@ const PYTHON_DICTIONARY: TaintDictionary = {
       argIndexes: [0],
       requiresShellOption: /shell\s*=\s*True/,
       description: 'a shell command (shell=True is set on this call)',
+    },
+    {
+      kind: 'path',
+      // The builtin, and the two modules that re-export it. `Image.open` and
+      // `webbrowser.open` share only the name.
+      methods: ['open'],
+      bareOnly: true,
+      allowedReceivers: ['io', 'builtins', 'codecs'],
+      argIndexes: [0],
+      description: 'a file path the server opens, so `../` in it reaches files outside the folder the code meant',
+    },
+    {
+      kind: 'path',
+      methods: ['remove', 'unlink', 'rmdir', 'removedirs', 'listdir', 'scandir', 'makedirs', 'mkdir', 'rename', 'replace'],
+      requiredReceivers: ['os'],
+      argIndexes: [0, 1], // rename(src, dst); the others' second argument is a mode or a flag
+      description: 'a file path the server opens, so `../` in it reaches files outside the folder the code meant',
+    },
+    {
+      kind: 'path',
+      methods: ['copy', 'copyfile', 'copy2', 'copytree', 'move', 'rmtree'],
+      requiredReceivers: ['shutil'],
+      argIndexes: [0, 1],
+      description: 'a file path the server opens, so `../` in it reaches files outside the folder the code meant',
+    },
+    {
+      kind: 'path',
+      // Flask's send_file takes any path; send_from_directory refuses one that
+      // climbs out of its folder, which is the documented fix.
+      methods: ['send_file'],
+      bareOnly: true,
+      allowedReceivers: ['flask'],
+      argIndexes: [0],
+      description: 'a file sent back in the HTTP response, so `../` in this path serves any file the server can read',
     },
     {
       kind: 'ssrf',
@@ -472,7 +552,7 @@ const PYTHON_DICTIONARY: TaintDictionary = {
       // bytes form, .digest(), is not listed - raw bytes can hold anything.
       names: ['hexdigest'],
       fromReceiver: true,
-      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization', 'path'],
       description: 'a hex digest - none of the text that went in',
     },
     {
@@ -486,10 +566,15 @@ const PYTHON_DICTIONARY: TaintDictionary = {
       description: 'shell quoting (shlex.quote)',
     },
     {
+      names: ['basename', 'secure_filename'],
+      kinds: ['path'],
+      description: 'os.path.basename / werkzeug secure_filename - a single file name, no folders and no `..`',
+    },
+    {
       // ord() and len() always return an int. Without ord, BenchmarkPython's
       // char-by-char escaper `f'&#x{hex(ord(c))[2:]};'` read as passing c through.
       names: ['int', 'float', 'ord', 'len'],
-      kinds: ['sql', 'command', 'xss'],
+      kinds: ['sql', 'command', 'xss', 'path'],
       description: 'conversion to a number',
     },
     {
@@ -696,6 +781,35 @@ const JAVA_DICTIONARY: TaintDictionary = {
       description: 'a shell command via Runtime.exec (argument 0 is the command, 1 the environment it runs in)',
     },
     {
+      kind: 'path',
+      // Constructors, read as `new X(...)`. The tracer follows variables, not
+      // what an object holds, so the File is the sink rather than the read
+      // that happens on a later line.
+      methods: ['File', 'FileInputStream', 'FileOutputStream', 'FileReader', 'FileWriter', 'RandomAccessFile', 'FileSystemResource'],
+      argIndexes: [0, 1], // new File(dir, name): either half can climb
+      description: 'a file path the server opens, so `../` in it reaches files outside the folder the code meant',
+    },
+    {
+      kind: 'path',
+      // Paths.get / Path.of only build a Path - `Paths.get(x).getFileName()` is
+      // the fix - so the sink is the Files call that opens it.
+      methods: [
+        'readAllBytes', 'readAllLines', 'readString', 'lines', 'newInputStream', 'newOutputStream',
+        'newBufferedReader', 'newBufferedWriter', 'write', 'writeString', 'delete', 'deleteIfExists',
+        'list', 'walk', 'createFile', 'createDirectory', 'createDirectories',
+      ],
+      receiverPattern: /^(java\.nio\.file\.)?Files$/,
+      argIndexes: [0], // write(path, bytes): the bytes are not a path
+      description: 'a file path the server opens, so `../` in it reaches files outside the folder the code meant',
+    },
+    {
+      kind: 'path',
+      methods: ['copy', 'move'],
+      receiverPattern: /^(java\.nio\.file\.)?Files$/,
+      argIndexes: [0, 1], // from, to
+      description: 'a file path the server opens, so `../` in it reaches files outside the folder the code meant',
+    },
+    {
       kind: 'command',
       methods: ['ProcessBuilder'], // new ProcessBuilder(...)
       argIndexes: 'all',
@@ -798,6 +912,11 @@ const JAVA_DICTIONARY: TaintDictionary = {
       description: 'HTML escaping (Commons Text / Spring / ESAPI / Jenkins)',
     },
     {
+      names: ['getFileName'],
+      kinds: ['path'],
+      description: 'Path.getFileName - the last name in the path, with every folder and `..` gone',
+    },
+    {
       // Commons Lang's escapeSql only doubles single quotes: a defence inside
       // '...' and none outside. See onlyInsideQuotes in types.ts.
       names: ['escapeSql'],
@@ -807,7 +926,7 @@ const JAVA_DICTIONARY: TaintDictionary = {
     },
     {
       names: ['parseInt', 'parseLong', 'parseDouble', 'parseFloat', 'parseShort'],
-      kinds: ['sql', 'command', 'xss'],
+      kinds: ['sql', 'command', 'xss', 'path'],
       description: 'conversion to a number',
     },
     {
@@ -823,13 +942,13 @@ const JAVA_DICTIONARY: TaintDictionary = {
         'equals', 'equalsIgnoreCase', 'isEmpty', 'isBlank', 'contains', 'containsKey',
         'startsWith', 'endsWith', 'matches',
       ],
-      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization', 'path'],
       description: 'returns a number or true/false - none of the text that went in',
     },
     {
       // Apache Commons Codec's DigestUtils: hex digits, whatever went in.
       names: ['md5Hex', 'sha1Hex', 'sha256Hex', 'sha384Hex', 'sha512Hex', 'sha3_256Hex', 'sha3_512Hex'],
-      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization', 'path'],
       description: 'a hex digest - none of the text that went in',
     },
   ],
@@ -851,6 +970,8 @@ const JAVA_DICTIONARY: TaintDictionary = {
       // so calling encodeBase64() a carrier would be a claim, not a guess.
       'String', 'StringBuilder', 'StringBuffer', 'toCharArray', 'copyValueOf', 'decodeBase64',
       'ProcessBuilder',
+      // Paths.get is 'get' above; Path.of and toPath() keep the whole path too.
+      'of', 'toPath', 'resolve',
     ],
   },
 };
@@ -897,6 +1018,21 @@ const GO_DICTIONARY: TaintDictionary = {
       argIndexes: [0], // db.Query("... $1", id) - the rest are bound parameters
       contentCheck: 'sql',
       description: 'a database/sql query',
+    },
+    {
+      kind: 'path',
+      methods: ['Open', 'OpenFile', 'ReadFile', 'WriteFile', 'Create', 'Remove', 'RemoveAll', 'ReadDir', 'Mkdir', 'MkdirAll', 'Rename'],
+      requiredReceivers: ['os', 'ioutil'],
+      argIndexes: [0],
+      description: 'a file path the server opens, so `../` in it reaches files outside the folder the code meant',
+    },
+    {
+      kind: 'path',
+      // http.ServeFile(w, r, name): ServeFile checks r.URL.Path for `..`, not name.
+      methods: ['ServeFile'],
+      requiredReceivers: ['http'],
+      argIndexes: [2],
+      description: 'a file sent back in the HTTP response, so `../` in this path serves any file the server can read',
     },
     {
       kind: 'ssrf',
@@ -982,7 +1118,7 @@ const GO_DICTIONARY: TaintDictionary = {
   sanitizers: [
     {
       names: ['Atoi', 'ParseInt', 'ParseUint', 'ParseFloat', 'ParseBool'],
-      kinds: ['sql', 'command', 'xss'],
+      kinds: ['sql', 'command', 'xss', 'path'],
       description: 'strconv conversion to a number',
     },
     {
@@ -991,6 +1127,8 @@ const GO_DICTIONARY: TaintDictionary = {
       description: 'HTML escaping',
     },
     { names: ['QuoteIdentifier'], kinds: ['sql'], description: 'SQL identifier quoting' },
+    // filepath.Base / path.Base. Clean is NOT here: Clean("../../x") keeps the climb.
+    { names: ['Base'], kinds: ['path'], description: 'filepath.Base - the last name in the path, with every folder and `..` gone' },
   ],
 
   propagators: {
@@ -998,8 +1136,17 @@ const GO_DICTIONARY: TaintDictionary = {
       'Sprintf', 'Sprint', 'Sprintln', 'Join', 'TrimSpace', 'Trim', 'TrimPrefix',
       'TrimSuffix', 'ToLower', 'ToUpper', 'Replace', 'ReplaceAll', 'Split',
       'Fields', 'Repeat', 'String', 'Title', 'Get',
+      // filepath.Clean("../../x") is "../../x": tidier, still climbing.
+      'Clean', 'FromSlash', 'ToSlash',
     ],
   },
+
+  freshResults: [
+    {
+      names: ['ReadFile'],
+      description: 'a file read - it returns what the file holds, not the path that named it',
+    },
+  ],
 };
 
 /* ========================================================================== *
@@ -1027,6 +1174,12 @@ const PHP_DICTIONARY: TaintDictionary = {
   elementMutators: ['push', 'append', 'add'],
 
   sources: [
+    {
+      // Listed before the superglobals so it wins for this one key.
+      pattern: /^\$_FILES\s*\[[^\]]+\]\s*\[\s*['"]name['"]\s*\]$/,
+      description: 'the name of an uploaded file, as the uploader wrote it',
+      fileNameOnly: true,
+    },
     {
       pattern: /\$_(GET|POST|REQUEST|COOKIE|FILES)\b/,
       description: 'an HTTP request superglobal, which is attacker-controlled by definition',
@@ -1090,6 +1243,34 @@ const PHP_DICTIONARY: TaintDictionary = {
       methods: ['file_get_contents', 'fopen', 'curl_init', 'curl_setopt', 'readfile'],
       argIndexes: 'all',
       description: 'an outbound fetch, so the server retrieves whatever this names',
+    },
+    {
+      kind: 'path',
+      // file_get_contents, fopen and readfile are SSRF sinks too: a URL there
+      // is a request, a path a file read, and either is reported as itself.
+      methods: [
+        'file_get_contents', 'fopen', 'readfile', 'file', 'file_put_contents', 'unlink',
+        'opendir', 'scandir', 'mkdir', 'rmdir',
+      ],
+      bareOnly: true,
+      argIndexes: [0], // file_put_contents($path, $data): the data is not a path
+      description: 'a file path the server opens, so `../` in it reaches files outside the folder the code meant',
+    },
+    {
+      kind: 'path',
+      methods: ['copy', 'rename', 'symlink', 'link'],
+      bareOnly: true,
+      argIndexes: [0, 1], // from, to
+      description: 'a file path the server opens, so `../` in it reaches files outside the folder the code meant',
+    },
+    {
+      kind: 'path',
+      // The destination only: the source is PHP's own temp file, which PHP
+      // checks is the upload before it moves anything.
+      methods: ['move_uploaded_file'],
+      bareOnly: true,
+      argIndexes: [1],
+      description: 'the place an uploaded file is stored, so `../` in it writes outside the upload folder',
     },
     {
       kind: 'code',
@@ -1210,8 +1391,14 @@ const PHP_DICTIONARY: TaintDictionary = {
       description: 'shell argument quoting (escapeshellarg)',
     },
     {
+      // Also a propagator below, for every other kind: it keeps the file name's text.
+      names: ['basename'],
+      kinds: ['path'],
+      description: 'basename - the last name in the path, with every folder and `..` gone',
+    },
+    {
       names: ['intval', 'floatval', 'intdiv'],
-      kinds: ['sql', 'command', 'xss'],
+      kinds: ['sql', 'command', 'xss', 'path'],
       description: 'conversion to a number',
     },
     {
@@ -1251,7 +1438,7 @@ const PHP_DICTIONARY: TaintDictionary = {
         'strcasecmp', 'strncmp', 'strncasecmp', 'in_array', 'array_key_exists', 'preg_match',
         'preg_match_all', 'password_verify', 'hash_equals', 'crc32', 'bin2hex',
       ],
-      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization', 'path'],
       description: 'returns a number, true/false or hex digits - none of the text that went in',
     },
     {
@@ -1259,19 +1446,19 @@ const PHP_DICTIONARY: TaintDictionary = {
       // trailing flag that switches to raw binary, which CAN contain a quote.
       names: ['md5', 'sha1'],
       maxArgs: 1,
-      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization', 'path'],
       description: 'returns a hex digest - none of the text that went in',
     },
     {
       names: ['hash'],
       maxArgs: 2,
-      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization', 'path'],
       description: 'returns a hex digest - none of the text that went in',
     },
     {
       names: ['hash_hmac'],
       maxArgs: 3,
-      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization'],
+      kinds: ['sql', 'command', 'xss', 'code', 'ssrf', 'deserialization', 'path'],
       description: 'returns a hex digest - none of the text that went in',
     },
   ],
@@ -1350,16 +1537,19 @@ const C_SOURCES: readonly SourceSpec[] = [
   {
     pattern: /\bargv\s*\[|\*\s*argv\b|\bargv\b/,
     description: 'a command-line argument, which the caller of this program chooses',
+    localOnly: true,
   },
   {
     pattern: /\bgetenv\s*\(/,
     description:
       'an environment variable - attacker-controlled whenever the attacker controls the ' +
       'parent process, which is the normal case for CGI programs and setuid binaries',
+    localOnly: true,
   },
   {
     pattern: /\b(fgets|gets|scanf|fscanf|sscanf|getline|getchar|fgetc)\s*\(/,
     description: 'standard input',
+    localOnly: true,
   },
   {
     pattern: /\b(read|recv|recvfrom|recvmsg|fread)\s*\(/,
@@ -1446,6 +1636,22 @@ const C_DICTIONARY: TaintDictionary = {
       argIndexes: 'all',
       requiresShellOption: /["'](\/bin\/)?(sh|bash|zsh|ksh|dash)["']/,
       description: 'a shell invoked through exec',
+    },
+    {
+      kind: 'path',
+      methods: ['fopen', 'freopen', 'open', 'creat', 'remove', 'unlink', 'opendir'],
+      // The libc functions are always called bare. This keeps out C++'s
+      // ifstream.open(), which is not followed, and std::remove, an algorithm.
+      bareOnly: true,
+      argIndexes: [0], // fopen(path, mode): the mode is not a path
+      description: 'a file path the server opens, so `../` in it reaches files outside the folder the code meant',
+    },
+    {
+      kind: 'path',
+      methods: ['rename', 'openat', 'symlink', 'link'],
+      bareOnly: true,
+      argIndexes: [0, 1], // rename(from, to); openat(dirfd, path): the dirfd is a number
+      description: 'a file path the server opens, so `../` in it reaches files outside the folder the code meant',
     },
     ...C_FORMAT_SINKS,
     ...C_OVERFLOW_SINKS,
@@ -1587,6 +1793,7 @@ const CPP_DICTIONARY: TaintDictionary = {
     {
       pattern: /\bstd::cin\b|\bgetline\s*\(\s*std::cin/,
       description: 'standard input, read through the C++ stream API',
+      localOnly: true,
     },
   ],
 

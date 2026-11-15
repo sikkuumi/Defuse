@@ -227,6 +227,40 @@ function suppressionOnLine(
   return null;
 }
 
+/*
+ * `if '../' in bar: return` before the open. BenchmarkPython marks seven such
+ * cases safe and the first run proved all seven. A substring test is read
+ * from the text of the function above the sink, in every spelling this
+ * project scans: `'..' in x`, `.includes('..')`, `.contains("..")`,
+ * `strings.Contains(x, "..")`, `strpos($x, '..')`.
+ */
+const DOT_DOT_CHECK =
+  /(["'])\.\.[\\/]*\1\s+(?:not\s+)?in\b|\b(?:includes|indexOf|contains|Contains|strpos|stripos|str_contains)\s*\([^()]*?(["'])\.\.[\\/]*\2|\.(?:startsWith|startswith)\s*\(|\b(?:HasPrefix|str_starts_with)\s*\(/;
+// The last two alternatives are the containment check - resolve the path, then
+// `startsWith(base)` - which is the right fix, done right or not (Juice Shop's
+// /infrastructure route does it right). What it compares is not read.
+
+/*
+ * `if (snippet == null) { res.status(404)... return }` before the open. Juice
+ * Shop's code-challenge routes look the key up first and answer 404 for one
+ * that is not listed, so only listed names reach the read - and both were
+ * proven, wrongly. An `if` that answers "not found" on its own line or the next.
+ */
+const NOT_FOUND_EXIT =
+  /\bif\b[^\n]*(?:\n[^\n]*)?(?:\b(?:status|sendStatus|abort|http_response_code)\s*\(\s*404\b|\bHttp404\b|\bhttp\.(?:NotFound|StatusNotFound)\b)/;
+
+/** The `..` check or not-found exit in the function before this sink, as written, or undefined. */
+function dotDotCheckBefore(sink: Node): string | undefined {
+  // ponytail: any such test above the sink in the function counts, whatever
+  // variable it reads and whatever it does on failure. It only ever turns a
+  // proof into "to review", never clears a line, so a loose match costs a proof.
+  let fn: Node | null = sink.parent;
+  while (fn && !/function|method|lambda|arrow/.test(fn.type)) fn = fn.parent;
+  if (!fn) return undefined;
+  const before = (fn.text ?? '').slice(0, sink.startIndex - fn.startIndex);
+  return (DOT_DOT_CHECK.exec(before) ?? NOT_FOUND_EXIT.exec(before))?.[0].replace(/\s+/g, ' ');
+}
+
 /** Findings at the same rule+file+line are the same finding reported twice. */
 function dedupeKey(finding: Finding): string {
   return `${finding.ruleId}:${finding.location.file}:${finding.location.startLine}:${finding.location.startColumn}`;
@@ -716,6 +750,59 @@ export async function analyze(
               `What the attacker does control is the rest of the path or query: with \`../\` or an encoded ` +
               `slash it may reach another endpoint on the same server, or another file for a file read. ` +
               `Worth a look, not a proof of server-side request forgery.`,
+          limitations: rule.limitations,
+        });
+        const key = dedupeKey(downgraded);
+        if (!seenFlows.has(key)) {
+          seenFlows.add(key);
+          flowFindings.push(downgraded);
+          recordFlowRanges(flow, flowFile);
+        }
+        continue;
+      }
+      /*
+       * A FILE THE PERSON RUNNING THE PROGRAM NAMED.
+       *
+       * `open(sys.argv[1])` is what a command-line tool is for. Whoever typed
+       * the path can already read that file, so proving "path traversal" there
+       * would be a confident wrong answer about every CLI and game mod written.
+       * It matters only when the program runs with more rights than the person
+       * starting it, which this engine cannot see - so it is a question to
+       * review, at low severity, not a proof.
+       */
+      const dotDotCheck = flow.kind === 'path' ? dotDotCheckBefore(flow.sinkNode) : undefined;
+      if ((flow.localSource || dotDotCheck) && !flow.branchAssumed && !flow.containerGuess && !flow.quoteUnknown) {
+        const downgraded = signatureFinding({
+          ruleId: rule.id,
+          ruleName: rule.name,
+          cwe: rule.cwe,
+          owasp: rule.owasp,
+          severity: flow.localSource ? 'low' : rule.severity,
+          message: flow.localSource
+            ? `A file path from \`${flow.origin}\` - chosen by whoever runs this program - is opened`
+            : `A file path from \`${flow.origin}\` is opened after a check on it`,
+          location,
+          reasoning: flow.localSource
+            ? `A value from \`${flow.origin}\` reaches ${flow.sinkDescription}, but that source is the ` +
+              `program's own command line, environment or terminal. The person who supplies it can usually ` +
+              `read that file already, so this is not path traversal by itself. It is one when the program ` +
+              `runs with more rights than that person: a setuid binary, a service, a CGI program reading its ` +
+              `environment, or a script run on other people's input. Check how this program is started.`
+            : /starts?with|HasPrefix|starts_with/i.test(dotDotCheck ?? '')
+              ? `A value from \`${flow.origin}\` reaches ${flow.sinkDescription}, and a prefix check ` +
+                `(\`${dotDotCheck}\`) runs first. Resolving the path and then checking it still starts with ` +
+                `the intended folder is the right fix, so this is not proven - but what the check compares is ` +
+                `not read here. Confirm it tests the RESOLVED path against the folder, with a separator after ` +
+                `it (\`/srv/files\` also prefixes \`/srv/files-old\`).`
+              : NOT_FOUND_EXIT.test(dotDotCheck ?? '')
+                ? `A value from \`${flow.origin}\` reaches ${flow.sinkDescription}, but a "not found" answer ` +
+                  `(\`${dotDotCheck}\`) can end the request first. If that comes from looking the name up in a ` +
+                  `fixed list, only listed names reach the open and \`../\` never does - but what the lookup ` +
+                  `accepts is not read here. Confirm it matches whole names exactly, or keep only the file name.`
+              : `A value from \`${flow.origin}\` reaches ${flow.sinkDescription}, and \`${dotDotCheck}\` ` +
+                `runs first. A check for \`../\` stops the usual climb, so this is not proven. It is not a fix ` +
+                `either: it misses \`..\\\` on Windows, a path with no folder in front of it, and a bare ` +
+                `trailing \`..\`. Confirm what the check rejects, or keep only the file name instead.`,
           limitations: rule.limitations,
         });
         const key = dedupeKey(downgraded);
