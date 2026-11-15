@@ -69,7 +69,7 @@ import { checkRuntimeVersions, parseComposerRange, readableDate, RUNTIME_VERSION
 import { checkDependencies, dependencyFinding, queryOsv, readLockfile } from '../src/platform/deps.js';
 import { renderJson } from '../src/report/json.js';
 import { groupKey, classify, joinResults } from '../src/dast/zap.js';
-import type { Target } from '../src/dast/targets.js';
+import { buildTargets, type Target } from '../src/dast/targets.js';
 import { CLEAN_PART, destinationPinned } from '../src/taint/tracer.js';
 import { guardClears, regexAllowList } from '../src/rules/lib/guards.js';
 import {
@@ -2368,13 +2368,13 @@ async function main(): Promise<number> {
       console.log(`    ${color.red(g('cross'))} secret_arguments.py:10 should describe a 24-character key, got: ${pyKey?.reasoning.slice(0, 160) ?? 'no finding'}`);
     }
     // The text a reader sees: PHP's `"{$x}"` braces are syntax, not address.
-    const php = findings.find((f) => f.location.file.endsWith('ssrf-destination.php') && f.location.startLine === 8);
+    const php = findings.find((f) => f.location.file.endsWith('ssrf-destination.php') && f.location.startLine === 11 && f.ruleId === 'ssrf');
     if (php?.message.includes('(`./`)')) {
       passed++;
       console.log(`    ${color.green(g('tick'))} the fixed start is shown as written, without interpolation syntax`);
     } else {
       failed++;
-      console.log(`    ${color.red(g('cross'))} ssrf-destination.php:8 should show \`./\` as the fixed start, got: ${php?.message ?? 'no finding'}`);
+      console.log(`    ${color.red(g('cross'))} ssrf-destination.php:11 should show \`./\` as the fixed start, got: ${php?.message ?? 'no finding'}`);
     }
   }
 
@@ -3475,6 +3475,43 @@ async function main(): Promise<number> {
     console.log(
       `    ${ok ? color.green(g('tick')) : color.red(g('cross'))} ` +
         `confirmed only on a rule's own alert; every target keeps its id and a group with no scan is could-not-test, never dropped`,
+    );
+  }
+  {
+    // A page that checks for its own button gets its own fields; one the scan cannot get past is
+    // marked untestable, so it ends up could-not-test instead of a misleading not-confirmed.
+    const proof = (file: string) =>
+      ({
+        ruleId: 'xss',
+        confidence: 'flow-verified',
+        location: { file: `app/${file}`, startLine: 1 },
+        flowPath: [{ kind: 'source', location: { snippet: "$_GET['q']" } }],
+      }) as unknown as Finding;
+    const { targets } = buildTargets(
+      { findings: [proof('login/low.php'), proof('captcha/low.php'), proof('search/low.php')] },
+      {
+        base: 'http://app/',
+        root: 'app',
+        rules: [
+          ['^login/(\\w+)\\.php$', 'login/', 'security=$1', 'Login=Login'],
+          ['^captcha/(\\w+)\\.php$', 'captcha/', 'security=$1', { untestable: 'needs a CAPTCHA' }],
+          ['^(\\w+)/(\\w+)\\.php$', '$1/', 'security=$2'],
+        ],
+      },
+    );
+    const [login, captcha, search] = targets;
+    const { trigger: _ignored, ...loginWithoutFields } = login ?? ({} as Target);
+    const ok =
+      targets.length === 3 &&
+      login?.trigger === 'Login=Login' && login.untestable === undefined &&
+      captcha?.untestable === 'needs a CAPTCHA' && captcha.trigger === undefined &&
+      search?.trigger === undefined && search?.untestable === undefined &&
+      groupKey(login) !== groupKey(loginWithoutFields);
+    if (ok) passed++;
+    else failed++;
+    console.log(
+      `    ${ok ? color.green(g('tick')) : color.red(g('cross'))} ` +
+        `a URL rule can name the page's own form fields, or mark the page untestable with a reason`,
     );
   }
 

@@ -87,15 +87,15 @@ export const ssrfRule: Rule = {
     },
     java: {
       status: 'partial',
-      note: 'PARTIAL, data-flow only: new URL(x) and HttpClient/RestTemplate calls. NOT covered: the very common two-step form where the URL object is built on one line and opened on another, because the tracer follows variables rather than object state.',
+      note: 'PARTIAL, data-flow only. Covers new URL(x), URI.create(x), HttpRequest.newBuilder(x), and RestTemplate getForObject/getForEntity/postForObject/exchange on a receiver named or typed RestTemplate (or `rest`). The URL or URI being built is the sink, so new URL(x) used only to read its host is reported too. NOT covered: new URI(x) on its own, HttpRequest.newBuilder().uri(x), WebClient, OkHttp, Apache HttpClient, and a URL held in an object field.',
     },
     php: {
       status: 'implemented',
       note: 'Data-flow only. Covers file_get_contents, fopen, curl_setopt with CURLOPT_URL, and curl_init with a URL argument. Note that file_get_contents doubles as a file reader, so a finding here may be path traversal wearing a URL\'s clothes - both are worth the same second look.',
     },
     go: {
-      status: 'implemented',
-      note: 'Data-flow only. Covers http.Get, http.Post, http.Head, http.NewRequest and client methods of the same names.',
+      status: 'partial',
+      note: 'PARTIAL, data-flow only. Covers the net/http package functions http.Get, http.Post, http.Head, http.PostForm, http.NewRequest and http.NewRequestWithContext. NOT covered: the same methods on a client (client.Get(u), http.DefaultClient.Get(u)), because the receiver is not `http`, and third-party clients such as resty.',
     },
     c: {
       status: 'not-implemented',

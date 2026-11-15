@@ -30,7 +30,7 @@ const scan = JSON.parse(readFileSync(scanPath, 'utf8'));
 useNodeGrammars();
 await initEngine();
 
-const TAINT_RULES = new Set(['sql-injection', 'xss', 'command-injection', 'code-injection', 'ssrf', 'unsafe-deserialization']);
+const TAINT_RULES = new Set(['sql-injection', 'xss', 'command-injection', 'code-injection', 'ssrf', 'path-traversal', 'unsafe-deserialization']);
 const FUNC = new Set(['function_definition', 'method_declaration', 'anonymous_function', 'arrow_function', 'function_declaration',
   'function_expression', 'method_definition', 'lambda', 'func_literal', 'method_declaration', 'constructor_declaration', 'function_item']);
 const ASSIGN = new Set(['assignment_expression', 'augmented_assignment_expression', 'assignment', 'augmented_assignment',

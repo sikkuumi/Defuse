@@ -67,7 +67,7 @@ function methods(from: string): ('GET' | 'POST')[] {
 
 // One scan covers every target that attacks the same spot the same way.
 export function groupKey(t: Target): string {
-    return [t.zapRule, t.from, t.url, t.param, t.cookie].join('|');
+    return [t.zapRule, t.from, t.url, t.param, t.cookie, t.trigger ?? '', t.untestable ?? ''].join('|');
 }
 
 // confirmed iff ZAP raised at least one alert of the finding's own rule.
@@ -188,6 +188,8 @@ async function scanOnce(t: Target, verb: 'GET' | 'POST', trigger: string): Promi
 // A target may need more than one method (REQUEST). confirmed wins; otherwise
 // not-confirmed if any method actually ran; could-not-test only if none could.
 async function scanGroup(t: Target, trigger: string): Promise<Outcome> {
+    // Not "not-confirmed": that would say ZAP tried and failed, when it never got in.
+    if (t.untestable !== undefined) return { zap: 'could-not-test', detail: t.untestable };
     const verbs = methods(t.from);
     if (verbs.length === 0) {
         return { zap: 'could-not-test', detail: `input comes from a ${t.from.toLowerCase()}, not a request parameter this scan can mutate` };
@@ -219,7 +221,7 @@ async function main(): Promise<void> {
         const key = groupKey(t);
         if (byKey.has(key)) continue;
         process.stderr.write(`[${++done}] ${t.rule} ${t.from} ${t.url} (${t.param}) ... `);
-        const outcome = await scanGroup(t, trigger);
+        const outcome = await scanGroup(t, t.trigger ?? trigger);
         byKey.set(key, outcome);
         process.stderr.write(`${outcome.zap}\n`);
     }

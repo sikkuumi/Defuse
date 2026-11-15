@@ -3,7 +3,12 @@
   "root": "corpus2/DVWA",
   "trigger": "Submit=Submit",
   "rules": [
+    ["^vulnerabilities/brute/source/(low|medium)\\.php$", "vulnerabilities/brute/", "security=$1", "Login=Login"],
+    ["^vulnerabilities/brute/source/(high|impossible)\\.php$", "vulnerabilities/brute/", "security=$1", {"untestable": "the page wants a fresh anti-CSRF token on every request, which this scan does not fetch"}],
+    ["^vulnerabilities/captcha/source/(low|medium|high|impossible)\\.php$", "vulnerabilities/captcha/", "security=$1", {"untestable": "the code only runs after a passed reCAPTCHA, which this scan cannot solve"}],
     ["^vulnerabilities/([^/]+)/source/(low|medium|high|impossible)\\.php$", "vulnerabilities/$1/", "security=$2"],
+    ["^vulnerabilities/view_help\\.php$", "$&", "", "security=low&locale=en"],
+    ["^vulnerabilities/view_source\\.php$", "$&", "", "security=low"],
     ["^vulnerabilities/.+\\.php$", "$&"]
   ]
 }

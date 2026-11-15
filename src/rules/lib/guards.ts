@@ -136,13 +136,13 @@ const CASE_FOLDS = new Set(['strtolower', 'strtoupper', 'mb_strtolower', 'mb_str
 const SAFE_KINDS: Record<GuardStrength, { readonly kinds: readonly SinkKind[]; readonly insideQuotesOnly: readonly SinkKind[] }> = {
   // No quote, semicolon, angle bracket, dot-dot-slash or `--`. Not a URL host,
   // though: "2130706433" is 127.0.0.1 to most URL parsers.
-  digits: { kinds: ['sql', 'command', 'xss', 'deserialization', 'code', 'format'], insideQuotesOnly: [] },
+  digits: { kinds: ['sql', 'command', 'xss', 'deserialization', 'code', 'format', 'path'], insideQuotesOnly: [] },
   // A bare word is a column name in SQL (`WHERE id = id`) and a name in code,
   // so SQL counts only inside quotes and code not at all.
-  word: { kinds: ['sql', 'command', 'xss', 'format'], insideQuotesOnly: ['sql'] },
+  word: { kinds: ['sql', 'command', 'xss', 'format', 'path'], insideQuotesOnly: ['sql'] },
   // The attacker only chooses which of the programmer's own values arrives.
   fixed: {
-    kinds: ['sql', 'command', 'xss', 'deserialization', 'code', 'ssrf', 'format', 'overflow'],
+    kinds: ['sql', 'command', 'xss', 'deserialization', 'code', 'ssrf', 'format', 'overflow', 'path'],
     insideQuotesOnly: [],
   },
   // One Python string literal with no quote of its kind inside: eval/exec can
