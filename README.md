@@ -8,7 +8,7 @@ guessed.**
 [![runtime dependencies: 2](https://img.shields.io/badge/runtime%20deps-2-6f6f6f?style=flat-square)](#quick-start)
 
 ```bash
-npx github:sikkuumi/Defuse scan .
+npx @sikkuumiii/defuse scan .
 ```
 
 <!--
@@ -66,13 +66,14 @@ inside a single finding.
 **Run it without installing anything:**
 
 ```bash
-npx github:sikkuumi/Defuse scan .
+npx @sikkuumiii/defuse scan .
 ```
 
-> Installed straight from the repository rather than the npm registry, where the
-> name `defuse` is already taken by an unrelated package. Stated plainly rather
-> than printing an `npx defuse` line that would not resolve: a README whose very
-> first command fails is a worse first impression than one extra clause.
+> Published on npm as `@sikkuumiii/defuse`, because the plain name `defuse` is
+> already taken by an unrelated package. Stated plainly rather than printing an
+> `npx defuse` line that would not resolve: a README whose very first command
+> fails is a worse first impression than one extra clause. Once installed, the
+> command is still `defuse`.
 
 That is the whole setup. The WASM grammars ship inside the package and are
 resolved from `node_modules`, so there is no toolchain to install, no compiler,
@@ -112,7 +113,7 @@ npm run scoreboard                              # every practice app with an ans
 > node dist/src/cli.js ast .\tests\fixtures\vulnerable\sqli.js
 > ```
 
-Installed globally (`npm i -g github:sikkuumi/Defuse`), the command is `defuse`:
+Installed globally (`npm i -g @sikkuumiii/defuse`), the command is `defuse`:
 
 ```bash
 defuse scan ./src
@@ -281,7 +282,7 @@ the header (for example that the report is a draft). The browser UI has the same
 behind **Download report**, made by the same renderer from the same analysis.
 
 ```bash
-npx github:sikkuumi/Defuse scan ./app --report=app-report.html --report-by="Your Name"
+npx @sikkuumiii/defuse scan ./app --report=app-report.html --report-by="Your Name"
 ```
 
 Two things are deliberate. Every piece of text taken from the scanned code is
